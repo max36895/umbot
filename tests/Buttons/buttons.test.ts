@@ -371,10 +371,15 @@ describe('Buttons test', () => {
     });
 
     it('Get buttons Telegram', () => {
+        // Рядом со ссылками (inline) обычные кнопки тоже показываются inline,
+        // а не отбрасываются: Telegram не совмещает два типа клавиатуры
         const telegramButtons = {
             inline_keyboard: [
+                [{ text: '1', callback_data: '1' }],
                 [{ text: '1', url: 'https://test.ru' }],
+                [{ text: '2', callback_data: '2' }],
                 [{ text: '2', url: 'https://test.ru' }],
+                [{ text: '3', callback_data: '3' }],
                 [{ text: '3', url: 'https://test.ru' }],
             ],
         };

@@ -556,13 +556,40 @@ describe('Контракты платформ', () => {
         expect(ViberButton.buttonProcessing(empty, context)).toBeNull();
     });
 
-    it('предупреждает, что Telegram отбросит обычные кнопки рядом с inline', () => {
+    it('Telegram показывает обычные кнопки inline рядом с inline, а не отбрасывает их', () => {
         const context = createContext();
         const logWarn = jest.spyOn(context, 'logWarn').mockImplementation(() => {});
 
         const keyboard = TelegramButton.buttonProcessing(
             [
                 { title: 'Обычная', type: null, payload: null, hide: false, options: {} },
+                { title: 'Инлайн', type: null, payload: { a: 1 }, hide: false, options: {} },
+            ],
+            context,
+        );
+
+        expect(keyboard).toEqual({
+            inline_keyboard: [
+                [{ text: 'Обычная', callback_data: 'Обычная' }],
+                [{ text: 'Инлайн', callback_data: '{"a":1}' }],
+            ],
+        });
+        expect(logWarn).not.toHaveBeenCalled();
+    });
+
+    it('предупреждает, что Telegram отбросит кнопку запроса контакта рядом с inline', () => {
+        const context = createContext();
+        const logWarn = jest.spyOn(context, 'logWarn').mockImplementation(() => {});
+
+        const keyboard = TelegramButton.buttonProcessing(
+            [
+                {
+                    title: 'Номер',
+                    type: null,
+                    payload: null,
+                    hide: false,
+                    options: { request_contact: true },
+                },
                 { title: 'Инлайн', type: null, payload: { a: 1 }, hide: false, options: {} },
             ],
             context,

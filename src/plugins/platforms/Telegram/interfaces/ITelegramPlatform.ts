@@ -89,6 +89,13 @@ export interface ITelegramMessage {
      * Текст сообщения
      */
     text: string;
+    /**
+     * Inline-клавиатура сообщения. Приходит в callback_query.message — по ней адаптер
+     * восстанавливает текст нажатой текстовой inline-кнопки.
+     */
+    reply_markup?: {
+        inline_keyboard?: ITelegramInlineKeyboard[][];
+    };
 }
 
 /**

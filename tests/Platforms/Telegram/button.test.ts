@@ -107,6 +107,78 @@ describe('Telegram Button', () => {
             });
         });
 
+        it('options.inline: текстовая кнопка становится inline с текстом в callback_data', () => {
+            const result = TelegramButton.buttonProcessing(
+                [{ title: 'Да', options: { inline: true } }],
+                appContext,
+            );
+
+            expect(result).toEqual({
+                inline_keyboard: [[{ text: 'Да', callback_data: 'Да' }]],
+            });
+        });
+
+        it('options.inline: длинный текст (> 64 байт) передаётся токеном #t<n>', () => {
+            const long = 'Очень длинная надпись на кнопке больше лимита';
+            const result = TelegramButton.buttonProcessing(
+                [
+                    { title: 'Коротко', options: { inline: true } },
+                    { title: long, options: { inline: true } },
+                ],
+                appContext,
+            );
+
+            expect(result).toEqual({
+                inline_keyboard: [
+                    [{ text: 'Коротко', callback_data: 'Коротко' }],
+                    [{ text: long, callback_data: '#t1' }],
+                ],
+            });
+        });
+
+        it('смешанные кнопки: текстовые становятся inline, а не пропадают', () => {
+            const result = TelegramButton.buttonProcessing(
+                [{ title: 'Купить', payload: { command: 'buy' } }, { title: 'Назад' }],
+                appContext,
+            );
+
+            expect(result).toEqual({
+                inline_keyboard: [
+                    [{ text: 'Купить', callback_data: '{"command":"buy"}' }],
+                    [{ text: 'Назад', callback_data: 'Назад' }],
+                ],
+            });
+        });
+
+        it('кнопка запроса контакта не становится inline даже с options.inline', () => {
+            const result = TelegramButton.buttonProcessing(
+                [{ title: 'Номер', options: { request_contact: true, inline: true } }],
+                appContext,
+            );
+
+            expect(result).toEqual({
+                keyboard: [[{ text: 'Номер', request_contact: true }]],
+                resize_keyboard: true,
+            });
+        });
+
+        it('текст, похожий на JSON или токен, передаётся токеном', () => {
+            const result = TelegramButton.buttonProcessing(
+                [
+                    { title: '{"a":1}', options: { inline: true } },
+                    { title: '#t5', options: { inline: true } },
+                ],
+                appContext,
+            );
+
+            expect(result).toEqual({
+                inline_keyboard: [
+                    [{ text: '{"a":1}', callback_data: '#t0' }],
+                    [{ text: '#t5', callback_data: '#t1' }],
+                ],
+            });
+        });
+
         it('возвращает null при отсутствии кнопок', () => {
             const result = TelegramButton.buttonProcessing([], appContext);
 
