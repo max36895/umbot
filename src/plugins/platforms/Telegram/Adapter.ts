@@ -2,7 +2,7 @@ import { AppContext, BotController, Text } from '../../../index';
 import type { IControllerApi } from '../../../controller';
 import type { TEventType } from '../../../core/events';
 import { BasePlatform, EMPTY_QUERY_ERROR } from '../Base/Base';
-import { buttonProcessing } from './Button';
+import { buttonProcessing, getTextButtonTitle } from './Button';
 import { cardProcessing } from './Card';
 import { soundProcessing } from './Sound';
 import { T_TELEGRAM } from './constants';
@@ -208,8 +208,14 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
             // callback_data может быть строкой или JSON-строкой. Нормализуем
             // «именную» кнопку: payload 'buy' или {"command":"buy"} превращается
             // в userCommand='buy', чтобы сработал addAction/addCommand (см. Base/utils).
-            controller.userCommand = normalizeActionPayload(cb.data) || '';
-            controller.originalUserCommand = cb.data || '';
+            // Текстовая inline-кнопка с длинным текстом присылает токен — нажатие
+            // обрабатываем как ввод текста кнопки.
+            const buttonTitle = getTextButtonTitle(cb.data, cb.message?.reply_markup);
+            controller.userCommand =
+                buttonTitle !== null
+                    ? buttonTitle.toLowerCase().trim()
+                    : normalizeActionPayload(cb.data) || '';
+            controller.originalUserCommand = buttonTitle ?? (cb.data || '');
             controller.messageId = cb.message?.message_id ?? null;
             controller.payload = tryParse(cb.data);
             // Сохраняем ID callback-запроса, чтобы потом ответить.

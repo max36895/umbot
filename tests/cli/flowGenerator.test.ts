@@ -109,7 +109,8 @@ describe('flowGenerator', () => {
                 database: { type: 'file', config: {} },
                 isLocalStorage: true,
             });
-            expect(code).toContain("ctrl.buttons.addBtn('Помощь')");
+            // В Telegram все кнопки inline: нажатие приходит как текст кнопки
+            expect(code).toContain("ctrl.buttons.addBtn('Помощь', '', '', { inline: true })");
             expect(code).toContain("ctrl.buttons.addLink('Сайт', 'https://example.com')");
         });
     });
@@ -166,7 +167,7 @@ describe('flowGenerator', () => {
             });
             expect(code).toContain("import { rand } from 'umbot/utils'");
             expect(code).toContain('ctrl.userData.num = rand(1, 10)');
-            expect(code).toContain('`Число: ${ctrl.userData.num}`');
+            expect(code).toContain("`Число: ${ctrl.userData.num ?? ''}`");
         });
     });
 
@@ -202,7 +203,7 @@ describe('flowGenerator', () => {
             });
             // Condition generates a function
             expect(code).toContain('function __check(ctrl: BotController)');
-            expect(code).toContain('ctrl.userData.userAnswer === 42');
+            expect(code).toContain('isEqual(ctrl.userData.userAnswer, 42)');
             expect(code).toContain("setText(ctrl, 'Правильно!')");
             // Step calls the function
             expect(code).toContain("bot.addStep('ask'");
@@ -301,7 +302,7 @@ describe('flowGenerator', () => {
             expect(code).toContain('setText(ctrl, `');
             // Condition function
             expect(code).toContain('function __check(ctrl: BotController)');
-            expect(code).toContain('ctrl.userData.userAnswer === ctrl.userData.answer');
+            expect(code).toContain('isEqual(ctrl.userData.userAnswer, ctrl.userData.answer)');
             // Command calls action and navigates to step
             expect(code).toContain("bot.addCommand('start'");
             expect(code).toContain('__gen(ctrl)');
@@ -348,7 +349,9 @@ describe('flowGenerator', () => {
                 database: { type: 'file', config: {} },
                 isLocalStorage: true,
             });
-            expect(code).toContain("ctrl.card.addImage('url1.jpg', 'iPhone', '999₽', 'Купить')");
+            expect(code).toContain(
+                "ctrl.card.addImage('url1.jpg', 'iPhone', '999₽', { title: 'Купить', options: { inline: true } })",
+            );
         });
     });
 
@@ -438,7 +441,9 @@ describe('flowGenerator', () => {
                 isLocalStorage: true,
             });
 
-            expect(code).toContain('body: JSON.stringify({ "message": `${ctrl.userData.name}` })');
+            expect(code).toContain(
+                'body: JSON.stringify({ "message": `${ctrl.userData.name ?? \'\'}` })',
+            );
             expect(code).not.toContain('JSON.parse(`');
             expect(code).toContain(
                 'const errorMessage = e instanceof Error ? e.message : String(e);',
@@ -554,6 +559,509 @@ describe('flowGenerator', () => {
         });
     });
 
+    describe('Регрессии семантики сценария (превью редактора = сгенерированный бот)', () => {
+        it('шаг сохраняет ответ и выполняет действия ДО вывода своего текста', () => {
+            // Регрессия: текст шага подставлял {{name}} до записи ответа — «Привет, undefined!»
+            const name = 'step_order';
+            const code = writeJsonAndGenerate(name, {
+                name,
+                nodes: [
+                    {
+                        type: 'step',
+                        id: 's1',
+                        name: 'ask_name',
+                        prompt: { text: 'Привет, {{name}}! Длина: {{len}}', buttons: [] },
+                        saveTo: 'name',
+                        saveAs: 'original',
+                        actions: [{ type: 'set_variable', field: 'len', value: '5' }],
+                    },
+                ],
+                edges: [],
+                database: { type: 'none', config: {} },
+            });
+            const save = code.indexOf('ctrl.userData.name = ctrl.originalUserCommand');
+            const action = code.indexOf('ctrl.userData.len = 5');
+            const text = code.indexOf("setText(ctrl, `Привет, ${ctrl.userData.name ?? ''}");
+            expect(save).toBeGreaterThan(-1);
+            expect(action).toBeGreaterThan(save);
+            expect(text).toBeGreaterThan(action);
+            expectProjectToTypeCheck(path.join(TEST_DIR, name));
+        });
+
+        it('незаданная переменная: в тексте — пустая строка, в арифметике — ноль', () => {
+            const name = 'missing_vars';
+            const code = writeJsonAndGenerate(name, {
+                name,
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'count',
+                        slots: ['счёт'],
+                        isPattern: false,
+                        actions: [{ type: 'set_variable', field: 'cnt', value: 'cnt + 1' }],
+                        response: {
+                            text: 'Счёт {{cnt}}, имя {{userName}}',
+                            buttons: [],
+                            sounds: [],
+                        },
+                    },
+                ],
+                edges: [],
+                database: { type: 'none', config: {} },
+            });
+            expect(code).toContain('ctrl.userData.cnt = Number(ctrl.userData.cnt ?? 0) + 1;');
+            expect(code).toContain(
+                "`Счёт ${ctrl.userData.cnt ?? ''}, имя ${ctrl.userData.userName ?? ''}`",
+            );
+            expectProjectToTypeCheck(path.join(TEST_DIR, name));
+        });
+
+        it('saveTo команды сохраняет исходный ввод до действий и текста', () => {
+            const code = writeJsonAndGenerate('command_save_to', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'repeat',
+                        slots: ['повтори'],
+                        isPattern: false,
+                        saveTo: 'said',
+                        actions: [{ type: 'set_variable', field: 'x', value: '1' }],
+                        response: { text: 'Ты сказал: {{said}}', buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [],
+                database: { type: 'none', config: {} },
+            });
+            const save = code.indexOf('ctrl.userData.said = ctrl.originalUserCommand ?? cmd;');
+            expect(save).toBeGreaterThan(-1);
+            expect(code.indexOf('ctrl.userData.x = 1;')).toBeGreaterThan(save);
+            expect(code.indexOf('setText(ctrl, `Ты сказал:')).toBeGreaterThan(save);
+        });
+
+        it('isEmpty/contains: 0 — не пусто, незаданная переменная — пустая строка', () => {
+            const code = writeJsonAndGenerate('empty_checks', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'go',
+                        slots: ['go'],
+                        isPattern: false,
+                        response: { text: '', buttons: [], sounds: [] },
+                    },
+                    {
+                        type: 'condition',
+                        id: 'e',
+                        name: 'e',
+                        variable: 'z',
+                        operator: 'isEmpty',
+                        value: '',
+                    },
+                    {
+                        type: 'condition',
+                        id: 'c',
+                        name: 'c',
+                        variable: 'z',
+                        operator: 'contains',
+                        value: 'def',
+                    },
+                    {
+                        type: 'response',
+                        id: 'r',
+                        name: 'r',
+                        response: { text: 'ok', buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [
+                    { from: 'c1', to: 'e', type: 'next' },
+                    { from: 'e', to: 'r', type: 'branch_true' },
+                    { from: 'e', to: 'c', type: 'branch_false' },
+                    { from: 'c', to: 'r', type: 'branch_true' },
+                    { from: 'c', to: 'r', type: 'branch_false' },
+                ],
+                database: { type: 'none', config: {} },
+            });
+            expect(code).toContain("if (String(ctrl.userData.z ?? '') === '')");
+            expect(code).toContain("if (String(ctrl.userData.z ?? '').includes(String('def')))");
+        });
+
+        it('карточка, эмоция, TTS, заголовки кнопок и перемешивание в ответе, шаге и действии', () => {
+            const name = 'rich_response';
+            const code = writeJsonAndGenerate(name, {
+                name,
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'shop',
+                        slots: ['магазин'],
+                        isPattern: false,
+                        response: {
+                            text: 'Магазин',
+                            tts: 'Товар {{item}}',
+                            emotion: 'good',
+                            buttons: [],
+                            sounds: [],
+                            card: {
+                                type: 'single',
+                                title: 'Товар {{item}}',
+                                images: [
+                                    {
+                                        src: 'https://example.com/{{item}}.png',
+                                        title: '{{item}}',
+                                        description: 'Цена {{price}}',
+                                        button: {
+                                            title: 'Купить',
+                                            type: 'action',
+                                            targetNodeId: 'r1',
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        type: 'response',
+                        id: 'r1',
+                        name: 'bought',
+                        response: {
+                            text: 'Куплено',
+                            emotion: 'neutral',
+                            shuffleButtons: true,
+                            buttons: [
+                                { title: 'Ещё {{item}}', type: 'action' },
+                                {
+                                    title: 'Сайт',
+                                    type: 'link',
+                                    url: 'https://example.com/{{item}}',
+                                },
+                            ],
+                            sounds: [],
+                        },
+                    },
+                    {
+                        type: 'step',
+                        id: 's1',
+                        name: 'pick',
+                        prompt: {
+                            text: '',
+                            emotion: 'bad',
+                            buttons: [],
+                            card: {
+                                type: 'list',
+                                title: 'Список',
+                                images: [{ src: 'a.png', title: 'A', description: '' }],
+                            },
+                        },
+                        saveTo: 'item',
+                        saveAs: 'original',
+                    },
+                    {
+                        type: 'action',
+                        id: 'a1',
+                        name: 'gallery',
+                        actions: [],
+                        text: 'Галерея',
+                        buttons: [],
+                        card: {
+                            type: 'gallery',
+                            title: '',
+                            images: [
+                                { src: 'a.png', title: 'A', description: '' },
+                                { src: 'b.png', title: 'B', description: '' },
+                            ],
+                        },
+                    },
+                ],
+                edges: [
+                    { from: 'c1', to: 's1', type: 'next' },
+                    { from: 's1', to: 'a1', type: 'next' },
+                ],
+                database: { type: 'none', config: {} },
+            });
+            expect(code).toContain("setTTS(ctrl, `Товар ${ctrl.userData.item ?? ''}`);");
+            expect(code).toContain("ctrl.emotion = 'good';");
+            expect(code).toContain("ctrl.emotion = 'neutral';");
+            expect(code).toContain("ctrl.emotion = 'bad';");
+            expect(code).toContain("ctrl.card.title = `Товар ${ctrl.userData.item ?? ''}`;");
+            expect(code).toContain('ctrl.card.isOne = true;');
+            expect(code).toContain(
+                "ctrl.card.addImage(`https://example.com/${ctrl.userData.item ?? ''}.png`, `${ctrl.userData.item ?? ''}`, `Цена ${ctrl.userData.price ?? ''}`, { title: 'Купить', payload: { command: '[go:1]' }, options: { inline: true } });",
+            );
+            // Кнопка картинки ведёт на блок — блок генерируется и получает действие
+            expect(code).toContain("bot.addAction('[go:1]'");
+            expect(code).toContain('function __bought(ctrl: BotController)');
+            // Перемешивание кнопок у блока «Ответ», переменные в заголовке и ссылке
+            expect(code).toContain('// Случайный порядок кнопок');
+            expect(code).toContain("title: `Ещё ${ctrl.userData.item ?? ''}`");
+            expect(code).toContain("url: `https://example.com/${ctrl.userData.item ?? ''}`");
+            // Карточка шага и действия
+            expect(code).toContain("ctrl.card.title = 'Список';");
+            expect(code).toContain('ctrl.card.isUsedGallery = true;');
+            expectProjectToTypeCheck(path.join(TEST_DIR, name));
+        });
+
+        it('isEnd у блока «Ответ» завершает диалог', () => {
+            const code = writeJsonAndGenerate('response_is_end', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'bye',
+                        slots: ['пока'],
+                        isPattern: false,
+                        response: { text: '', buttons: [], sounds: [] },
+                    },
+                    {
+                        type: 'response',
+                        id: 'r1',
+                        name: 'farewell',
+                        response: { text: 'До встречи', isEnd: true, buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [{ from: 'c1', to: 'r1', type: 'next' }],
+                database: { type: 'none', config: {} },
+            });
+            const fn = code.slice(code.indexOf('function __farewell'));
+            expect(fn.slice(0, fn.indexOf('\n}'))).toContain('ctrl.isEnd = true');
+        });
+
+        it('eq/neq сравнивают через isEqual: ввод-строка "42" равна числу 42', () => {
+            const name = 'is_equal';
+            const code = writeJsonAndGenerate(name, {
+                name,
+                nodes: [
+                    {
+                        type: 'step',
+                        id: 's1',
+                        name: 'ask',
+                        prompt: { text: '', buttons: [] },
+                        saveTo: 'guess',
+                        saveAs: 'original',
+                    },
+                    {
+                        type: 'condition',
+                        id: 'c1',
+                        name: 'win',
+                        variable: 'guess',
+                        operator: 'eq',
+                        value: 42,
+                    },
+                    {
+                        type: 'condition',
+                        id: 'c2',
+                        name: 'other',
+                        variable: 'guess',
+                        operator: 'neq',
+                        value: 'нет',
+                    },
+                    {
+                        type: 'response',
+                        id: 'r1',
+                        name: 'yes',
+                        response: { text: 'Да', buttons: [], sounds: [] },
+                    },
+                    {
+                        type: 'response',
+                        id: 'r2',
+                        name: 'no',
+                        response: { text: 'Нет', buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [
+                    { from: 's1', to: 'c1', type: 'next' },
+                    { from: 'c1', to: 'r1', type: 'branch_true' },
+                    { from: 'c1', to: 'c2', type: 'branch_false' },
+                    { from: 'c2', to: 'r1', type: 'branch_true' },
+                    { from: 'c2', to: 'r2', type: 'branch_false' },
+                ],
+                database: { type: 'none', config: {} },
+            });
+            expect(code).toMatch(/import \{ setText, isEqual \} from '\.\/utils';/);
+            expect(code).toContain('isEqual(ctrl.userData.guess, 42)');
+            expect(code).toContain("!isEqual(ctrl.userData.guess, 'нет')");
+            expect(code).not.toContain('=== 42');
+            expectProjectToTypeCheck(path.join(TEST_DIR, name));
+        });
+
+        it('isEqual не импортируется, если eq/neq-условий нет', () => {
+            const code = writeJsonAndGenerate('no_is_equal', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'hi',
+                        slots: ['hi'],
+                        isPattern: false,
+                        response: { text: 'Hi', buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [],
+                database: { type: 'none', config: {} },
+            });
+            expect(code).not.toContain('isEqual');
+        });
+    });
+
+    describe('Кнопки с блоком-целью (targetNodeId)', () => {
+        const baseDoc = (nodes: object[], edges: object[] = []): Record<string, unknown> => ({
+            name: 'buttons',
+            nodes,
+            edges,
+            database: { type: 'none', config: {} },
+        });
+        const command = (
+            id: string,
+            name: string,
+            slots: string[],
+            text: string,
+            buttons: object[] = [],
+        ): Record<string, unknown> => ({
+            type: 'command',
+            id,
+            name,
+            slots,
+            isPattern: false,
+            response: { text, buttons, sounds: [] },
+        });
+        const response = (
+            id: string,
+            name: string,
+            text: string,
+            buttons: object[] = [],
+        ): Record<string, unknown> => ({
+            type: 'response',
+            id,
+            name,
+            response: { text, buttons, sounds: [] },
+        });
+
+        it('кнопка на блок: payload [go:N] и действие, вызывающее функцию блока', () => {
+            const name = 'btn_block';
+            const code = writeJsonAndGenerate(
+                name,
+                baseDoc([
+                    command('c1', 'menu', ['меню'], 'Куда?', [
+                        { title: 'В камеру', type: 'action', targetNodeId: 'r1' },
+                        { title: 'Просто текст', type: 'action' },
+                    ]),
+                    response('r1', 'cell', 'Камера'),
+                ]),
+            );
+            expect(code).toContain(
+                "ctrl.buttons.addBtn('В камеру', '', { command: '[go:1]' }, { inline: true })",
+            );
+            expect(code).toContain("ctrl.buttons.addBtn('Просто текст', '', '', { inline: true })");
+            // Блок без входящих связей генерируется: на него ведёт кнопка
+            expect(code).toContain('function __cell(ctrl: BotController)');
+            expect(code).toMatch(
+                /bot\.addAction\('\[go:1\]', \(cmd: string, ctrl: BotController\): void => \{\n {4}__cell\(ctrl\);/,
+            );
+            // Действия регистрируются раньше команд, чтобы слоты не перехватили нажатие
+            expect(code.indexOf("bot.addAction('[go:1]'")).toBeLessThan(
+                code.indexOf("bot.addCommand('menu'"),
+            );
+            expectProjectToTypeCheck(path.join(TEST_DIR, name));
+        });
+
+        it('кнопка на шаг: шаг обрабатывает текст кнопки как ответ; ожидающий шаг пропускает нажатие', () => {
+            const name = 'btn_step';
+            const code = writeJsonAndGenerate(
+                name,
+                baseDoc(
+                    [
+                        command('c1', 'start', ['старт'], 'Готов?', [
+                            { title: 'Да', type: 'action', targetNodeId: 's1' },
+                        ]),
+                        {
+                            type: 'step',
+                            id: 's1',
+                            name: 'confirm',
+                            prompt: { text: 'Ответ: {{answer}}', buttons: [] },
+                            saveTo: 'answer',
+                            saveAs: 'original',
+                        },
+                    ],
+                    [{ from: 'c1', to: 's1', type: 'next' }],
+                ),
+            );
+            expect(code).toContain('function __step_confirm(ctrl: BotController): void {');
+            expect(code).toContain("ctrl.originalUserCommand = 'Да';");
+            expect(code).toContain(
+                'ctrl.userCommand = ctrl.originalUserCommand.toLowerCase().trim();',
+            );
+            expect(code).toContain('    __step_confirm(ctrl);');
+            expect(code).toContain(
+                "bot.addStep('confirm', (ctrl: BotController): void | false => {\n    if (ctrl.messageId === 0 || (ctrl.userCommand ?? '').startsWith('/start') || (ctrl.userCommand ?? '').startsWith('[go:')) return false;\n    __step_confirm(ctrl);",
+            );
+            expectProjectToTypeCheck(path.join(TEST_DIR, name));
+        });
+
+        it('кнопка на команду: команда выполняется с текстом кнопки', () => {
+            const name = 'btn_command';
+            const code = writeJsonAndGenerate(
+                name,
+                baseDoc([
+                    command('c1', 'menu', ['меню'], 'Меню', [
+                        { title: 'Помощь', type: 'action', targetNodeId: 'c2' },
+                    ]),
+                    { ...command('c2', 'help_me', ['помоги'], 'Справка'), saveTo: 'asked' },
+                ]),
+            );
+            expect(code).toContain(
+                'function __cmd_help_me(cmd: string, ctrl: BotController): void {',
+            );
+            expect(code).toContain("bot.addCommand('help_me', ['помоги'], __cmd_help_me);");
+            expect(code).toContain('    __cmd_help_me(ctrl.userCommand, ctrl);');
+            expectProjectToTypeCheck(path.join(TEST_DIR, name));
+        });
+
+        it('без кнопок с целью генерация шагов и команд не меняется', () => {
+            const code = writeJsonAndGenerate(
+                'btn_none',
+                baseDoc([
+                    command('c1', 'go', ['go'], 'Да?'),
+                    {
+                        type: 'step',
+                        id: 's1',
+                        name: 'ask',
+                        prompt: { text: '', buttons: [] },
+                        saveTo: 'x',
+                        saveAs: 'original',
+                    },
+                ]),
+            );
+            expect(code).not.toContain('addAction');
+            // Шаг пропускает только начало диалога (messageId 0, /start) — без проверки [go:
+            expect(code).toContain("bot.addStep('ask', (ctrl: BotController): void | false => {");
+            expect(code).toContain(
+                "    if (ctrl.messageId === 0 || (ctrl.userCommand ?? '').startsWith('/start')) return false;",
+            );
+            expect(code).not.toContain("startsWith('[go:')");
+        });
+
+        it('кнопка на «Завершение» или несуществующий блок — обычная текстовая кнопка', () => {
+            const code = writeJsonAndGenerate(
+                'btn_end',
+                baseDoc([
+                    command('c1', 'go', ['go'], 'Да?', [
+                        { title: 'Конец', type: 'action', targetNodeId: 'e1' },
+                        { title: 'Нет такого', type: 'action', targetNodeId: 'missing' },
+                    ]),
+                    { type: 'end', id: 'e1' },
+                ]),
+            );
+            expect(code).not.toContain('addAction');
+            expect(code).toContain("ctrl.buttons.addBtn('Конец', '', '', { inline: true })");
+        });
+    });
+
     describe('Fallback', () => {
         it('generates FALLBACK_COMMAND handler', () => {
             const code = writeJsonAndGenerate('fb', {
@@ -644,7 +1152,7 @@ describe('flowGenerator', () => {
                 isLocalStorage: true,
             });
             expect(code).toContain('ctrl.userData.a = 5;');
-            expect(code).toContain('ctrl.userData.b = Number(ctrl.userData.a) + 3;');
+            expect(code).toContain('ctrl.userData.b = Number(ctrl.userData.a ?? 0) + 3;');
         });
     });
 
@@ -678,7 +1186,7 @@ describe('flowGenerator', () => {
                 isLocalStorage: true,
             });
             expect(code).toContain('ctrl.userData.result = data;');
-            expect(code).toContain('ctrl.userData.total = Number(ctrl.userData.result) + 1;');
+            expect(code).toContain('ctrl.userData.total = Number(ctrl.userData.result ?? 0) + 1;');
             expect(code).not.toContain("'result + 1'");
         });
     });
@@ -713,7 +1221,8 @@ describe('flowGenerator', () => {
                 database: { type: 'file', config: {} },
                 isLocalStorage: true,
             });
-            expect(code).toContain('if (!ctrl.userData.name)');
+            // Пустое — только отсутствующее значение или '': число 0 не считается пустым
+            expect(code).toContain("if (String(ctrl.userData.name ?? '') === '')");
             expect(code).toContain("setText(ctrl, 'Пусто!')");
             expect(code).toContain("setText(ctrl, 'Есть значение!')");
         });
@@ -855,10 +1364,10 @@ describe('flowGenerator', () => {
             code = writeJsonAndGenerate('op_contains', makeDoc('contains'));
             // includes() принимает только строки: числовой литерал обязан быть
             // обёрнут в String(), иначе сгенерированный проект не компилируется.
-            expect(code).toContain('String(ctrl.userData.score).includes(String(100))');
+            expect(code).toContain("String(ctrl.userData.score ?? '').includes(String(100))");
 
             code = writeJsonAndGenerate('op_neq', makeDoc('neq'));
-            expect(code).toContain('ctrl.userData.score !== 100');
+            expect(code).toContain('!isEqual(ctrl.userData.score, 100)');
         });
     });
 
@@ -923,8 +1432,8 @@ describe('flowGenerator', () => {
                 database: { type: 'file', config: {} },
                 isLocalStorage: true,
             });
-            expect(code).toContain("ctrl.buttons.addBtn('Один')");
-            expect(code).toContain("ctrl.buttons.addBtn('Два')");
+            expect(code).toContain("ctrl.buttons.addBtn('Один', '', '', { inline: true })");
+            expect(code).toContain("ctrl.buttons.addBtn('Два', '', '', { inline: true })");
         });
     });
 
@@ -1037,7 +1546,14 @@ describe('flowGenerator', () => {
                 'utf8',
             );
 
-            expect(packageTemplate.dependencies.umbot).toBe('3.1.0');
+            expect(packageTemplate.dependencies.umbot).toBe(
+                '^' +
+                    (
+                        JSON.parse(
+                            fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'),
+                        ) as { version: string }
+                    ).version,
+            );
             expect(packageTemplate.devDependencies.typescript).toBe('6.0.3');
             expect(packageTemplate.devDependencies['@types/node']).toBe('24.13.4');
             expect(workflow).not.toContain("cache: 'npm'");
@@ -1261,7 +1777,7 @@ describe('flowGenerator', () => {
                 database: { type: 'file', config: {} },
                 isLocalStorage: true,
             });
-            expect(code).toContain("!!ctrl.userData.items && ctrl.userData.items !== ''");
+            expect(code).toContain("String(ctrl.userData.items ?? '') !== ''");
         });
     });
 
@@ -1983,7 +2499,7 @@ describe('flowGenerator', () => {
             });
 
             expect(code).toContain("ctrl.userData.value = 'Math.random(); run()';");
-            expect(code).toContain('ctrl.userData.sum = Number(ctrl.userData.value) + 3;');
+            expect(code).toContain('ctrl.userData.sum = Number(ctrl.userData.value ?? 0) + 3;');
             expect(code).toContain('ctrl.userData.random = rand(1, 20);');
             expectProjectToTypeCheck(path.join(TEST_DIR, 'safe_action_values'));
         });
@@ -2029,7 +2545,15 @@ describe('flowGenerator', () => {
                 devDependencies: Record<string, string>;
             };
 
-            expect(packageJson.dependencies.umbot).toBe('3.1.0');
+            // Проект зависит от той версии umbot, чей CLI его сгенерировал
+            expect(packageJson.dependencies.umbot).toBe(
+                '^' +
+                    (
+                        JSON.parse(
+                            fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'),
+                        ) as { version: string }
+                    ).version,
+            );
             expect(packageJson.devDependencies.typescript).toBe('6.0.3');
             expect(packageJson.devDependencies['@types/node']).toBe('24.13.4');
         });

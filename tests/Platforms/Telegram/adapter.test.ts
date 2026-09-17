@@ -375,6 +375,36 @@ describe('TelegramAdapter', () => {
             expect(controller.payload).toEqual({ action: 'buy', id: 42 });
         });
 
+        it('текстовая inline-кнопка с токеном: ввод = текст кнопки из клавиатуры сообщения', async () => {
+            const long = 'Очень длинная надпись на кнопке больше лимита';
+            const query = makeCallbackQuery({
+                data: '#t1',
+                message: {
+                    message_id: 10,
+                    chat: { id: 12345, type: 'private' },
+                    text: 'Выберите',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: 'Коротко', callback_data: 'Коротко' }],
+                            [{ text: long, callback_data: '#t1' }],
+                        ],
+                    },
+                },
+            });
+            await adapter.setQueryData(query as never, controller);
+
+            expect(controller.userCommand).toBe(long.toLowerCase());
+            expect(controller.originalUserCommand).toBe(long);
+        });
+
+        it('текстовая inline-кнопка с текстом в callback_data: ввод = текст кнопки', async () => {
+            const query = makeCallbackQuery({ data: 'Квотный лом' });
+            await adapter.setQueryData(query as never, controller);
+
+            expect(controller.userCommand).toBe('квотный лом');
+            expect(controller.originalUserCommand).toBe('Квотный лом');
+        });
+
         it('нормализует команду в нижний регистр', async () => {
             const query = makeCallbackQuery({ data: 'Buy_Now' });
             await adapter.setQueryData(query as never, controller);

@@ -102,6 +102,24 @@ export function clearVkUserCache(): void {
 }
 
 /**
+ * Имя действия «именной» кнопки клавиатуры VK из payload сообщения.
+ * @param payload Разобранный payload сообщения
+ * @returns Имя действия (как у addAction) либо пустая строка
+ */
+function getKeyboardActionName(payload: unknown): string {
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+        return '';
+    }
+    const source = payload as Record<string, unknown>;
+    const name = source.command ?? source.action;
+    if (typeof name !== 'string') {
+        return '';
+    }
+    const actionName = normalizeActionPayload(name);
+    return actionName === 'start' && source.command === 'start' ? '' : actionName;
+}
+
+/**
  * Адаптер, обеспечивающий поддержку платформы VK. Позволяет разрабатывать чат-ботов для мессенджера ВК на TypeScript с использованием кросс-платформенного функционала: обработка текстовых запросов, работа с карточками и кнопками.
  *
  * Подключение адаптера не требует изменения существующей бизнес-логики: после интеграции
@@ -295,6 +313,14 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
         controller.originalUserCommand = rawText.trim();
         controller.messageId = message.id;
         controller.payload = tryParse(message.payload || null);
+        // Кнопка клавиатуры VK приходит обычным сообщением с payload. «Именная» кнопка
+        // ({"command":"buy"}) должна срабатывать через addAction — как callback-кнопки
+        // Telegram/VK/MAX. Системная кнопка «Начать» ({"command":"start"}) остаётся
+        // текстом: боты матчат её по надписи.
+        const actionName = getKeyboardActionName(controller.payload);
+        if (actionName) {
+            controller.userCommand = actionName;
+        }
         // Загрузку имени можно отключить: `new VkAdapter(token, { vk_load_user_info: false })`.
         // Тогда nlu.getUserName() вернёт null, зато на ответ уходит один запрос к VK вместо двух.
         if (this._platformOptions?.vk_load_user_info === false) {

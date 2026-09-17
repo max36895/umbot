@@ -229,9 +229,9 @@ export class EchoController extends BotController {
 
 - [CLI](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.cli_README.html) команды
 
-### Визуальный редактор (Umbot Flow Editor)
+### Визуальный редактор (Umbot Flow)
 
-[Umbot Flow Editor](https://flow.maxim-m.ru) — визуальный редактор для создания ботов на фреймворке umbot. Собирайте логику на холсте, экспортируйте JSON-конфигурацию и генерируйте TypeScript-проект через CLI.
+[Umbot Flow](https://flow.maxim-m.ru) — визуальный редактор для создания ботов на фреймворке umbot. Собирайте логику на холсте, экспортируйте JSON-конфигурацию и генерируйте TypeScript-проект через CLI.
 
 **Цепочка:**
 

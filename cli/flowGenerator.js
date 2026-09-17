@@ -7,6 +7,9 @@
 
 const fs = require('fs');
 const path = require('path');
+
+/** Версия umbot, частью которого является этот CLI. */
+const UMBOT_VERSION = `^${require(path.join(__dirname, '..', 'package.json')).version}`;
 const utils = require(__dirname + '/utils.js').utils;
 
 /**
@@ -97,6 +100,187 @@ function assignBlockFunctionNames(blocks) {
         usedNames.set(baseName, occurrence);
         block.generatedFunctionName = occurrence === 1 ? baseName : `${baseName}_${occurrence}`;
     }
+}
+
+/** Типы нод, на которые может вести кнопка. */
+const BUTTON_TARGET_TYPES = new Set(['command', 'step', 'action', 'condition', 'response']);
+
+/** Префикс имени действия кнопки: `[go:N]` — скобки исключают совпадение `[go:1]` внутри `[go:12]`. */
+const BUTTON_ACTION_PREFIX = '[go:';
+
+/**
+ * Команда старта Telegram: клиент отправляет её при нажатии «Начать» (и с deep-link параметром).
+ * Слот сравнивается вхождением, поэтому `/start payload` тоже запускает приветствие.
+ */
+const START_SLOT = '/start';
+
+/** Режимы приложения, которые принимает Bot.setAppMode. */
+const APP_MODES = new Set(['dev', 'prod', 'strict_prod']);
+
+/**
+ * Первая команда с ролью (welcome/help/fallback). Роль задаётся полем role или именем команды.
+ * @param {Object} doc — FlowDocument
+ * @param {string} role — роль команды
+ * @returns {Object|undefined} нода команды
+ */
+function findRoleCommand(doc, role) {
+    return (doc.nodes || []).find(
+        (n) => n && n.type === 'command' && (n.name === role || n.role === role),
+    );
+}
+
+/**
+ * Приветствие из настроек бота (welcome.text/buttons) нужно только без ноды welcome:
+ * иначе ответ задаёт сама нода.
+ * @param {Object} doc — FlowDocument
+ * @returns {{text: string, buttons: Array}|null} приветствие или null
+ */
+function getSettingsWelcome(doc) {
+    if (findRoleCommand(doc, 'welcome')) return null;
+    const text = String((doc.welcome && doc.welcome.text) || '');
+    const buttons = ((doc.welcome && doc.welcome.buttons) || []).filter(
+        (b) => b && String(b.title || '').trim(),
+    );
+    return text.trim() || buttons.length ? { text, buttons } : null;
+}
+
+/**
+ * Текст справки из настроек нужен только без ноды help.
+ * @param {Object} doc — FlowDocument
+ * @returns {string} текст справки или пустая строка
+ */
+function getSettingsHelpText(doc) {
+    if (findRoleCommand(doc, 'help')) return '';
+    return String((doc.helpText && doc.helpText.text) || '').trim();
+}
+
+/**
+ * Слоты приветствия: собственные слоты ноды (или стандартные WELCOME_INTENT_SLOTS) и `/start`.
+ * @param {string[]} slots — слоты ноды welcome
+ * @returns {string} выражение массива слотов
+ */
+function welcomeSlotsExpr(slots) {
+    const own = (slots || []).filter((s) => s && s !== START_SLOT);
+    return own.length
+        ? `['${START_SLOT}', ${own.map((s) => `'${escapeStr(s)}'`).join(', ')}]`
+        : `['${START_SLOT}', ...WELCOME_INTENT_SLOTS]`;
+}
+
+/**
+ * Действия кнопок с блоком-целью для документа (doc → Map ключ → действие).
+ * Заполняется в collectButtonActions перед генерацией.
+ */
+const buttonActionsByDoc = new WeakMap();
+
+/**
+ * Все кнопки ноды: ответ команды/блока, вопрос шага, кнопки действия, ветки инлайн-условий.
+ * @param {Object} node — нода сценария
+ * @returns {Array} кнопки FlowButton
+ */
+function getNodeButtons(node) {
+    const buttons = [];
+    const push = (list) => Array.isArray(list) && buttons.push(...list);
+    push(node.response && node.response.buttons);
+    push(node.prompt && node.prompt.buttons);
+    if (node.type === 'action') push(node.buttons);
+    // Кнопки картинок карточки
+    for (const card of [
+        node.response && node.response.card,
+        node.prompt && node.prompt.card,
+        node.card,
+    ]) {
+        for (const img of (card && card.images) || []) {
+            if (img && img.button) buttons.push(img.button);
+        }
+    }
+    for (const cond of node.conditions || []) {
+        push(cond.responseTrue && cond.responseTrue.buttons);
+        push(cond.responseFalse && cond.responseFalse.buttons);
+    }
+    return buttons;
+}
+
+/**
+ * Собирает кнопки, ведущие на блок-цель, и назначает каждой цели действие `[go:N]`.
+ * Для команды и шага ключ включает текст кнопки: нажатие передаётся цели как ввод
+ * с этим текстом. Для блоков ответ/действие/условие текст не важен — одно действие на блок.
+ * @param {Object} doc — FlowDocument
+ * @returns {Map<string, {name: string, target: Object, title: string}>} действия по ключу
+ */
+function collectButtonActions(doc) {
+    const actions = new Map();
+    const settingsWelcome = getSettingsWelcome(doc);
+    const buttonLists = (doc.nodes || []).filter(Boolean).map(getNodeButtons);
+    // Кнопки приветствия из настроек показываются, когда в сценарии нет ноды welcome
+    if (settingsWelcome) buttonLists.push(settingsWelcome.buttons);
+    for (const buttons of buttonLists) {
+        for (const btn of buttons) {
+            const target = getButtonTarget(doc, btn);
+            if (!target) continue;
+            const key = getButtonActionKey(target, btn.title);
+            if (!actions.has(key)) {
+                actions.set(key, {
+                    name: `${BUTTON_ACTION_PREFIX}${actions.size + 1}]`,
+                    target,
+                    title: String(btn.title),
+                });
+            }
+        }
+    }
+    buttonActionsByDoc.set(doc, actions);
+    return actions;
+}
+
+/**
+ * Нода, на которую ведёт кнопка-действие, либо null (ссылка, нет цели, цель — завершение).
+ * @param {Object} doc — FlowDocument
+ * @param {Object} btn — кнопка FlowButton
+ * @returns {Object|null} нода-цель
+ */
+function getButtonTarget(doc, btn) {
+    if (!btn || btn.type === 'link' || !btn.targetNodeId || !String(btn.title || '').trim()) {
+        return null;
+    }
+    const target = (doc.nodes || []).find((n) => n && n.id === btn.targetNodeId);
+    return target && BUTTON_TARGET_TYPES.has(target.type) ? target : null;
+}
+
+/**
+ * Ключ действия кнопки: для команды/шага важен и текст кнопки (он станет вводом).
+ * @param {Object} target — нода-цель
+ * @param {string} title — текст кнопки
+ * @returns {string} ключ
+ */
+function getButtonActionKey(target, title) {
+    return target.type === 'command' || target.type === 'step'
+        ? `${target.id}\u0000${title}`
+        : target.id;
+}
+
+/**
+ * Имя действия для кнопки с блоком-целью либо null.
+ * @param {Object} doc — FlowDocument
+ * @param {Object} btn — кнопка FlowButton
+ * @returns {string|null} имя действия `[go:N]`
+ */
+function getButtonActionName(doc, btn) {
+    const actions = doc && buttonActionsByDoc.get(doc);
+    const target = actions && getButtonTarget(doc, btn);
+    if (!target) return null;
+    const action = actions.get(getButtonActionKey(target, btn.title));
+    return action ? action.name : null;
+}
+
+/**
+ * Код добавления кнопки-действия. В Telegram все кнопки показываются inline
+ * (`options.inline`): нажатие без цели приходит как текст кнопки, с целью — как действие.
+ * @param {string} title — текст кнопки
+ * @param {string|null} actionName — имя действия `[go:N]` или null
+ * @returns {string} выражение ctrl.buttons.addBtn(...)
+ */
+function addBtnExpr(title, actionName) {
+    const payload = actionName ? `{ command: '${escapeStr(actionName)}' }` : `''`;
+    return `ctrl.buttons.addBtn(${textExpr(title)}, '', ${payload}, { inline: true })`;
 }
 
 /**
@@ -202,6 +386,61 @@ function appendMongoCredentialsToEnv(outputPath, dbConfig) {
 }
 
 /**
+ * Записывает переменные в .env проекта, не затирая пользовательские значения.
+ *
+ * - файла нет — создаётся с комментарием-подсказкой;
+ * - переменной нет — дописывается (в том числе с пустым значением: место для токена);
+ * - переменная есть, но пустая — заполняется значением из flow.json;
+ * - переменная есть и заполнена — остаётся как есть.
+ *
+ * @param {string} envPath — путь к .env
+ * @param {{envName: string, value: string}[]} entries — переменные (значения уже санитизированы)
+ * @returns {{created: boolean, added: string[], filled: string[]}} что изменено
+ */
+function mergeEnvFile(envPath, entries) {
+    const created = !fs.existsSync(envPath);
+    const lines = created
+        ? [
+              '# Токены платформ и другие секреты бота. Файл не коммитится (.gitignore).',
+              '# Впишите значение после «=» без пробелов и кавычек: ИМЯ=значение',
+          ]
+        : fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+    const indexByName = new Map();
+    lines.forEach((line, index) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return;
+        const eq = trimmed.indexOf('=');
+        const name = (eq === -1 ? trimmed : trimmed.slice(0, eq)).trim();
+        if (!indexByName.has(name)) indexByName.set(name, index);
+    });
+
+    const added = [];
+    const filled = [];
+    for (const { envName, value } of entries) {
+        if (indexByName.has(envName)) {
+            const index = indexByName.get(envName);
+            const line = lines[index].trim();
+            const eq = line.indexOf('=');
+            const current = eq === -1 ? line : line.slice(eq + 1).trim();
+            if (eq !== -1 && current === '' && value !== '') {
+                lines[index] = `${envName}=${value}`;
+                filled.push(envName);
+            }
+            continue;
+        }
+        lines.push(`${envName}=${value}`);
+        indexByName.set(envName, lines.length - 1);
+        added.push(envName);
+    }
+    if (created || added.length > 0 || filled.length > 0) {
+        fs.writeFileSync(envPath, lines.join('\n') + '\n', 'utf8');
+    }
+    return { created, added, filled };
+}
+
+/**
  * Маппинг системных переменных на JavaScript выражения.
  * Системные переменные начинаются с __ и заменяются на нативный JS-код.
  */
@@ -253,7 +492,8 @@ function textExpr(text) {
             if (isSystemVar(name)) {
                 return `\${${getSystemVarExpr(name)}}`;
             }
-            return `\${${userDataAccess(name)}}`;
+            // Переменная ещё не задана — пустая строка, а не «undefined» в тексте
+            return `\${${userDataAccess(name)} ?? ''}`;
         });
         return '`' + converted + '`';
     }
@@ -350,7 +590,10 @@ function parseArithmeticExpression(source, varNames) {
         if (token.type === 'name') {
             position += 1;
             if (isSystemVar(token.value)) return `(${getSystemVarExpr(token.value)})`;
-            if (allowedVariables.has(token.value)) return `Number(${userDataAccess(token.value)})`;
+            if (allowedVariables.has(token.value)) {
+                // Незаданная переменная считается нулём: `cnt + 1` без инициализации даёт 1, а не NaN
+                return `Number(${userDataAccess(token.value)} ?? 0)`;
+            }
             return null;
         }
         if (token.value === '(') {
@@ -566,6 +809,9 @@ function generateConditionFunc(
         return [];
     }
     const condVar = varName ? userDataAccess(varName) : "ctrl.userCommand ?? ''";
+    // Значение как строка: незаданная переменная — '', число 0 — '0' (не «пусто»)
+    const asString = (expr) =>
+        String(expr).startsWith('ctrl.userData') ? `String(${expr} ?? '')` : `String(${expr})`;
     let condVal;
 
     // Очищаем значение от {{ }} если они есть (VariablePicker вставляет {{var}})
@@ -597,11 +843,13 @@ function generateConditionFunc(
     // Генерируем выражение if
     let ifExpr;
     switch (cond.operator) {
+        // Строгое === ломало сравнение ввода с числом: шаг сохраняет строку '42',
+        // rand/числовой литерал — число 42. isEqual сравнивает значения как строки.
         case 'eq':
-            ifExpr = `${condVar} === ${condVal}`;
+            ifExpr = `isEqual(${condVar}, ${condVal})`;
             break;
         case 'neq':
-            ifExpr = `${condVar} !== ${condVal}`;
+            ifExpr = `!isEqual(${condVar}, ${condVal})`;
             break;
         case 'gt':
             ifExpr = `Number(${condVar}) > Number(${condVal})`;
@@ -618,33 +866,33 @@ function generateConditionFunc(
         case 'contains': {
             // String() обязателен для любого значения: includes() принимает только
             // строки, и числовой литерал без обёртки не компилируется TypeScript.
-            ifExpr = `String(${condVar}).includes(String(${condVal}))`;
+            ifExpr = `${asString(condVar)}.includes(${asString(condVal)})`;
             break;
         }
         case 'isEmpty':
-            ifExpr = `!${condVar}`;
+            ifExpr = `${asString(condVar)} === ''`;
             break;
         case 'isNotEmpty':
-            ifExpr = `!!${condVar} && ${condVar} !== ''`;
+            ifExpr = `${asString(condVar)} !== ''`;
             break;
         case 'isSayTrue':
             // Если указана переменная — используем её, иначе userCommand
             ifExpr = varName
-                ? `Text.isSayTrue(String(${condVar}))`
+                ? `Text.isSayTrue(${asString(condVar)})`
                 : `Text.isSayTrue(ctrl.userCommand || '')`;
             break;
         case 'isSayFalse':
             ifExpr = varName
-                ? `Text.isSayFalse(String(${condVar}))`
+                ? `Text.isSayFalse(${asString(condVar)})`
                 : `Text.isSayFalse(ctrl.userCommand || '')`;
             break;
         case 'isUrl':
             ifExpr = varName
-                ? `Text.isUrl(String(${condVar}))`
+                ? `Text.isUrl(${asString(condVar)})`
                 : `Text.isUrl(ctrl.userCommand || '')`;
             break;
         default:
-            ifExpr = `${condVar} === ${condVal}`;
+            ifExpr = `isEqual(${condVar}, ${condVal})`;
     }
     lines.push(`${indent}if (${ifExpr}) {`);
     // Вставляем вызов true функции, навигацию или responseTrue
@@ -665,7 +913,7 @@ function generateConditionFunc(
             lines.push(`${indent}    setText(ctrl, ${textExpr(cond.responseTrue.text)});`);
         if (cond.responseTrue.buttons) {
             for (const btn of cond.responseTrue.buttons) {
-                lines.push(`${indent}    ctrl.buttons.addBtn('${escapeStr(btn.title)}');`);
+                lines.push(`${indent}    ${addBtnExpr(btn.title, getButtonActionName(doc, btn))};`);
             }
         }
     }
@@ -688,7 +936,7 @@ function generateConditionFunc(
             lines.push(`${indent}    setText(ctrl, ${textExpr(cond.responseFalse.text)});`);
         if (cond.responseFalse.buttons) {
             for (const btn of cond.responseFalse.buttons) {
-                lines.push(`${indent}    ctrl.buttons.addBtn('${escapeStr(btn.title)}');`);
+                lines.push(`${indent}    ${addBtnExpr(btn.title, getButtonActionName(doc, btn))};`);
             }
         }
     }
@@ -701,9 +949,10 @@ function generateConditionFunc(
  * @param {Array} buttons — массив кнопок FlowButton
  * @param {string} indent — отступ
  * @param {boolean} shuffle — включить случайный порядок кнопок
+ * @param {Object} [doc] — FlowDocument (для кнопок с блоком-целью)
  * @returns {string[]} массив строк кода
  */
-function generateButtonCode(buttons, indent, shuffle = false) {
+function generateButtonCode(buttons, indent, shuffle = false, doc = null) {
     const lines = [];
     const validButtons = (buttons || []).filter((btn) => btn.title && btn.title.trim());
 
@@ -717,11 +966,12 @@ function generateButtonCode(buttons, indent, shuffle = false) {
         for (const btn of validButtons) {
             if (btn.type === 'link') {
                 lines.push(
-                    `${indent}    { type: 'link', title: '${escapeStr(btn.title)}', url: '${escapeStr(btn.url || '')}' },`,
+                    `${indent}    { type: 'link', title: ${textExpr(btn.title)}, url: ${textExpr(btn.url || '')}, action: '' },`,
                 );
             } else {
+                const actionName = getButtonActionName(doc, btn);
                 lines.push(
-                    `${indent}    { type: 'action', title: '${escapeStr(btn.title)}', target: '${escapeStr(btn.targetNodeId || '')}' },`,
+                    `${indent}    { type: 'action', title: ${textExpr(btn.title)}, url: '', action: '${escapeStr(actionName || '')}' },`,
                 );
             }
         }
@@ -733,7 +983,9 @@ function generateButtonCode(buttons, indent, shuffle = false) {
         lines.push(
             `${indent}    if (__btn.type === 'link') ctrl.buttons.addLink(__btn.title, __btn.url ?? '');`,
         );
-        lines.push(`${indent}    else ctrl.buttons.addBtn(__btn.title);`);
+        lines.push(
+            `${indent}    else ctrl.buttons.addBtn(__btn.title, '', __btn.action ? { command: __btn.action } : '', { inline: true });`,
+        );
         lines.push(`${indent}}`);
         lines.push(`${indent}}`);
     } else {
@@ -741,10 +993,10 @@ function generateButtonCode(buttons, indent, shuffle = false) {
         for (const btn of validButtons) {
             if (btn.type === 'link') {
                 lines.push(
-                    `${indent}ctrl.buttons.addLink('${escapeStr(btn.title)}', '${escapeStr(btn.url || '')}');`,
+                    `${indent}ctrl.buttons.addLink(${textExpr(btn.title)}, ${textExpr(btn.url || '')});`,
                 );
             } else {
-                lines.push(`${indent}ctrl.buttons.addBtn('${escapeStr(btn.title)}');`);
+                lines.push(`${indent}${addBtnExpr(btn.title, getButtonActionName(doc, btn))};`);
             }
         }
     }
@@ -817,16 +1069,25 @@ function hasTextFromBlocks(blocks) {
  * @param {string} indent — отступ
  * @returns {string[]} массив строк кода
  */
-function generateCardCode(card, indent) {
+function generateCardCode(card, indent, doc = null) {
     const lines = [];
-    if (!card || !card.images) return lines;
+    if (!card || !Array.isArray(card.images) || card.images.length === 0) return lines;
+    if (card.title) lines.push(`${indent}ctrl.card.title = ${textExpr(card.title)};`);
+    // single — одна карточка, gallery — галерея, list — список (по умолчанию)
+    if (card.type === 'single') lines.push(`${indent}ctrl.card.isOne = true;`);
+    if (card.type === 'gallery') lines.push(`${indent}ctrl.card.isUsedGallery = true;`);
     for (const img of card.images) {
         const args = [
-            `'${escapeStr(img.src || '')}'`,
-            `'${escapeStr(img.title || '')}'`,
-            `'${escapeStr(img.description || '')}'`,
+            textExpr(img.src || ''),
+            textExpr(img.title || ''),
+            textExpr(img.description || ''),
         ];
-        if (img.button) args.push(`'${escapeStr(img.button.title || '')}'`);
+        if (img.button && String(img.button.title || '').trim()) {
+            const actionName = getButtonActionName(doc, img.button);
+            args.push(
+                `{ title: ${textExpr(img.button.title)}${actionName ? `, payload: { command: '${escapeStr(actionName)}' }` : ''}, options: { inline: true } }`,
+            );
+        }
         lines.push(`${indent}ctrl.card.addImage(${args.join(', ')});`);
     }
     return lines;
@@ -876,8 +1137,9 @@ function generateBlockFunc(block, varNames, indent, doc, connectedBlocks) {
             lines.push(`${indent}setText(ctrl, ${textExpr(block.text)});`);
         }
         if (block.buttons && block.buttons.length > 0) {
-            lines.push(...generateButtonCode(block.buttons, indent));
+            lines.push(...generateButtonCode(block.buttons, indent, false, doc));
         }
+        lines.push(...generateCardCode(block.card, indent, doc));
 
         // Вызов связанных блоков (response/action) и навигация
         const actionOutgoingBlocks = findOutgoingBlocks(doc, block.id, connectedBlocks);
@@ -986,9 +1248,21 @@ function generateBlockFunc(block, varNames, indent, doc, connectedBlocks) {
             if (block.response.text)
                 lines.push(`${indent}setText(ctrl, ${textExpr(block.response.text)});`);
             if (block.response.tts)
-                lines.push(`${indent}setTTS(ctrl, '${escapeStr(block.response.tts)}');`);
-            lines.push(...generateButtonCode(block.response.buttons, indent));
-            lines.push(...generateCardCode(block.response.card, indent));
+                lines.push(`${indent}setTTS(ctrl, ${textExpr(block.response.tts)});`);
+            lines.push(
+                ...generateButtonCode(
+                    block.response.buttons,
+                    indent,
+                    block.response.shuffleButtons,
+                    doc,
+                ),
+            );
+            lines.push(...generateCardCode(block.response.card, indent, doc));
+            if (block.response.emotion) {
+                lines.push(`${indent}ctrl.emotion = '${escapeStr(block.response.emotion)}';`);
+            }
+            // Завершение диалога задано на самом блоке — как у команды
+            if (block.response.isEnd) lines.push(`${indent}ctrl.isEnd = true;`);
         }
 
         // Вызов связанных блоков (response/action) и навигация
@@ -1043,22 +1317,111 @@ function findNextNonBlockNode(doc, fromId) {
  * @param {string} [outputPath='.'] — корень генерируемого проекта (для переноса Mongo-кредов в .env)
  * @returns {string} содержимое src/index.ts
  */
+/** Операторы условий, для которых генерируется не isEqual, а собственное выражение. */
+const NON_EQUALITY_OPERATORS = new Set([
+    'gt',
+    'gte',
+    'lt',
+    'lte',
+    'contains',
+    'isEmpty',
+    'isNotEmpty',
+    'isSayTrue',
+    'isSayFalse',
+    'isUrl',
+]);
+
+/**
+ * Есть ли в документе условие, которое генерируется через isEqual
+ * (eq, neq и неизвестный оператор; условие без переменной не генерируется).
+ * @param {Object} doc — FlowDocument
+ * @returns {boolean} true, если нужен импорт isEqual
+ */
+function usesEqualityCondition(doc) {
+    const isEquality = (cond) =>
+        !!cond && String(cond.variable ?? '') !== '' && !NON_EQUALITY_OPERATORS.has(cond.operator);
+    return (doc.nodes || []).some(
+        (n) =>
+            n &&
+            ((n.type === 'condition' && isEquality(n)) ||
+                (Array.isArray(n.conditions) && n.conditions.some(isEquality))),
+    );
+}
+
 function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     const lines = [];
     const varNames = collectVarNames(doc);
+
+    // Кнопки с блоком-целью: действие [go:N] на каждую цель
+    const buttonActions = collectButtonActions(doc);
+    const buttonTargetIds = new Set([...buttonActions.values()].map((a) => a.target.id));
 
     // Собираем все связанные блоки (action/condition/response)
     const connectedBlocks = [];
     for (const node of doc.nodes) {
         if (node.type === 'action' || node.type === 'condition' || node.type === 'response') {
-            // Проверяем, есть ли входящая связь от command/step
-            const hasIncoming = doc.edges.some((e) => e.to === node.id);
+            // Входящая связь или кнопка, ведущая на блок
+            const hasIncoming =
+                doc.edges.some((e) => e.to === node.id) || buttonTargetIds.has(node.id);
             if (hasIncoming) {
                 connectedBlocks.push(node);
             }
         }
     }
     assignBlockFunctionNames(connectedBlocks);
+
+    // Команды и шаги, на которые ведут кнопки, генерируются именованными функциями —
+    // их вызывает и регистрация (addCommand/addStep), и действие кнопки
+    const handlerNames = new Map();
+    const usedHandlerNames = new Set(connectedBlocks.map((b) => getBlockFunctionName(b)));
+    const reserveHandlerName = (base) => {
+        let name = base;
+        for (let i = 2; usedHandlerNames.has(name); i++) name = `${base}_${i}`;
+        usedHandlerNames.add(name);
+        return name;
+    };
+    const handlerBaseName = (node) => {
+        let safeName = String(node.name || node.id).replace(/[^a-zA-Z0-9_$]/g, '_');
+        if (!/^[a-zA-Z_$]/.test(safeName)) safeName = `_${safeName}`;
+        return `__${node.type === 'command' ? 'cmd' : 'step'}_${safeName}`;
+    };
+    const welcomeNode = findRoleCommand(doc, 'welcome');
+    for (const node of doc.nodes) {
+        // Приветствие тоже именованная функция: его вызывает fallback в начале диалога
+        const isNamed = buttonTargetIds.has(node.id) || node === welcomeNode;
+        if (!isNamed || (node.type !== 'command' && node.type !== 'step')) {
+            continue;
+        }
+        handlerNames.set(node.id, reserveHandlerName(handlerBaseName(node)));
+    }
+
+    // Без ноды welcome/help приветствие и справка берутся из настроек бота.
+    // Стандартные интенты не используются (intents: [] ниже), поэтому тексты
+    // регистрируются обычными командами — как их показывает превью редактора.
+    const settingsWelcome = getSettingsWelcome(doc);
+    const settingsHelpText = getSettingsHelpText(doc);
+    const commandNeedsAsync = (cmd) =>
+        (cmd.actions || []).some((a) => a.type === 'http_request') ||
+        blockNeedsAsync(cmd, doc, connectedBlocks);
+    let welcomeHandlerName = null;
+    let welcomeIsAsync = false;
+    if (welcomeNode) {
+        welcomeHandlerName = handlerNames.get(welcomeNode.id);
+        welcomeIsAsync = commandNeedsAsync(welcomeNode);
+    } else if (settingsWelcome) {
+        welcomeHandlerName = reserveHandlerName('__cmd_welcome');
+    }
+    // Начало диалога: новая сессия Алисы/Маруси, «Начать» в MAX/Viber. Рантайм отдаёт
+    // такой запрос fallback-команде (она важнее welcome), поэтому fallback вызывает приветствие.
+    const startWelcomeLines = (indent) =>
+        welcomeHandlerName
+            ? [
+                  `${indent}// Начало диалога (новая сессия голосового ассистента, «Начать»): приветствие, а не «не понял»`,
+                  `${indent}if (ctrl.messageId === 0) {`,
+                  `${indent}    return ${welcomeHandlerName}(cmd, ctrl);`,
+                  `${indent}}`,
+              ]
+            : [];
 
     const needsRand =
         doc.nodes.some((n) => n.actions && n.actions.some((a) => a.type === 'random_number')) ||
@@ -1084,14 +1447,18 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     // Импорты
     const umbotImports = ['Bot', 'BotController', 'FALLBACK_COMMAND'];
     // Проверяем есть ли welcome/help команды — импортируем константы
-    const hasWelcome = doc.nodes.some(
+    const welcomeCommands = doc.nodes.filter(
         (n) => n.type === 'command' && (n.name === 'welcome' || n.role === 'welcome'),
     );
-    const hasHelp = doc.nodes.some(
-        (n) => n.type === 'command' && (n.name === 'help' || n.role === 'help'),
-    );
+    const hasWelcome = welcomeCommands.length > 0 || !!settingsWelcome;
+    const hasHelp = !!findRoleCommand(doc, 'help') || !!settingsHelpText;
+    const needsWelcomeSlots =
+        !!settingsWelcome ||
+        welcomeCommands.some((n) => !(n.slots || []).some((s) => s && s !== START_SLOT));
     if (hasWelcome) umbotImports.push('WELCOME_INTENT_NAME');
+    if (needsWelcomeSlots) umbotImports.push('WELCOME_INTENT_SLOTS');
     if (hasHelp) umbotImports.push('HELP_INTENT_NAME');
+    if (settingsHelpText) umbotImports.push('HELP_INTENT_SLOTS');
     if (needsText) umbotImports.push('Text');
     lines.push(`import { ${umbotImports.join(', ')} } from 'umbot';`);
 
@@ -1110,6 +1477,7 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
         });
     const utilsImports = ['setText'];
     if (needsTTS) utilsImports.push('setTTS');
+    if (usesEqualityCondition(doc)) utilsImports.push('isEqual');
     if (needsHttp) utilsImports.push('fetchWithTimeout');
     lines.push(`import { ${utilsImports.join(', ')} } from './utils';`);
 
@@ -1159,6 +1527,11 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
 
     lines.push(``);
     lines.push(`const bot = new Bot();`);
+    // Режим из настроек бота: без вызова приложение работает в dev
+    // (подробные логи и отладочная информация доступны по URL вебхука)
+    if (APP_MODES.has(doc.mode)) {
+        lines.push(`bot.setAppMode('${doc.mode}');`);
+    }
     lines.push(``);
 
     // Регистрация платформ
@@ -1191,31 +1564,13 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     }
     lines.push(``);
 
-    // .env пишется ниже (токены и/или Mongo-креды) — рантайм обязан его читать:
-    // без env в setAppConfig ядро в тихом режиме берёт только process.env,
-    // файл .env игнорирует, и записанные генератором токены/креды не действовали
-    // при обычном `npm start` (несимметрично с create-веткой, которая пишет
-    // config.env = './.env'). serverless-деплой не задет: loadEnvFile при
-    // отсутствии файла ругается в лог, но не ломает запуск, а переменные
-    // облака приходят через process.env тем же конвейером.
-    const tokensForEnv = Object.entries(doc.tokens || {}).some(
-        ([, tokenRaw]) =>
-            (typeof tokenRaw === 'string' && tokenRaw.trim() !== '') ||
-            (typeof tokenRaw === 'object' &&
-                tokenRaw !== null &&
-                typeof tokenRaw.token === 'string' &&
-                tokenRaw.token.trim() !== ''),
-    );
-    const mongoCredsForEnv =
-        doc.database &&
-        doc.database.type === 'mongo' &&
-        (doc.database.config || {}).user !== undefined;
-    const usesEnvFile = tokensForEnv || mongoCredsForEnv;
-
+    // .env генерируется всегда (с пустыми переменными токенов, если в flow.json их нет) —
+    // рантайм обязан его читать: без env в setAppConfig ядро в тихом режиме берёт только
+    // process.env, и токен, вписанный пользователем в .env вручную, не действовал.
+    // serverless-деплой не задет: .env в архив не попадает, при отсутствии файла
+    // переменные облака приходят через process.env тем же конвейером.
     lines.push(`bot.setAppConfig({`);
-    if (usesEnvFile) {
-        lines.push(`    env: './.env',`);
-    }
+    lines.push(`    env: './.env',`);
     if (doc.isLocalStorage === true) {
         lines.push(`    isLocalStorage: true,`);
     }
@@ -1241,17 +1596,52 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
         }
     }
 
+    // Действия кнопок регистрируются ДО команд: слоты сравниваются вхождением,
+    // и слот команды вроде «go» иначе перехватил бы нажатие [go:N].
+    if (buttonActions.size > 0) {
+        lines.push(`// --- Кнопки с переходом на блок ---`);
+        for (const action of buttonActions.values()) {
+            const target = action.target;
+            const handlerName = handlerNames.get(target.id);
+            const isFallbackTarget =
+                target.type === 'command' &&
+                (target.name === 'fallback' || target.role === 'fallback');
+            const isAsync =
+                target.type === 'command' || target.type === 'step'
+                    ? commandNeedsAsync(target) || (isFallbackTarget && welcomeIsAsync)
+                    : blockNeedsAsync(target, doc, connectedBlocks);
+            const call = isAsync ? 'await ' : '';
+            lines.push(
+                `/** Кнопка «${escapeComment(action.title)}» → ${escapeComment(target.type)} «${escapeComment(target.name || target.id)}» */`,
+            );
+            lines.push(
+                `bot.addAction('${escapeStr(action.name)}', ${isAsync ? 'async ' : ''}(cmd: string, ctrl: BotController): ${isAsync ? 'Promise<void>' : 'void'} => {`,
+            );
+            if (target.type === 'command' || target.type === 'step') {
+                // Нажатие — это ввод текста кнопки, но обрабатывает его блок-цель
+                lines.push(`    ctrl.originalUserCommand = ${textExpr(action.title)};`);
+                lines.push(`    ctrl.userCommand = ctrl.originalUserCommand.toLowerCase().trim();`);
+                lines.push(
+                    target.type === 'command'
+                        ? `    ${call}${handlerName}(ctrl.userCommand, ctrl);`
+                        : `    ${call}${handlerName}(ctrl);`,
+                );
+            } else {
+                lines.push(`    ${call}${getBlockFunctionName(target)}(ctrl);`);
+            }
+            lines.push(`});`);
+            lines.push(``);
+        }
+    }
+
     let usedFallback = false;
     // Регистрация команд
     for (const node of doc.nodes) {
         if (node.type !== 'command') continue;
         const cmd = node;
+        const cmdHandlerName = handlerNames.get(cmd.id);
 
-        const slotsStr = (cmd.slots || []).map((s) => `'${escapeStr(s)}'`).join(', ');
         const isPattern = cmd.isPattern ? ', true' : '';
-        const isAsync =
-            (cmd.actions || []).some((a) => a.type === 'http_request') ||
-            blockNeedsAsync(cmd, doc, connectedBlocks);
 
         // Определяем имя команды: welcome/help используют константы
         const isWelcome = cmd.name === 'welcome' || cmd.role === 'welcome';
@@ -1260,6 +1650,12 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
         if (isFallback) {
             usedFallback = true;
         }
+        // Приветствие срабатывает и на /start (Telegram), а не только на «привет»/«здравст»
+        const slotsExpr = isWelcome
+            ? welcomeSlotsExpr(cmd.slots)
+            : `[${(cmd.slots || []).map((s) => `'${escapeStr(s)}'`).join(', ')}]`;
+        // Fallback вызывает приветствие в начале диалога — и становится async вместе с ним
+        const isAsync = commandNeedsAsync(cmd) || (isFallback && welcomeIsAsync);
         const cmdName = isWelcome
             ? 'WELCOME_INTENT_NAME'
             : isHelp
@@ -1280,9 +1676,24 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
         lines.push(
             `/** Команда "${escapeComment(commentName)}": активируется на [${escapeComment(slotsPreview)}${(cmd.slots || []).length > 3 ? '...' : ''}] */`,
         );
-        lines.push(
-            `bot.addCommand(${cmdName}, [${slotsStr}], ${isAsync ? 'async ' : ''}(cmd: string, ctrl: BotController): ${isAsync ? 'Promise<void>' : 'void'} => {`,
-        );
+        if (cmdHandlerName) {
+            lines.push(
+                `${isAsync ? 'async ' : ''}function ${cmdHandlerName}(cmd: string, ctrl: BotController): ${isAsync ? 'Promise<void>' : 'void'} {`,
+            );
+        } else {
+            lines.push(
+                `bot.addCommand(${cmdName}, ${slotsExpr}, ${isAsync ? 'async ' : ''}(cmd: string, ctrl: BotController): ${isAsync ? 'Promise<void>' : 'void'} => {`,
+            );
+        }
+        if (isFallback) {
+            lines.push(...startWelcomeLines('    '));
+        }
+
+        // Ввод сохраняется до действий и текста — как у шага: {{переменная}} в ответе
+        // команды видит текущий ввод. Исходный регистр — originalUserCommand.
+        if (cmd.saveTo && cmd.saveTo.trim()) {
+            lines.push(`    ${userDataAccess(cmd.saveTo)} = ctrl.originalUserCommand ?? cmd;`);
+        }
 
         // Инлайн действия
         if (cmd.actions) {
@@ -1330,21 +1741,26 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
             lines.push(`    setText(ctrl, ${textExpr(cmd.response.text)});`);
         }
         if (cmd.response && cmd.response.tts) {
-            lines.push(`    setTTS(ctrl, '${escapeStr(cmd.response.tts)}');`);
+            lines.push(`    setTTS(ctrl, ${textExpr(cmd.response.tts)});`);
         }
         if (cmd.response && cmd.response.isEnd) {
             lines.push(`    ctrl.isEnd = true;`);
         }
         if (cmd.response && cmd.response.buttons) {
             lines.push(
-                ...generateButtonCode(cmd.response.buttons, '    ', cmd.response.shuffleButtons),
+                ...generateButtonCode(
+                    cmd.response.buttons,
+                    '    ',
+                    cmd.response.shuffleButtons,
+                    doc,
+                ),
             );
         }
         if (cmd.response && cmd.response.card) {
-            lines.push(...generateCardCode(cmd.response.card, '    '));
+            lines.push(...generateCardCode(cmd.response.card, '    ', doc));
         }
-        if (cmd.saveTo && cmd.saveTo.trim()) {
-            lines.push(`    ${userDataAccess(cmd.saveTo)} = cmd;`);
+        if (cmd.response && cmd.response.emotion) {
+            lines.push(`    ctrl.emotion = '${escapeStr(cmd.response.emotion)}';`);
         }
 
         // Навигация: найти следующий command/step в цепочке
@@ -1357,7 +1773,38 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
             }
         }
 
-        lines.push(`}${isPattern});`);
+        if (cmdHandlerName) {
+            lines.push(`}`);
+            lines.push(`bot.addCommand(${cmdName}, ${slotsExpr}, ${cmdHandlerName}${isPattern});`);
+        } else {
+            lines.push(`}${isPattern});`);
+        }
+        lines.push(``);
+    }
+
+    // Приветствие и справка из настроек бота (в сценарии нет ноды welcome/help)
+    if (settingsWelcome) {
+        lines.push(
+            `/** Приветствие из настроек бота: активируется на /start, «привет», «здравст» */`,
+        );
+        lines.push(`function ${welcomeHandlerName}(cmd: string, ctrl: BotController): void {`);
+        if (settingsWelcome.text.trim()) {
+            lines.push(`    setText(ctrl, ${textExpr(settingsWelcome.text)});`);
+        }
+        lines.push(...generateButtonCode(settingsWelcome.buttons, '    ', false, doc));
+        lines.push(`}`);
+        lines.push(
+            `bot.addCommand(WELCOME_INTENT_NAME, ${welcomeSlotsExpr([])}, ${welcomeHandlerName});`,
+        );
+        lines.push(``);
+    }
+    if (settingsHelpText) {
+        lines.push(`/** Справка из настроек бота: активируется на «помощь», «что ты умеешь» */`);
+        lines.push(
+            `bot.addCommand(HELP_INTENT_NAME, [...HELP_INTENT_SLOTS], (cmd: string, ctrl: BotController): void => {`,
+        );
+        lines.push(`    setText(ctrl, ${textExpr(settingsHelpText)});`);
+        lines.push(`});`);
         lines.push(``);
     }
 
@@ -1376,23 +1823,34 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
         lines.push(
             `/** Шаг "${escapeComment(step.name)}": ${promptPreview ? `"${escapeComment(promptPreview)}..."` : 'ожидание ввода'}${escapeComment(saveInfo)} */`,
         );
-        lines.push(
-            `bot.addStep('${escapeStr(step.name)}', ${isAsync ? 'async ' : ''}(ctrl: BotController): ${isAsync ? 'Promise<void>' : 'void'} => {`,
-        );
-
-        // Текст
-        if (step.prompt && step.prompt.text) {
-            lines.push(`    setText(ctrl, ${textExpr(step.prompt.text)});`);
+        const stepHandlerName = handlerNames.get(step.id);
+        // Шаг возвращает false и пропускает запрос дальше (к командам), если это:
+        // - начало диалога: новая сессия голосового ассистента (messageId 0) или /start —
+        //   шаг, ожидавший ответ в прошлой сессии, не должен съедать запуск;
+        // - нажатие кнопки с переходом: оно должно дойти до действия [go:N].
+        const skipConditions = [
+            'ctrl.messageId === 0',
+            `(ctrl.userCommand ?? '').startsWith('${START_SLOT}')`,
+        ];
+        if (buttonActions.size > 0) {
+            skipConditions.push(`(ctrl.userCommand ?? '').startsWith('${BUTTON_ACTION_PREFIX}')`);
         }
-        if (step.prompt && step.prompt.tts) {
-            lines.push(`    setTTS(ctrl, '${escapeStr(step.prompt.tts)}');`);
-        }
-        if (step.prompt && step.prompt.buttons) {
+        const skipStepLine = `    if (${skipConditions.join(' || ')}) return false;`;
+        const stepReturnType = 'void | false';
+        if (stepHandlerName) {
             lines.push(
-                ...generateButtonCode(step.prompt.buttons, '    ', step.prompt.shuffleButtons),
+                `${isAsync ? 'async ' : ''}function ${stepHandlerName}(ctrl: BotController): ${isAsync ? 'Promise<void>' : 'void'} {`,
             );
+        } else {
+            lines.push(
+                `bot.addStep('${escapeStr(step.name)}', ${isAsync ? 'async ' : ''}(ctrl: BotController): ${isAsync ? `Promise<${stepReturnType}>` : stepReturnType} => {`,
+            );
+            lines.push(skipStepLine);
         }
 
+        // Шаг срабатывает на ответ пользователя: сначала сохраняем ответ и выполняем
+        // действия, и только потом выводим текст шага — иначе {{переменная}} в тексте
+        // подставлялась до записи и показывала прошлое значение (или undefined).
         // saveTo
         if (step.saveTo && step.saveTo.trim()) {
             // Fix: адаптеры приводят ctrl.userCommand к нижнему регистру для матчинга слотов,
@@ -1410,6 +1868,23 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
             for (const action of step.actions) {
                 lines.push(...generateActionFunc(action, varNames, '    '));
             }
+        }
+
+        // Текст — реакция на ответ
+        if (step.prompt && step.prompt.text) {
+            lines.push(`    setText(ctrl, ${textExpr(step.prompt.text)});`);
+        }
+        if (step.prompt && step.prompt.tts) {
+            lines.push(`    setTTS(ctrl, ${textExpr(step.prompt.tts)});`);
+        }
+        if (step.prompt && step.prompt.buttons) {
+            lines.push(
+                ...generateButtonCode(step.prompt.buttons, '    ', step.prompt.shuffleButtons, doc),
+            );
+        }
+        if (step.prompt) lines.push(...generateCardCode(step.prompt.card, '    ', doc));
+        if (step.prompt && step.prompt.emotion) {
+            lines.push(`    ctrl.emotion = '${escapeStr(step.prompt.emotion)}';`);
         }
 
         // Инлайн условия — обрабатываем targetNodeId для навигации
@@ -1456,15 +1931,26 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
             }
         }
 
-        lines.push(`});`);
+        if (stepHandlerName) {
+            lines.push(`}`);
+            lines.push(
+                `bot.addStep('${escapeStr(step.name)}', ${isAsync ? 'async ' : ''}(ctrl: BotController): ${isAsync ? `Promise<${stepReturnType}>` : stepReturnType} => {`,
+            );
+            lines.push(skipStepLine);
+            lines.push(`    ${isAsync ? 'await ' : ''}${stepHandlerName}(ctrl);`);
+            lines.push(`});`);
+        } else {
+            lines.push(`});`);
+        }
         lines.push(``);
     }
 
     if (!usedFallback) {
         // Fallback
         lines.push(
-            `bot.addCommand(FALLBACK_COMMAND, [], (cmd: string, ctrl: BotController): void => {`,
+            `bot.addCommand(FALLBACK_COMMAND, [], ${welcomeIsAsync ? 'async ' : ''}(cmd: string, ctrl: BotController): ${welcomeIsAsync ? 'Promise<void>' : 'void'} => {`,
         );
+        lines.push(...startWelcomeLines('    '));
         lines.push(
             `    setText(ctrl, '${escapeStr((doc.fallback && doc.fallback.text) || 'Извините, я вас не понял.')}');`,
         );
@@ -1513,7 +1999,9 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
  * @returns {string} JSON-строка package.json
  */
 function generatePackageJson(doc) {
-    const dependencies = { umbot: '3.1.0' };
+    // Версия фреймворка, которым сгенерирован проект: сгенерированный код опирается
+    // на его возможности (кнопки с переходом, inline-кнопки Telegram и т.д.)
+    const dependencies = { umbot: UMBOT_VERSION };
     if (doc.database?.type === 'mongo') {
         dependencies.mongodb = '7.1.1';
     }
@@ -1564,6 +2052,173 @@ function generateGitIgnore() {
     return '';
 }
 
+/** Документация по подключению платформ (webhook, токены, проверка подписи). */
+const PLATFORM_DOCS_URL =
+    'https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html';
+
+/** Как подключить платформу: где взять токен и куда указать адрес вебхука. */
+const PLATFORM_README = {
+    alisa: {
+        title: 'Алиса',
+        env: 'ALISA_TOKEN',
+        steps: [
+            'Создайте навык в [консоли Яндекс Диалогов](https://dialogs.yandex.ru/developer).',
+            'В настройках навыка («Backend» → «Webhook URL») укажите публичный адрес бота, например `https://ваш-домен/`.',
+            'Токен `ALISA_TOKEN` не обязателен: он нужен только для загрузки картинок и звуков.',
+        ],
+    },
+    marusia: {
+        title: 'Маруся',
+        env: 'MARUSIA_TOKEN',
+        steps: [
+            'Создайте скилл Маруси в кабинете разработчика VK.',
+            'Укажите публичный адрес бота как Webhook URL скилла.',
+            'Токен `MARUSIA_TOKEN` нужен только для загрузки картинок и звуков.',
+        ],
+    },
+    smart_app: {
+        title: 'Сбер SmartApp',
+        env: 'SMARTAPP_TOKEN',
+        steps: [
+            'Создайте смартап в SmartMarket Studio.',
+            'Укажите публичный адрес бота как Webhook смартапа.',
+        ],
+    },
+    telegram: {
+        title: 'Telegram',
+        env: 'TELEGRAM_TOKEN',
+        steps: [
+            'Создайте бота у [@BotFather](https://t.me/botfather) и впишите токен в `TELEGRAM_TOKEN` в `.env`.',
+            'Зарегистрируйте вебхук (подставьте токен и адрес): `curl "https://api.telegram.org/bot<ТОКЕН>/setWebhook" -d "url=https://ваш-домен/"`.',
+        ],
+    },
+    vk: {
+        title: 'ВКонтакте',
+        env: 'VK_TOKEN',
+        steps: [
+            'В настройках сообщества включите сообщения и создайте ключ доступа — впишите его в `VK_TOKEN`.',
+            'В разделе «Callback API» укажите публичный адрес бота и подтвердите сервер.',
+        ],
+    },
+    max_app: {
+        title: 'MAX',
+        env: 'MAX_TOKEN',
+        steps: [
+            'Создайте бота на платформе MAX для партнёров и впишите токен в `MAX_TOKEN`.',
+            'Подпишите бота на вебхук с публичным адресом бота.',
+        ],
+    },
+    viber: {
+        title: 'Viber',
+        env: 'VIBER_TOKEN',
+        steps: [
+            'Создайте бота в [Viber Admin Panel](https://partners.viber.com) и впишите токен в `VIBER_TOKEN`.',
+            'Установите вебхук с публичным адресом бота (метод `set_webhook` Viber API).',
+        ],
+    },
+};
+
+/**
+ * Генерирует README.md проекта: как установить, настроить токены, запустить и подключить платформы.
+ * @param {Object} doc — FlowDocument
+ * @param {boolean} useCloud — проект для Yandex Cloud Functions
+ * @returns {string} содержимое README.md
+ */
+function generateReadme(doc, useCloud) {
+    const platforms = (Array.isArray(doc.platforms) ? doc.platforms : []).filter(
+        (p) => PLATFORM_README[p],
+    );
+    const hostname = String(doc.hostname || 'localhost');
+    const requestedPort = Number(doc.port);
+    const port =
+        Number.isInteger(requestedPort) && requestedPort >= 0 && requestedPort <= 65535
+            ? requestedPort
+            : 3000;
+    const out = [];
+    out.push(`# ${doc.name}`);
+    out.push('');
+    out.push(
+        'Бот сгенерирован из flow.json командой `umbot create from-flow` ([umbot](https://github.com/max36895/umbot)). ' +
+            'Логика бота — в `src/index.ts`.',
+    );
+    out.push('');
+    out.push('## 1. Установка');
+    out.push('');
+    out.push('Нужен [Node.js](https://nodejs.org) версии 22 или новее.');
+    out.push('');
+    out.push('```bash');
+    out.push('npm install');
+    out.push('```');
+    out.push('');
+    out.push('## 2. Токены');
+    out.push('');
+    out.push(
+        'Токены платформ хранятся в файле `.env` (он не попадает в git). Впишите значения после «=»:',
+    );
+    out.push('');
+    for (const p of platforms) {
+        out.push(`- \`${PLATFORM_README[p].env}\` — ${PLATFORM_README[p].title}`);
+    }
+    if (platforms.length === 0) {
+        out.push('- платформы в flow.json не выбраны — добавьте нужные токены вручную');
+    }
+    out.push('');
+    if (useCloud) {
+        out.push('## 3. Деплой в Yandex Cloud Functions');
+        out.push('');
+        out.push(
+            'Установите и авторизуйте [yc CLI](https://yandex.cloud/ru/docs/cli/quickstart), создайте функцию с именем из `serverless.yml`, затем:',
+        );
+        out.push('');
+        out.push('```bash');
+        out.push('npm run deploy');
+        out.push('```');
+        out.push('');
+        out.push(
+            'Сделайте функцию публичной (или подключите API Gateway) — её HTTPS-адрес и есть адрес бота для платформ.',
+        );
+    } else {
+        out.push('## 3. Сборка и запуск');
+        out.push('');
+        out.push('```bash');
+        out.push('npm run build');
+        out.push('npm start');
+        out.push('```');
+        out.push('');
+        out.push(
+            `Бот слушает \`http://${hostname}:${port}/\` (адрес и порт задаются полями \`hostname\`/\`port\` во flow.json). ` +
+                `Проверка работы: \`http://${hostname}:${port}/health\`.`,
+        );
+        out.push('');
+        out.push(
+            'Платформы обращаются к боту только по публичному HTTPS-адресу. На сервере поставьте перед ботом ' +
+                'reverse proxy с SSL (например, nginx), для проверки на своём компьютере подойдёт туннель: ' +
+                `\`ngrok http ${port}\` — он выдаст адрес вида \`https://xxxx.ngrok-free.app\`.`,
+        );
+    }
+    out.push('');
+    out.push('## 4. Подключение платформ');
+    out.push('');
+    for (const p of platforms) {
+        out.push(`### ${PLATFORM_README[p].title}`);
+        out.push('');
+        PLATFORM_README[p].steps.forEach((step, i) => out.push(`${i + 1}. ${step}`));
+        out.push('');
+    }
+    out.push(
+        `Подробно о каждой платформе и о проверке подписи вебхука (обязательно для продакшена) — в [документации umbot](${PLATFORM_DOCS_URL}).`,
+    );
+    out.push('');
+    out.push('## Повторная генерация');
+    out.push('');
+    out.push(
+        'После изменения сценария в редакторе выполните `umbot create from-flow <flow.json> --output <эта папка> --force`: ' +
+            'файлы проекта перезапишутся, а заполненные значения в `.env` сохранятся.',
+    );
+    out.push('');
+    return out.join('\n');
+}
+
 /** Генерирует src/utils.ts с setText, setTTS и fetchWithTimeout (для http_request-блоков). @returns {string} содержимое файла */
 function generateUtils() {
     return `import { BotController } from 'umbot';
@@ -1577,6 +2232,14 @@ export function setText(ctrl: BotController, text: string): void {
     } else {
         ctrl.text = text;
     }
+}
+
+/**
+ * Сравнить значения условия как строки: шаг сохраняет ввод строкой ('42'),
+ * а rand и числа из flow.json — числом (42); строгое === считало бы их разными.
+ */
+export function isEqual(a: unknown, b: unknown): boolean {
+    return String(a ?? '') === String(b ?? '');
 }
 
 /**
@@ -1648,7 +2311,9 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
     }
 
     if (!doc.edges || !Array.isArray(doc.edges)) doc.edges = [];
-    if (!doc.welcome) doc.welcome = { text: 'Привет!', buttons: [] };
+    // Без приветствия в flow.json бот не придумывает своё: старт диалога уходит в fallback,
+    // как показывает превью редактора
+    if (!doc.welcome) doc.welcome = { text: '', buttons: [] };
     if (!doc.fallback) doc.fallback = { text: 'Извините, я вас не понял.' };
     if (!doc.platforms || !Array.isArray(doc.platforms)) doc.platforms = ['telegram'];
     if (!doc.database) doc.database = { type: 'file', config: {} };
@@ -1709,6 +2374,11 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
     fs.writeFileSync(path.join(outputPath, 'package.json'), generatePackageJson(doc), 'utf8');
     fs.writeFileSync(path.join(outputPath, 'tsconfig.json'), generateTsConfig(), 'utf8');
     fs.writeFileSync(path.join(outputPath, '.gitignore'), generateGitIgnore(), 'utf8');
+    fs.writeFileSync(
+        path.join(outputPath, 'README.md'),
+        generateReadme(doc, !!options.useCloud),
+        'utf8',
+    );
 
     // Генерация .env файла если есть токены
     // ALISA_TOKEN — каноническое имя для Алисы (ранее был YANDEX_TOKEN,
@@ -1751,49 +2421,26 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
             value: getTokenValue(tokenRaw),
         }))
         .filter((entry) => entry.envName !== '' && entry.value !== '');
-    if (tokenEntries.length > 0) {
-        const envPath = path.join(outputPath, '.env');
-        if (fs.existsSync(envPath)) {
-            // Существующий .env НЕ перезаписываем: в нём пользователь уже мог
-            // вписать реальные токены, а повторная генерация с --force затирала
-            // бы их значениями из flow.json. Вместо этого дописываем только те
-            // переменные, которых в файле ещё нет.
-            const existing = fs.readFileSync(envPath, 'utf8');
-            const existingNames = new Set(
-                existing
-                    .split(/\r?\n/)
-                    .map((l) => l.trim())
-                    .filter(Boolean)
-                    .map((l) => l.split('=')[0]),
-            );
-            const missing = tokenEntries.filter((e) => !existingNames.has(e.envName));
-            if (missing.length > 0) {
-                const addition =
-                    (existing.endsWith('\n') ? '' : '\n') +
-                    missing.map((entry) => `${entry.envName}=${entry.value}`).join('\n') +
-                    '\n';
-                fs.appendFileSync(envPath, addition, 'utf8');
-                console.warn(
-                    `  .env: дописаны переменные (${missing.map((e) => e.envName).join(', ')}), ` +
-                        'существующие значения не изменены.',
-                );
-            } else {
-                console.log('  .env уже существует — токены из flow.json не перезаписаны.');
-            }
-        } else {
-            // Файл мог быть только что создан appendMongoCredentialsToEnv()
-            // (креды MongoDB пишутся раньше, при генерации src/index.ts).
-            // writeFileSync затёр бы их — поэтому дописываем токены к файлу,
-            // а не создаём его заново.
-            const envLines = tokenEntries.map((entry) => `${entry.envName}=${entry.value}`);
-            const existingEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
-            const addition =
-                (existingEnv === '' ? '' : existingEnv.endsWith('\n') ? '' : '\n') +
-                envLines.join('\n') +
-                '\n';
-            fs.appendFileSync(envPath, addition, 'utf8');
-            console.log('  .env');
-        }
+    // .env создаётся всегда: переменные токенов выбранных платформ (пустые, если токена
+    // нет во flow.json) — пользователь вписывает токен в готовый файл, а не создаёт его сам.
+    // Существующий .env не перезаписывается: пользовательские значения сохраняются,
+    // недостающие переменные дописываются, пустые — заполняются токеном из flow.json.
+    const platformEntries = (Array.isArray(doc.platforms) ? doc.platforms : [])
+        .filter((platform) => TOKEN_ENV_NAMES[platform])
+        .map((platform) => ({ envName: TOKEN_ENV_NAMES[platform], value: '' }));
+    const envResult = mergeEnvFile(path.join(outputPath, '.env'), [
+        ...tokenEntries,
+        ...platformEntries,
+    ]);
+    if (envResult.created) {
+        console.log('  .env');
+    } else if (envResult.added.length > 0 || envResult.filled.length > 0) {
+        console.warn(
+            `  .env: дописаны переменные (${[...envResult.added, ...envResult.filled].join(', ')}), ` +
+                'существующие значения не изменены.',
+        );
+    } else if (tokenEntries.length > 0) {
+        console.log('  .env уже существует — токены из flow.json не перезаписаны.');
     }
 
     // Генерация для Yandex Cloud Functions
@@ -1922,6 +2569,14 @@ process.exitCode = result.status ?? 1;
     console.log(`  src/utils.ts`);
     console.log(`  package.json`);
     console.log(`  tsconfig.json`);
+    console.log(`  README.md`);
+    console.log('');
+    console.log('Дальше:');
+    console.log(`  cd ${outputPath}`);
+    console.log('  npm install');
+    console.log('  впишите токены платформ в .env');
+    console.log(options.useCloud ? '  npm run deploy' : '  npm run build && npm start');
+    console.log('Подробности (публичный адрес, подключение платформ) — в README.md');
 }
 
 /**

@@ -314,6 +314,58 @@ describe('VkAdapter', () => {
             expect(thisUser?.last_name).toBe('Петров');
         });
 
+        it('кнопка клавиатуры с payload {command} срабатывает как действие (addAction)', async () => {
+            jest.spyOn(VkRequest.prototype, 'usersGet').mockResolvedValue([]);
+            const adapter = new VkAdapter();
+            adapter.init(appContext);
+
+            await adapter.setQueryData(
+                {
+                    type: 'message_new',
+                    group_id: '1',
+                    object: {
+                        message: {
+                            from_id: 12345,
+                            peer_id: 12345,
+                            id: 1,
+                            text: 'Купить',
+                            payload: '{"command":"Buy"}',
+                        },
+                    },
+                },
+                controller,
+            );
+
+            expect(controller.userCommand).toBe('buy');
+            expect(controller.originalUserCommand).toBe('Купить');
+            expect(controller.payload).toEqual({ command: 'Buy' });
+        });
+
+        it('системная кнопка «Начать» ({"command":"start"}) остаётся текстом', async () => {
+            jest.spyOn(VkRequest.prototype, 'usersGet').mockResolvedValue([]);
+            const adapter = new VkAdapter();
+            adapter.init(appContext);
+
+            await adapter.setQueryData(
+                {
+                    type: 'message_new',
+                    group_id: '1',
+                    object: {
+                        message: {
+                            from_id: 12345,
+                            peer_id: 12345,
+                            id: 1,
+                            text: 'Начать',
+                            payload: '{"command":"start"}',
+                        },
+                    },
+                },
+                controller,
+            );
+
+            expect(controller.userCommand).toBe('начать');
+        });
+
         it('не падает при пустом ответе users.get', async () => {
             jest.spyOn(VkRequest.prototype, 'usersGet').mockResolvedValue([]);
 

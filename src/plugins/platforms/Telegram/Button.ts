@@ -114,6 +114,75 @@ function pushCallbackButton(
 }
 
 /**
+ * Шаблон служебного callback_data текстовой inline-кнопки, чей текст не помещается
+ * в callback_data: `#t<номер кнопки в сообщении>`. Текст восстанавливается адаптером
+ * из клавиатуры исходного сообщения (см. {@link getTextButtonTitle}).
+ */
+const TEXT_BUTTON_TOKEN = /^#t\d+$/;
+
+/**
+ * Добавляет текстовую inline-кнопку: нажатие приходит боту как текст кнопки —
+ * так же, как если бы пользователь напечатал его сам.
+ *
+ * В callback_data кладётся сам текст, если он помещается в лимит 64 байта и не похож
+ * на JSON (иначе адаптер разобрал бы его как payload). Иначе — короткий токен `#t<n>`,
+ * по которому адаптер найдёт текст в клавиатуре сообщения.
+ *
+ * @param button Универсальная кнопка umbot (нужна только для options)
+ * @param title Проверенный (непустой) текст кнопки
+ * @param inlines Накопитель inline-кнопок
+ * @param appContext Контекст приложения для логирования ошибок валидации
+ */
+function pushTextInlineButton(
+    button: IButtonType,
+    title: string,
+    inlines: ITelegramInlineKeyboard[],
+    appContext?: AppContext,
+): void {
+    const trimmed = title.trim();
+    const fitsAsText =
+        Buffer.byteLength(title, 'utf8') <= TG_CALLBACK_DATA_MAX_LENGTH &&
+        !(trimmed.startsWith('{') && trimmed.endsWith('}')) &&
+        !TEXT_BUTTON_TOKEN.test(trimmed);
+    const inline: ITelegramInlineKeyboard = {
+        text: title,
+        callback_data: fitsAsText ? title : `#t${inlines.length}`,
+    };
+    const style = getButtonStyle(button, appContext);
+    if (style) {
+        inline.style = style;
+    }
+    inlines.push(inline);
+}
+
+/**
+ * Текст, который пользователь «сказал» нажатием текстовой inline-кнопки.
+ *
+ * Для токена `#t<n>` ищет кнопку с таким callback_data в клавиатуре исходного сообщения
+ * и возвращает её текст. Для прочих данных (обычный payload или текст кнопки) — `null`.
+ *
+ * @param data callback_data нажатой кнопки
+ * @param replyMarkup Клавиатура сообщения, к которому привязана кнопка
+ * @returns Текст кнопки либо `null`, если это не токен или кнопка не найдена
+ */
+export function getTextButtonTitle(
+    data: string | undefined,
+    replyMarkup: { inline_keyboard?: ITelegramInlineKeyboard[][] } | undefined,
+): string | null {
+    if (!data || !TEXT_BUTTON_TOKEN.test(data)) {
+        return null;
+    }
+    for (const row of replyMarkup?.inline_keyboard ?? []) {
+        for (const btn of row) {
+            if (btn.callback_data === data && btn.text) {
+                return btn.text;
+            }
+        }
+    }
+    return null;
+}
+
+/**
  * Добавляет обычную reply-кнопку (текст, запрос контакта/локации, стиль).
  *
  * @param button Универсальная кнопка umbot (нужна только для options)
@@ -142,18 +211,41 @@ function pushReplyButton(
 }
 
 /**
- * Классифицирует одну кнопку по типу (url → inline с callback_data → reply)
- * и добавляет её в соответствующий набор; невалидные кнопки пропускает с warn.
+ * Может ли кнопка быть текстовой inline-кнопкой: запрос контакта и локации
+ * Telegram поддерживает только в обычной клавиатуре.
+ *
+ * @param button Универсальная кнопка umbot
+ * @returns `true`, если кнопку можно показать inline
+ */
+function canBeInline(button: IButtonType): boolean {
+    return !button.options?.request_contact && !button.options?.request_location;
+}
+
+/**
+ * Будет ли кнопка inline-кнопкой сама по себе: url, payload или опция `inline`.
+ *
+ * @param button Универсальная кнопка umbot
+ * @returns `true` для inline-кнопки
+ */
+function isInlineButton(button: IButtonType): boolean {
+    return !!button.url || !!button.payload || (!!button.options?.inline && canBeInline(button));
+}
+
+/**
+ * Классифицирует одну кнопку по типу (url → inline с callback_data → текстовая inline →
+ * reply) и добавляет её в соответствующий набор; невалидные кнопки пропускает с warn.
  *
  * @param button Универсальная кнопка umbot
  * @param inlines Накопитель inline-кнопок
  * @param reply Накопитель reply-кнопок
+ * @param preferInline В сообщении уже есть inline-кнопки — текстовые кнопки тоже делаем inline
  * @param appContext Контекст приложения для логирования ошибок валидации
  */
 function pushButton(
     button: IButtonType,
     inlines: ITelegramInlineKeyboard[],
     reply: ITelegramReplyButton[],
+    preferInline: boolean,
     appContext?: AppContext,
 ): void {
     // Guard один раз сужает title/url/payload до непустых значений; хелперы
@@ -167,6 +259,8 @@ function pushButton(
         pushUrlButton(button, button.title, button.url, inlines, appContext);
     } else if (button.payload) {
         pushCallbackButton(button, button.title, button.payload, inlines, appContext);
+    } else if ((button.options?.inline || preferInline) && canBeInline(button)) {
+        pushTextInlineButton(button, button.title, inlines, appContext);
     } else {
         pushReplyButton(button, button.title, reply, appContext);
     }
@@ -186,8 +280,12 @@ export function buttonProcessing(
     const inlines: ITelegramInlineKeyboard[] = [];
     const reply: ITelegramReplyButton[] = [];
 
-    getCorrectButtons(buttons, 40, appContext).forEach((button) => {
-        pushButton(button, inlines, reply, appContext);
+    const correctButtons = getCorrectButtons(buttons, 40, appContext);
+    // Telegram не совмещает inline- и обычную клавиатуру в одном сообщении. Если есть хоть
+    // одна inline-кнопка, текстовые кнопки тоже показываем inline — иначе они бы пропали.
+    const preferInline = correctButtons.some(isInlineButton);
+    correctButtons.forEach((button) => {
+        pushButton(button, inlines, reply, preferInline, appContext);
     });
     const rCount = reply.length;
     const rInline = inlines.length;
@@ -196,10 +294,11 @@ export function buttonProcessing(
             if (rCount) {
                 // Telegram не умеет совмещать inline_keyboard и обычную keyboard в одном
                 // сообщении: приходится выбирать одну, и разработчик должен об этом узнать.
+                // Остались только кнопки запроса контакта/локации — inline они невозможны.
                 appContext?.logWarn(
-                    `[Telegram] В ответе одновременно заданы inline-кнопки (${rInline}) и обычные (${rCount}). ` +
+                    `[Telegram] В ответе одновременно заданы inline-кнопки (${rInline}) и кнопки запроса контакта/локации (${rCount}). ` +
                         'Telegram принимает только один тип клавиатуры в сообщении — отправлены будут inline-кнопки, ' +
-                        'обычные будут пропущены. Задайте payload/url всем кнопкам либо ни одной.',
+                        'кнопки запроса будут пропущены. Отправьте их отдельным сообщением.',
                 );
             }
             object.inline_keyboard = inlines.map((btn) => [btn]);

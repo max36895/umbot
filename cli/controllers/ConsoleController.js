@@ -5,7 +5,7 @@ const utils = require(path.join(__dirname, '..', 'utils.js')).utils;
 const flowGenerator = require(path.join(__dirname, '..', 'flowGenerator.js'));
 const fs = require('node:fs');
 
-const VERSION = '3.1.0';
+const VERSION = require(path.join(__dirname, '..', '..', 'package.json')).version;
 
 /**
  * Плоские поля токенов в `params` JSON-конфига (наследие 2.x). Фреймворк 3.x их
