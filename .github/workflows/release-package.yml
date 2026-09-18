@@ -17,7 +17,6 @@ jobs:
             - uses: actions/setup-node@v4
               with:
                   node-version: 24
-                  cache: 'npm'
             - run: npm install
             - run: npm run build
             - run: npm test
@@ -31,7 +30,6 @@ jobs:
               with:
                   node-version: 24
                   registry-url: 'https://registry.npmjs.org'
-                  cache: 'npm'
             - run: npm install
             - run: npm run build
             - run: npm publish --provenance --access public
