@@ -72,7 +72,7 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/max36895/umbot.git"
+        "url": "git+https://github.com/max36895/umbot.git"
     },
     "exports": {
         ".": {
