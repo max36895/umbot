@@ -20,3 +20,6 @@ export * from './YandexRequest';
 export * from './YandexSoundRequest';
 export * from './YandexSpeechKit';
 export * from './MaxRequest';
+// Хелперы сообщений об ошибках API — публичны, чтобы внешние адаптеры платформ
+// (umbot-<platform>-adapter) логировали ошибки в том же формате, что и встроенные.
+export { getErrorMsg, getErrorToken } from './constants';
