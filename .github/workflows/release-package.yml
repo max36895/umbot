@@ -1,8 +1,8 @@
-name: Node.js Package
+name: Publish to npm
 
 on:
     release:
-        types: [created]
+        types: [published]
 
 jobs:
     build:
@@ -11,30 +11,27 @@ jobs:
             contents: read
         steps:
             - uses: actions/checkout@v4
-            - uses: actions/setup-node@v6
+            - uses: actions/setup-node@v4
               with:
-                  node-version: 24
-                  package-manager-cache: false
-            - run: npm install
+                  node-version: 22
+            - run: npm instal
             - run: npm run build
             - run: npm test
 
-    publish-gpr:
+    publish-npm:
         needs: build
         runs-on: ubuntu-latest
         permissions:
-            packages: write
             contents: read
+            id-token: write  # КРИТИЧЕСКИ ВАЖНО для флага --provenance
         steps:
             - uses: actions/checkout@v4
-            - uses: actions/setup-node@v6
+            - uses: actions/setup-node@v4
               with:
-                  node-version: 24
-                  package-manager-cache: false
-                  registry-url: https://npm.pkg.github.com/
+                  node-version: 22
+                  registry-url: https://registry.npmjs.org/
             - run: npm install
-            - run: npm config set @max36895:registry https://npm.pkg.github.com/
             - run: npm run build
-            - run: npm publish
+            - run: npm publish --provenance --access public
               env:
-                  NODE_AUTH_TOKEN: ${{secrets.GITHUB_TOKEN}}
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
