@@ -534,6 +534,29 @@ getImage(
 ): IImageType | null
 ```
 
+### Утилиты адаптеров платформ (`umbot/plugins`)
+
+Хелперы для тех, кто пишет собственный адаптер платформы или свой API-клиент. Подробности
+применения — в документе `adapter/platformAdapter.md`.
+
+```ts
+// Единый формат сообщения об ошибке запроса к API платформы
+getErrorMsg(error: Error | string, path: string, url: string | null): string
+
+// Единый формат сообщения об отсутствующем токене платформы
+getErrorToken(platform: string, methodName: string): string
+
+// Сборка API-фасада встроенной платформы по controller.appType
+// (ядро вызывает createApi() адаптера; диспетчер оставлен для ручного использования)
+makePlatformApi(controller: BotController): TApiFacade | null
+```
+
+Остальные хелперы адаптеров собраны в пространстве имён `pUtils` (`import { pUtils } from 'umbot/plugins'`):
+работа с медиа-токенами (`getImageToken`, `getSoundToken`), разбор входящих запросов
+(`tryParse`, `normalizeActionPayload`, `getPlatformRequestData`, `setThisUserToNlu`,
+`telegramMessageEvent`, `viberMessageEvent`) и сборка ответа (`getChatText`, `getSpeechText`,
+`getCorrectButtons`, `serializePlatformPayload`).
+
 ### Результат выполнения
 
 ```ts

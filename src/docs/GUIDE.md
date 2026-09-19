@@ -1770,11 +1770,11 @@ SmartApp — 8; MAX — 30**. У MAX платформа допускает до 
 
 Платформо-специфичные опции (через `options`):
 
-| Платформа | Опции в `options`                                                                                                                                                                                                                                    |
-| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| VK        | `_group` (число) — группировка в строки; `color: 'primary' \| 'secondary' \| 'positive' \| 'negative'`                                                                                                                                               |
-| Telegram  | `request_contact` / `request_location` (bool) — запрос контакта/геолокации; `style` — стиль inline-кнопки (`TG_STYLE_PRIMARY`/`TG_STYLE_SUCCESS`/`TG_STYLE_DANGER`, Bot API 9.4+; другие значения Telegram отклоняет — адаптер их пропускает с warn) |
-| Viber     | `ActionType: 'reply' \| 'open-url' \| 'location-picker' \| 'share-phone'`                                                                                                                                                                            |
+| Платформа | Опции в `options`                                                                                                                                                                                                                                                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| VK        | `_group` (число) — группировка в строки; `color: 'primary' \| 'secondary' \| 'positive' \| 'negative'`                                                                                                                                                                                                                                  |
+| Telegram  | `request_contact` / `request_location` (bool) — запрос контакта/геолокации; `style` — стиль inline-кнопки (`TG_STYLE_PRIMARY`/`TG_STYLE_SUCCESS`/`TG_STYLE_DANGER`, Bot API 9.4+; другие значения Telegram отклоняет — адаптер их пропускает с warn); `inline` (bool) — показать кнопку без payload и url inline-кнопкой под сообщением |
+| Viber     | `ActionType: 'reply' \| 'open-url' \| 'location-picker' \| 'share-phone'`                                                                                                                                                                                                                                                               |
 
 Примеры:
 
@@ -1790,12 +1790,28 @@ this.buttons.addBtn('Отправить гео', '', '', { request_location: tru
 // Telegram: стиль inline-кнопки (Bot API 9.4+; константы — из 'umbot/plugins')
 this.buttons.addBtn('Купить', '', 'buy', { style: TG_STYLE_SUCCESS });
 
+// Telegram: обычная кнопка, показанная inline-кнопкой под сообщением
+this.buttons.addBtn('Каталог', '', '', { inline: true });
+
 // Viber: кастомный тип
 this.buttons.addBtn('Геолокация', '', '', {
     ActionType: 'location-picker',
     ActionBody: 'loc_payload',
 });
 ```
+
+Про опцию `inline` стоит знать три вещи:
+
+- она нужна только кнопке **без** `payload` и `url` — такие кнопки по умолчанию уходят обычной
+  reply-клавиатурой; кнопка с payload или ссылкой и так становится inline-кнопкой;
+- нажатие приходит боту как текст кнопки, то есть срабатывают обычные команды, а не `addAction`;
+- на кнопки `request_contact` / `request_location` опция не действует: Telegram принимает их
+  только в обычной клавиатуре.
+
+Telegram не совмещает два типа клавиатуры в одном сообщении, поэтому, если в ответе есть хоть одна
+inline-кнопка, адаптер показывает inline и остальные текстовые кнопки — иначе они бы просто
+пропали. Проекты, сгенерированные командой `npx umbot create from-flow`, выставляют `inline: true`
+всем кнопкам Telegram.
 
 #### Снятие клавиатуры — `buttons.remove()`
 

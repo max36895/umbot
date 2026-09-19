@@ -10,8 +10,13 @@
 
 1. Функциональные плагины (i18n, NLU, кастомные RegExp). Регистрируются в `appContext.plugins`.
 2. Кастомные плагины. Регистрируются в `appContext.plugins` под любым вашим ключом. Вы вызываете их вручную из своего кода.
-3. Адаптеры БД (Mongo, File). Регистрируются в `appContext.database.adapter`.
-4. Платформенные адаптеры (Telegram, Alisa, VK). Регистрируются в `appContext.platforms`.
+3. Адаптеры БД (Mongo, File). Регистрируются в `appContext.database.adapter`. Как написать свой — в `dbAdapter.md`.
+4. Платформенные адаптеры (Telegram, Alisa, VK). Регистрируются в `appContext.platforms`. Как написать свой — в `platformAdapter.md`.
+
+Платформенный адаптер — самый «богатый» вид расширения: кроме разбора запроса и сборки ответа он
+объявляет, какие универсальные события выставляет (`supportedEvents` → `bot.addEvent`), и может
+отдать бизнес-логике API-фасад своей платформы (`createApi` → `controller.api`). Обе точки
+расширения опциональны и описаны в `platformAdapter.md`.
 
 ## Как написать свой функциональный плагин
 
@@ -47,7 +52,11 @@ bot.use(myI18nPlugin);
 import { Bot, AppContext, IPlugin } from 'umbot';
 
 class MyI18nPlugin implements IPlugin {
+    // Контекст нужен и в destroy, поэтому сохраняем его при инициализации
+    #appContext?: AppContext;
+
     init(appContext: AppContext, bot: Bot): void {
+        this.#appContext = appContext;
         appContext.plugins['i18n'] = (key: string, ...params: unknown[]) => {
             return `Перевод для: ${key}`;
         };
@@ -55,7 +64,7 @@ class MyI18nPlugin implements IPlugin {
 
     destroy(bot: Bot): void {
         // Освобождение ресурсов
-        appContext.log('i18n plugin destroyed');
+        this.#appContext?.log('i18n plugin destroyed');
     }
 }
 
@@ -72,6 +81,10 @@ bot.use(new MyI18nPlugin());
 | i18n   | (key: string, ...params: unknown[]) => string                                 | Локализация текста                          |
 | nlu    | (text: string, platformNlu: INlu, platform: string, request: unknown) => INlu | Обработка естественного языка               |
 | regExp | () => RegExpConstructor                                                       | Кастомная реализация RegExp (например, re2) |
+
+Каждый слот принимает две равноправные формы: саму функцию либо объект с методом `getData` той же
+сигнатуры. Фреймворк проверяет тип и вызывает либо `plugins.i18n(...)`, либо
+`plugins.i18n.getData(...)` — выбирайте объектную форму, когда плагину нужно своё состояние.
 
 ### Пример i18n плагина
 

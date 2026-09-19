@@ -667,6 +667,13 @@ class MyAdapter extends BasePlatformAdapter {
   подтверждаются HTTP 200 без ответа. Не-текстовые апдейты ловятся событийным роутингом:
   `bot.addEvent('photo' | 'voice' | 'callback' | 'inline' | 'message_edited' | 'channel_post', ...)`
   (полный список типов — в api-reference.md, раздел «Событийный роутинг»).
+- **Inline-кнопки без payload (`options.inline`).** Кнопка без `payload` и `url` по умолчанию
+  уходит обычной reply-клавиатурой. С опцией `{ inline: true }` она показывается inline-кнопкой под
+  сообщением, а нажатие приходит боту как текст кнопки: `this.buttons.addBtn('Каталог', '', '', { inline: true })`.
+  Текст длиннее лимита `callback_data` (64 байта) передаётся служебным токеном `#t<n>` и
+  восстанавливается адаптером из клавиатуры сообщения. На `request_contact` / `request_location`
+  опция не действует — Telegram принимает их только в обычной клавиатуре. Проекты, сгенерированные
+  через `npx umbot create from-flow`, выставляют опцию всем кнопкам Telegram.
 - **Webhook-reply (opt-in).** `new TelegramAdapter('TOKEN', { telegram_webhook_reply: true })`: простой текстовый ответ уходит телом webhook-ответа (`{method: 'sendMessage', ...}`) — Telegram выполнит его сам, экономится один исходящий POST на запрос. По образцу grammy: opt-in (по умолчанию выключено), не применяется к callback/inline-запросам и ответам с карточками/звуками — они уходят штатным путём. Учтите: ошибки отправки при этом недиагностируемы (Telegram подтверждает webhook раньше реального выполнения метода).
 
 ```ts
