@@ -177,7 +177,7 @@ describe('telemetrySample middleware', () => {
 
 ⚠️ Используй `BaseBotController`, не `BotController` — у последнего абстрактный `action()`, вызов упадёт. (В старых тестах встречается `new BotController()` — это работает только потому, что `tsconfig` исключает `*.test.ts` из тайпчека и `action()` там не зовётся; не копируй.)
 
-### Шаг 6: Документация
+### Шаг 6: Документация (часть задачи, не «потом» — AGENTS.md раздел 6)
 
 Добавь раздел в `src/docs/middleware.md`:
 
@@ -187,9 +187,11 @@ describe('telemetrySample middleware', () => {
 - Граничные случаи
 - Лучшие практики
 
+Затем погрепай проект на список встроенных middleware (`README.md`, `src/docs/GUIDE.md`, `src/docs/api-reference.md`) — везде, где он перечислен, добавь новый пункт. Иначе middleware останется «невидимым» для тех, кто читает не `middleware.md`.
+
 ### Шаг 7: CHANGELOG
 
-Добавь в активную целевую секцию релиза (например `[3.1.0]`; `[Unreleased]` — только когда целевой релиз не определён; AGENTS.md раздел 6):
+Секцию выбирай по правилам AGENTS.md (раздел 6): `[Unreleased]` не использовать; верхняя невыпущенная секция (без даты, с будущей датой или равная версии из `package.json`) — целевая, второй секции для той же версии не создавать; если подходящей секции нет — спросить у пользователя номер версии и срок релиза.
 
 ```markdown
 - **Middleware**: `myMiddleware(options)` — <короткое описание>.
@@ -211,7 +213,7 @@ describe('telemetrySample middleware', () => {
 2. ✅ Tests green (`npm run test`)
 3. ✅ Prettier applied (`npm run prettier`)
 4. ✅ Lint clean (`npm run lint`)
-5. ✅ CHANGELOG обновлён
-6. ✅ Документация в `src/docs/middleware.md`
+5. ✅ CHANGELOG обновлён (секция выбрана по AGENTS.md разделу 6, не `[Unreleased]`)
+6. ✅ Документация: `src/docs/middleware.md` + все места, где перечислены встроенные middleware
 
-Порядок верификации — как в AGENTS.md 4.1–4.4: `build` → `test` → `prettier` → `lint`.
+Порядок верификации — как в AGENTS.md 3.6: `build` → `test` → `prettier` → `lint`.

@@ -113,6 +113,8 @@
         "create": "umbot",
         "clean": "node scripts/clean.js",
         "clean:tmp": "node scripts/clean-tmp.js",
+        "prepare": "node scripts/link-skills.js || exit 0",
+        "skills:link": "node scripts/link-skills.js",
         "test": "node --expose-gc ./node_modules/jest/bin/jest.js",
         "test:coverage": "jest --coverage",
         "doc": "typedoc --excludePrivate --excludeExternals",

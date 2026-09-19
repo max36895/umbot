@@ -31,3 +31,8 @@ benchmark/comparison/baseline.json
 # live-test: локальные токены и артефакты прогона
 /live-test/.env
 /live-test/.tmp/
+
+# .claude/skills — связь с .agents/skills (единственный источник скилов).
+# Claude Code читает скилы только из .claude/skills, поэтому связь создаётся
+# автоматически при `npm i` (хук prepare -> scripts/link-skills.js).
+.claude/
