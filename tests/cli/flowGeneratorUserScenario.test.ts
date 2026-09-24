@@ -272,13 +272,13 @@ describe('from-flow: режим бота', () => {
         }
     });
 
-    it('неизвестный или отсутствующий режим в код не вставляется', () => {
-        expect(
-            generate('mode_bad', flow('mode-bad', { mode: "prod'); evil('" })).code,
-        ).not.toContain('setAppMode');
+    it('неизвестный или отсутствующий режим заменяется на strict_prod', () => {
+        const bad = generate('mode_bad', flow('mode-bad', { mode: "prod'); evil('" })).code;
+        expect(bad).not.toContain('evil');
+        expect(bad).toContain("bot.setAppMode('strict_prod');");
         const doc = flow('mode-none', {});
         delete doc.mode;
-        expect(generate('mode_none', doc).code).not.toContain('setAppMode');
+        expect(generate('mode_none', doc).code).toContain("bot.setAppMode('strict_prod');");
     });
 });
 

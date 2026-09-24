@@ -46,6 +46,30 @@ describe('VkRequest', () => {
 */
     });
 
+    it('числовой id строкой уходит в peer_id, а не в domain', async () => {
+        // Регресс: '123' (после escapeString DB-адаптера или bot.send('123', ...))
+        // отправлялся как короткий адрес domain=123.
+        (global.fetch as jest.Mock).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ response: 1 }),
+        });
+        await vk.messagesSend('12345', 'Hi');
+        const body = (global.fetch as jest.Mock).mock.calls[0][1].body as string;
+        expect(body).toContain('peer_id=12345');
+        expect(body).not.toContain('domain=');
+    });
+
+    it('короткий адрес уходит в domain', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ response: 1 }),
+        });
+        await vk.messagesSend('durov', 'Hi');
+        const body = (global.fetch as jest.Mock).mock.calls[0][1].body as string;
+        expect(body).toContain('domain=durov');
+        expect(body).not.toContain('peer_id=');
+    });
+
     it('should add random_id if not provided', async () => {
         (global.fetch as jest.Mock).mockResolvedValueOnce({
             ok: true,

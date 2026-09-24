@@ -22,6 +22,8 @@ import { timingSafeEqual } from 'crypto';
 type IVkRequestData = Record<string, unknown> & {
     eventId?: string;
     peerId?: number;
+    /** Событие уже подтверждено через controller.api.answerCallback(). */
+    callbackAnswered?: boolean;
 };
 
 /**
@@ -397,8 +399,20 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
                 const confirmToken =
                     this._platformOptions?.vk_confirmation_token ??
                     this.appContext.appConfig.tokens?.[this.platformName]?.confirmation_token;
-                controller.platformOptions.sendInInit =
-                    confirmToken === undefined ? null : String(confirmToken);
+                if (confirmToken === undefined || confirmToken === null || confirmToken === '') {
+                    // Подтвердить сервер без токена нельзя. Отвечаем без бизнес-логики
+                    // (иначе запрос ушёл бы в middleware, fallback и messages.send
+                    // с пустым адресатом) и объясняем причину в логе.
+                    this.appContext.logError(
+                        'VkAdapter.setQueryData(): VK запросил подтверждение сервера, но confirmation_token ' +
+                            'не задан. Укажите vk_confirmation_token в опциях VkAdapter, ' +
+                            'tokens.vk.confirmation_token в конфигурации или VK_CONFIRMATION_TOKEN в окружении.',
+                    );
+                    controller.skipAutoReply = true;
+                    controller.platformOptions.sendInInit = 'ok';
+                    return true;
+                }
+                controller.platformOptions.sendInInit = String(confirmToken);
                 return true;
             }
 
@@ -523,12 +537,14 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
                     );
                     return 'ok';
                 }
-                await vkApi.sendMessageEvent(
-                    controller.userId as string,
-                    eventId,
-                    undefined,
-                    callbackPeerId,
-                );
+                if (!requestData.callbackAnswered) {
+                    await vkApi.sendMessageEvent(
+                        controller.userId as string,
+                        eventId,
+                        undefined,
+                        callbackPeerId,
+                    );
+                }
             }
 
             const params: IVkParams = {};

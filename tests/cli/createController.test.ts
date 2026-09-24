@@ -153,6 +153,17 @@ describe('CreateController', () => {
             expect(dockerIgnore).toContain('.env');
             expect(dockerIgnore).toContain('node_modules/');
 
+            // Процесс работает от непривилегированного umbot, а /app принадлежит root:
+            // каталоги данных и логов должны создаваться и отдаваться ему до USER.
+            const dockerfile = fs.readFileSync(path.join(projectDir, 'Dockerfile'), 'utf8');
+            const prepareDirs = dockerfile.indexOf(
+                'RUN mkdir -p /app/json /app/logs && chown umbot:nodejs /app/json /app/logs',
+            );
+            expect(prepareDirs).toBeGreaterThan(-1);
+            expect(prepareDirs).toBeLessThan(dockerfile.indexOf('USER umbot'));
+            // Runtime-стадия — продакшен: umbot без setAppMode() работает в strict_prod.
+            expect(dockerfile).toContain('ENV NODE_ENV=production');
+
             // deploy.yml не должен передавать секреты флагами -e (видны в ps),
             // а использовать --env-file; имя образа подставляется из имени проекта
             // (init() заменяет не-буквенно-цифровые символы на '_', поэтому prod_test)

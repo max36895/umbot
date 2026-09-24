@@ -370,6 +370,19 @@ describe('Buttons test', () => {
         ]);
     });
 
+    it('Get buttons SmartApp: ссылка становится действием deep_link', () => {
+        // Регресс: ссылка терялась, кнопка отправляла свой заголовок как текст.
+        defaultButtons.clear();
+        defaultButtons.addLink('Сайт', 'https://example.com');
+
+        expect(defaultButtons.getButtons(SmartAppButton.buttonProcessing)).toEqual([
+            {
+                title: 'Сайт',
+                actions: [{ type: 'deep_link', deep_link: 'https://example.com' }],
+            },
+        ]);
+    });
+
     it('Get buttons Telegram', () => {
         // Рядом со ссылками (inline) обычные кнопки тоже показываются inline,
         // а не отбрасываются: Telegram не совмещает два типа клавиатуры

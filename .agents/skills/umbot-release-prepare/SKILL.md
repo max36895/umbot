@@ -153,9 +153,12 @@ git diff $(git describe --tags --abbrev=0)..HEAD --stat
 
 Тег должен совпадать с именем релизной ветки: ветка `v-3.1.1` → тег `v-3.1.1` (конвенция проекта; теги без `v-` из ранней истории и `vX.Y.Z` без дефиса не использовать).
 
+Коммит — по правилам AGENTS.md (Step 3.7): файлы добавляются явно по путям (не `git add -A`), сообщение начинается с версии.
+Push и тег — только после явного подтверждения пользователя.
+
 ```bash
-git add -A
-git commit -m "release: vX-Y-Z"
+git add package.json package-lock.json CHANGELOG.md   # + остальные файлы релиза явно по путям
+git commit -m "v-X.Y.Z Релиз"
 git tag -a "v-X.Y.Z" -m "Release v-X.Y.Z"
 git push origin HEAD --tags
 ```

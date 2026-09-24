@@ -63,6 +63,10 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    Dependency Direction: Modules from src/plugins/ MAY import from src/core/, src/components/, and src/utils/. Modules from src/core/ or src/components/ MUST NOT import anything from src/plugins/.
    Public API Stability: Changing method signatures, class names, or removing exports from any public entry point is prohibited. Doing so will break code for library users. Any extension must be backwards compatible.
    The public entry points are exactly the keys of "exports" in package.json (verify there, do not trust this list if it drifts): src/index.ts (umbot), src/build.ts (umbot/build), src/plugins.ts (umbot/plugins), src/middleware.ts (umbot/middleware), src/utils/index.ts (umbot/utils), src/test.ts (umbot/test), src/Preload.ts (umbot/preload). Adding a new entry point means adding an "exports" key — that is a public API change and needs a CHANGELOG entry plus documentation.
+   Export decision: every new helper, type or constant needs a conscious answer to "does anyone outside the framework need this?". Users write their own platform adapters, DB adapters and middleware; a missing export forces them to copy our logic, and a needless export must be supported forever. Both are mistakes.
+   What to export (and document): what an extension author needs to do the same job as a built-in adapter/middleware: helpers the built-in adapters share (`pUtils` in `umbot/plugins`), types of a contract (`IButtonRowItem`, `IDbTableSchema`), values users pass or compare against. Test: "if a user writes their own Telegram-like adapter, would they have to re-implement this?" — if yes, export it.
+   Keep module-private: implementation details that may change (internal markers like the `buttons.row()` group prefix, caches, retry delays, private state), and anything that only makes sense inside one class.
+   Export chain: Most folders reach an entry point through `export *` (src/components → src/index.ts, src/plugins/platforms/Base/utils.ts → `pUtils`), so ANY `export` in such a module is public API automatically. Check the chain before adding `export`; an exported symbol gets JSDoc with `@example`, a mention in the relevant doc (for adapter helpers — `src/docs/adapter/platformAdapter.md`) and a CHANGELOG `Добавлено` entry.
    Encapsulation: Use private fields (#field) for internal class state. The "any" type is prohibited. Use "unknown" with type narrowing or strict interfaces.
 3. Workflow (Strict Algorithm)
    When you receive a code modification task, perform the steps strictly in the specified order. Do not proceed to the next step if the previous one is not completed successfully.
@@ -76,8 +80,16 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    Step 3.6.2: npm run test — Run Jest. Ensure that all tests pass, including new ones.
    Step 3.6.3: npm run prettier — Format code according to .prettierrc.
    Step 3.6.4: npm run lint — Check ESLint. If there are errors, you are responsible for fixing them yourself, not just reporting them.
+   Step 3.7 Commit — only when the user asks for it. Never push unless the user explicitly asks.
+   Commit message: the first line is `v-<version> <описание>`, where `<version>` is the CHANGELOG.md section the change belongs to (the topmost not-yet-released section, e.g. `v-3.1.4`), not necessarily the version in package.json. If the change closes an issue, put its URL right after the version: `v-3.1.4 https://github.com/max36895/umbot/issues/NNN <описание>`. The description is in Russian and says what was done — take it from this change's CHANGELOG entries or from the actual diff. For a large change, add a body with a short list of the main items.
+   Commit does not mean release: do not change the release date in CHANGELOG.md and do not bump the version in package.json as part of a commit. If the version for the commit is unclear (no suitable CHANGELOG section), ask the user.
+   Commit content: stage files explicitly by path, never `git add -A` / `git add .`. Before committing, read `git status`: every new file the change depends on (new `src/` modules, new tests) must be staged, and nothing unrelated may be staged — drafts, notes, local scripts, sandbox/repro files, `.env` and other secrets. If you are not sure whether a file belongs to the commit, ask the user instead of guessing.
 4. Coding Standards
    Language: Comments and JSDoc must be in Russian. The wording must be clear and descriptive ("what it does" and "why"), without the formal style.
+   Comments describe the code as it is NOW, not its history. No `Fix:` prefixes and no "раньше было X, теперь Y" / "как в прежних версиях" narratives: the history of a change belongs in CHANGELOG.md and the commit message. Write the reason the code must stay this way: "null, а не delete: Алиса очищает поле только значением null".
+   Comment size: 1–2 lines. If the reason needs a paragraph, it goes into the JSDoc of the function or into the docs. Do not comment what the code already says, and do not repeat the same explanation in several files — explain once and refer to it. No unverified numbers ("блокирует поток на ~20 с") unless measured in this change. A comment copied from another file must be true in the new place (a `strict_prod` comment next to `setAppMode('dev')` is wrong).
+   File structure: all `import` statements are at the top of the file, constants go after imports. Insert a new function/interface BEFORE the JSDoc block of the neighbouring function, never between a JSDoc block and the code it documents; after the edit, check that every touched function still has its own JSDoc directly above it. Methods are separated by one blank line.
+   Concurrency: when several callers await one shared promise (connection dedup, cache warm-up), EVERY waiter must handle its rejection, not only the caller that created it. An unhandled rejection in a waiter inside the request path turns into HTTP 500 for the platform.
    Async: All promises must be processed (await or .catch()). "No-floating-promises" are prohibited.
    Performance:
    Avoid creating heavy objects or compiling RegExp inside hot loops. Use caching (see src/utils/standard/Text.ts and RegExp.ts).
@@ -121,6 +133,7 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
     - If there is no such section, ask the user for the target version number and the planned release date, then wait for the answer. Never invent a version bump, and never assume today's date is the release date.
     - Section names in this project are Russian: Добавлено / Изменено / Исправлено / Безопасность / Обновлено / Миграция / Документация.
     - Breaking changes: a separate `### Миграция с X.Y.z` block at the top of the release section, plus «(См. «Миграция с X.Y.z»)» references in the matching `Изменено` entries.
+    - After editing CHANGELOG.md (or any large Markdown file), re-read the edited section: the file header `# История изменений` must occur exactly once, and no text may be pasted into the middle of another entry. Edit tools occasionally insert a fragment in the wrong place.
 
 7. Forbidden Actions
    Breaking dependency direction (the core does not depend on plugins).
@@ -151,8 +164,8 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
     | -------- | ------------ | ----------- | ----------------------------------------- | --------------------------------- |
     | Alisa    | 1024         | unlimited   | BigImage, ItemsList, ImageGallery (до 10) | (none)                            |
     | Marusia  | 1024 (≠ ∅)   | unlimited   | BigImage, ItemsList (image_id: int only)  | (none)                            |
-    | Telegram | 4096         | unlimited   | Photo, MediaGroup                         | `x-telegram-bot-api-secret-token` |
-    | VK       | 4096         | unlimited   | Carousel                                  | `secret_key` in body              |
+    | Telegram | 4096         | 8           | Photo, MediaGroup                         | `x-telegram-bot-api-secret-token` |
+    | VK       | 4096         | 5           | Carousel                                  | `secret_key` in body              |
     | Max      | 4000         | 7x30        | Inline keyboard                           | `x-max-bot-api-secret`            |
     | Viber    | 7000         | 6x7         | RichMedia                                 | `x-viber-content-signature`       |
     | SmartApp | 250 (bubble) | -           | ListCard                                  | (none)                            |
@@ -210,6 +223,10 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
       and the message text is mandatory with a carousel.
     - **MAX uploads** — the upload-server response for `audio`/`video` is `retval` (not JSON); their
       token comes from the `POST /uploads` step. Never cache the one-time upload `url` as a token.
+      A message sent right after an upload may be rejected with `attachment.not.ready` — `MaxRequest`
+      retries it (0.5/1/2 s). `POST /answers` with `message` REPLACES the message with the pressed
+      button; the adapter acknowledges with `{}` and replies via `POST /messages` unless
+      `max_callback_edit_message: true`.
     - **SpeechKit TTS** — body `application/x-www-form-urlencoded`, auth `Api-Key <key>` or
       `Bearer <IAM>`; the `OAuth` scheme belongs to the Dialogs API only.
     - **Telegram button `style`** — only `danger`, `success`, `primary`.

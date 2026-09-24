@@ -17,6 +17,10 @@ const MAX_ATTACHMENTS = 12;
  * и карточка/звук молча терялись.
  */
 const MAX_UPLOAD_TIMEOUT = 30_000;
+/** Паузы между повторами отправки, пока MAX обрабатывает загруженное вложение, мс. */
+const ATTACHMENT_RETRY_DELAYS_MS = [500, 1000, 2000];
+/** Маркер ответа «вложение ещё обрабатывается» (ошибка attachment.not.ready). */
+const NOT_READY = Symbol('attachment.not.ready');
 const maxMessageQueues = new Map<string, Promise<void>>();
 const maxLastMessageAt = new Map<string, number>();
 
@@ -57,6 +61,18 @@ async function waitForMaxMessageTurn(key: string): Promise<void> {
     if (maxMessageQueues.get(key) === current) {
         maxMessageQueues.delete(key);
     }
+}
+
+/**
+ * Ошибка MAX «вложение ещё не обработано» (`attachment.not.ready`,
+ * `errors.process.attachment.file.not.processed`). Причину MAX присылает в теле
+ * ответа, которое Request включает в текст ошибки.
+ * @param error Ошибка запроса
+ * @returns true, если запрос стоит повторить после паузы
+ */
+function isAttachmentNotReady(error: unknown): boolean {
+    const text = error instanceof Error ? error.message : String(error ?? '');
+    return text.includes('attachment.not.ready') || text.includes('file.not.processed');
 }
 
 /**
@@ -226,6 +242,21 @@ export class MaxRequest {
      * @returns Результат выполнения метода или null при ошибке
      */
     public async call<T extends IMaxAppApi>(method: string): Promise<T | null> {
+        const result = await this.#call<T>(method, false);
+        // Без allowNotReady #call не возвращает маркер NOT_READY — сужаем тип.
+        return result === NOT_READY ? null : result;
+    }
+
+    /**
+     * Вызов метода API.
+     * @param method Название метода MAX API
+     * @param allowNotReady Не логировать ошибку `attachment.not.ready` — вызывающий повторит запрос
+     * @returns Результат, `null` при ошибке или `NOT_READY`, если вложение ещё обрабатывается
+     */
+    async #call<T extends IMaxAppApi>(
+        method: string,
+        allowNotReady: boolean,
+    ): Promise<T | null | typeof NOT_READY> {
         if (this.token) {
             this.#request.header = null;
             this.#setAccessToken(this.token);
@@ -233,12 +264,48 @@ export class MaxRequest {
             if (data.status && data.data) {
                 return data.data;
             }
+            if (allowNotReady && isAttachmentNotReady(data.err)) {
+                return NOT_READY;
+            }
             this.#error = data;
             this.#log(data.err);
         } else {
             this.#log(getErrorToken(T_MAX_APP, 'call'));
         }
         return null;
+    }
+
+    /**
+     * Отправляет сообщение с вложениями, повторяя запрос, пока MAX обрабатывает файл.
+     *
+     * MAX отвечает ошибкой `attachment.not.ready`, если сообщение с вложением
+     * отправлено сразу после загрузки файла (документация POST /uploads советует
+     * повтор с растущим интервалом). Без повтора терялся бы весь ответ, включая текст.
+     * Повторяем до 3 раз с паузами 0,5 / 1 / 2 с (таймеры не держат процесс).
+     *
+     * @param method Метод API (`messages` или `answers`)
+     * @param get Query-параметры запроса
+     * @param post Тело запроса
+     * @param hasAttachments Есть ли вложения (без них повтор не нужен)
+     * @returns Результат вызова или null при ошибке
+     */
+    async #callWithAttachmentRetry<T extends IMaxAppApi>(
+        method: string,
+        get: Record<string, string>,
+        post: Record<string, unknown>,
+        hasAttachments: boolean,
+    ): Promise<T | null> {
+        for (let attempt = 0; ; attempt++) {
+            // Request сбрасывает get/post после каждого send — задаём заново.
+            this.#request.get = get;
+            this.#request.post = post;
+            const canRetry = hasAttachments && attempt < ATTACHMENT_RETRY_DELAYS_MS.length;
+            const result = await this.#call<T>(method, canRetry);
+            if (result !== NOT_READY) {
+                return result;
+            }
+            await waitForMaxInterval(ATTACHMENT_RETRY_DELAYS_MS[attempt] as number);
+        }
     }
 
     /**
@@ -326,10 +393,13 @@ export class MaxRequest {
             return null;
         }
         await waitForMaxMessageTurn(`${this.token ?? ''}:${recipientType}:${peerId}`);
-        this.#request.get = { [`${recipientType}_id`]: String(peerId) };
-        this.#request.post = requestBody;
         try {
-            return await this.call<IMaxSendMessage>('messages');
+            return await this.#callWithAttachmentRetry<IMaxSendMessage>(
+                'messages',
+                { [`${recipientType}_id`]: String(peerId) },
+                requestBody,
+                Array.isArray(requestBody.attachments) && requestBody.attachments.length > 0,
+            );
         } finally {
             this.#request.get = null;
         }
@@ -359,10 +429,13 @@ export class MaxRequest {
         if (dialogId !== undefined) {
             await waitForMaxMessageTurn(`${this.token ?? ''}:answer:${dialogId}`);
         }
-        this.#request.get = { callback_id: callbackId };
-        this.#request.post = message ? { message } : {};
         try {
-            return await this.call<IMaxAppApi>('answers');
+            return await this.#callWithAttachmentRetry<IMaxAppApi>(
+                'answers',
+                { callback_id: callbackId },
+                message ? { message } : {},
+                Array.isArray(message?.attachments) && message.attachments.length > 0,
+            );
         } finally {
             this.#request.get = null;
         }

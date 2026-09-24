@@ -161,6 +161,14 @@ interface IErrWarnData {
 }
 
 /**
+ * Режим приложения по умолчанию: `strict_prod` при `NODE_ENV=production`, иначе `dev`.
+ * @returns Режим, который действует, пока не вызван `setAppMode()`
+ */
+function getDefaultAppMode(): TAppMode {
+    return process.env.NODE_ENV === 'production' ? 'strict_prod' : 'dev';
+}
+
+/**
  * Внутренний класс для хранения состояния и конфигурации приложения.
  * Используется внутри Bot для хранения состояния и конфигурации
  *
@@ -360,9 +368,29 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
     public httpClient: THttpClient = global.fetch;
 
     /**
-     * Определяет режим работы приложения
+     * Определяет режим работы приложения.
+     *
+     * По умолчанию — `dev`, а при `NODE_ENV=production` — `strict_prod` (как Express и
+     * сборщики фронтенда переключаются на прод по `NODE_ENV`). Явный `bot.setAppMode()`
+     * всегда главнее. Режим по умолчанию определяется при создании контекста, до
+     * регистрации команд: strict_prod проверяет регулярные выражения при регистрации.
      */
-    public appMode: TAppMode = 'dev';
+    public appMode: TAppMode = getDefaultAppMode();
+
+    /**
+     * Создаёт контекст приложения. При `NODE_ENV=production` сразу включает строгую
+     * проверку регулярных выражений (режим `strict_prod`).
+     *
+     * @example
+     * ```ts
+     * // NODE_ENV=production node dist/index.js
+     * const ctx = new AppContext();
+     * ctx.appMode; // 'strict_prod'
+     * ```
+     */
+    public constructor() {
+        this.command.strictMode = this.appMode === 'strict_prod';
+    }
 
     /**
      * Закрывает все подключения, для корректного завершения работы приложения
@@ -731,6 +759,13 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
                 : { trace: new Error().stack };
             const serialized = safeStringify(data, null, '\t');
             this.#errWarnLog(`${maskedText}\n${serialized}`, true);
+            // Файл logs/error.log в контейнере и serverless никто не читает (а на
+            // read-only ФС он и не пишется), поэтому вне dev дублируем короткую строку
+            // в stderr — она попадёт в `docker logs` и журнал функции.
+            // В dev #errWarnLog и так печатает ошибку в консоль.
+            if (this.appMode !== 'dev') {
+                process.stderr.write(`[umbot] ${maskedText}\n`);
+            }
         }
     }
 

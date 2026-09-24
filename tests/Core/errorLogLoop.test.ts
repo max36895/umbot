@@ -76,6 +76,23 @@ describe('AppContext: отказ файлового хранилища лого�
         consoleSpy.mockRestore();
     });
 
+    it('вне dev ошибка без своего логгера дублируется в stderr (видна в docker logs)', async () => {
+        const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        const appContext = new AppContext();
+        appContext.appMode = 'strict_prod';
+
+        appContext.logError(
+            'сбой обработки, token bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawx',
+        );
+        await appContext.close();
+
+        const lines = stderrSpy.mock.calls.map((call) => String(call[0]));
+        expect(lines.some((line) => line.startsWith('[umbot] сбой обработки'))).toBe(true);
+        // Секреты маскируются и в stderr
+        expect(lines.join('')).not.toContain('AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawx');
+        stderrSpy.mockRestore();
+    });
+
     it('после серии сбоев ставит запись на паузу, а после восстановления продолжает', async () => {
         const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
         const appContext = new AppContext();
@@ -94,7 +111,11 @@ describe('AppContext: отказ файлового хранилища лого�
         await appContext.close();
         expect(saveDataMock).toHaveBeenCalledTimes(3);
         // О недоступности сообщается один раз, а не на каждую отброшенную запись
-        expect(stderrSpy).toHaveBeenCalledTimes(1);
+        // (сами ошибки вне dev тоже дублируются в stderr — их не считаем).
+        const storageReports = stderrSpy.mock.calls.filter((call) =>
+            String(call[0]).includes('Не удалось записать логи'),
+        );
+        expect(storageReports).toHaveLength(1);
 
         // Пауза истекла, хранилище снова доступно — запись возобновляется
         saveDataMock.mockResolvedValue(true);

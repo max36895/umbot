@@ -9,6 +9,9 @@ import {{name}}Config from './config/{{name}}Config';
 import {{name}}Params from './config/{{name}}Params';
 
 const bot = new Bot();
+// Режим задаётся до регистрации параметров и команд: регулярные выражения
+// проверяются в момент регистрации.
+bot.setAppMode('dev');
 bot.use(fullPlatforms);
 bot.use(new FileAdapter());
 bot.setAppConfig({{name}}Config());
@@ -23,5 +26,4 @@ bot.addCommand(FALLBACK_COMMAND, [], (_, botController) => {
     botController.text = 'Я вас не понял. Скажите "помощь", чтобы получить список всех команд.';
 });
 
-bot.setAppMode('dev');
 bot.start({{hostname}}, {{port}});

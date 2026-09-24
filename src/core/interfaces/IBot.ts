@@ -7,7 +7,7 @@ import { AppContext } from '../AppContext';
 import { BotController, IControllerApi } from '../../controller';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { IButtonType, Buttons, IImageType, ISound } from '../../components';
-import { IModelRes, TQueryCb, IQuery, IQueryData } from '../../models';
+import { IModelRes, TQueryCb, IQuery, IQueryData, IDbTableSchema } from '../../models';
 import { Bot } from '../Bot';
 import type { TEventType } from '../events';
 
@@ -482,6 +482,37 @@ export interface IDatabaseAdapter extends IPlugin {
      * В случае успешного подключения возвращается true
      */
     connect: () => Promise<boolean> | boolean;
+
+    /**
+     * Подготавливает хранилище под встроенные таблицы umbot: создаёт недостающие
+     * таблицы, колонки или индексы. Фреймворк вызывает метод один раз после каждого
+     * успешного подключения (connect), до первого запроса к базе. Метод обязан быть
+     * идемпотентным: таблицы и индексы, которые уже есть, не пересоздаются.
+     *
+     * Необязательный: адаптер без метода (или базовый адаптер) ничего не готовит —
+     * так работают хранилища без схемы (FileAdapter). SQL-адаптер должен создать
+     * таблицы, иначе первый же запрос упадёт с «таблица не существует».
+     *
+     * @param tables Описание встроенных таблиц (`DB_TABLES_SCHEMA`)
+     * @returns false (или Promise<false>), если подготовить схему не удалось —
+     *   фреймворк запишет ошибку в лог и продолжит работу с базой
+     *
+     * @example
+     * ```ts
+     * async ensureSchema(tables: readonly IDbTableSchema[]): Promise<boolean> {
+     *     for (const table of tables) {
+     *         const columns = Object.entries(table.fields).map(([name, field]) =>
+     *             `"${name}" ${field.type === 'text' ? 'TEXT' : 'VARCHAR(255)'}`,
+     *         );
+     *         await this.#pool.query(
+     *             `CREATE TABLE IF NOT EXISTS "${table.tableName}" (${columns.join(', ')})`,
+     *         );
+     *     }
+     *     return true;
+     * }
+     * ```
+     */
+    ensureSchema?: (tables: readonly IDbTableSchema[]) => boolean | Promise<boolean>;
 }
 
 /**

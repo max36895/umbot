@@ -163,6 +163,67 @@ describe('MaxRequest', () => {
         }
     });
 
+    describe('attachment.not.ready', () => {
+        const notReady = {
+            ok: false,
+            status: 400,
+            text: async (): Promise<string> =>
+                '{"code":"attachment.not.ready","message":"Key: errors.process.attachment.file.not.processed"}',
+        };
+        const sent = {
+            ok: true,
+            json: async (): Promise<Record<string, unknown>> => ({
+                message: { body: { mid: 'm1' } },
+            }),
+        };
+        const attachments = { attachments: [{ type: 'image' as const, payload: { token: 't' } }] };
+
+        it('повторяет отправку с вложением, пока MAX обрабатывает файл', async () => {
+            // Регресс: сообщение с только что загруженным вложением MAX отклонял
+            // ошибкой attachment.not.ready, и терялся весь ответ, включая текст.
+            jest.useFakeTimers();
+            try {
+                (global.fetch as jest.Mock)
+                    .mockResolvedValueOnce(notReady)
+                    .mockResolvedValueOnce(notReady)
+                    .mockResolvedValueOnce(sent);
+                const promise = max.messagesSend(909_101, 'С картинкой', attachments);
+                await jest.advanceTimersByTimeAsync(500);
+                await jest.advanceTimersByTimeAsync(1000);
+                const result = await promise;
+                expect(result).toEqual({ message: { body: { mid: 'm1' } } });
+                expect(global.fetch).toHaveBeenCalledTimes(3);
+                const lastCall = (global.fetch as jest.Mock).mock.calls[2];
+                expect(lastCall[0]).toBe('https://platform-api2.max.ru/messages?user_id=909101');
+                expect(JSON.parse(lastCall[1].body).attachments).toHaveLength(1);
+                expect(appContext.logError).not.toHaveBeenCalled();
+            } finally {
+                jest.useRealTimers();
+            }
+        });
+
+        it('после 3 повторов сдаётся и логирует ошибку', async () => {
+            jest.useFakeTimers();
+            try {
+                (global.fetch as jest.Mock).mockResolvedValue(notReady);
+                const promise = max.messagesSend(909_102, 'С картинкой', attachments);
+                await jest.advanceTimersByTimeAsync(3500);
+                expect(await promise).toBeNull();
+                expect(global.fetch).toHaveBeenCalledTimes(4);
+                expect(appContext.logError).toHaveBeenCalledTimes(1);
+            } finally {
+                (global.fetch as jest.Mock).mockReset();
+                jest.useRealTimers();
+            }
+        });
+
+        it('без вложений ошибку не повторяет', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(notReady);
+            expect(await max.messagesSend(909_103, 'Только текст')).toBeNull();
+            expect(global.fetch).toHaveBeenCalledTimes(1);
+        });
+    });
+
     it('should send message with attachments', async () => {
         (global.fetch as jest.Mock).mockResolvedValueOnce({
             ok: true,

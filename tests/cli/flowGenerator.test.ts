@@ -2401,7 +2401,10 @@ describe('flowGenerator', () => {
 
             expect(code).not.toContain("bot.start('localhost', 3000)");
             // Cloud-handler должен идти через авторизованный webhook-путь, а не прямой run()
-            expect(code).toContain('bot.webhookEvent(content, headers)');
+            expect(code).toContain('bot.webhookEvent(content, headers, clientIp)');
+            // IP клиента для ipFilter и декодирование base64-тела Cloud Functions
+            expect(code).toContain('requestContext?.identity?.sourceIp');
+            expect(code).toContain("Buffer.from(rawBody, 'base64')");
             expect(code).toContain('event.headers');
             expect(code).not.toContain('bot.setContent(');
             expect(code).not.toContain('await bot.run()');

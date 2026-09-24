@@ -8,6 +8,7 @@ import {
     AppContext,
     IDatabaseInfo,
     IAppDB,
+    IDbTableSchema,
 } from '../../../index';
 import type { MongoClient, MongoClientOptions, Db, Document, Filter, OptionalId } from 'mongodb';
 
@@ -660,6 +661,54 @@ export class MongoAdapter extends Base<IMongoDbInfo> {
         this._appContext?.logError(`MongoDB: ${errorMsg}`, {
             error,
         });
+    }
+
+    /**
+     * Создаёт индексы для встроенных таблиц: без них поиск пользователя и токенов
+     * медиа идёт полным перебором коллекции и замедляется с ростом базы.
+     * Коллекции MongoDB создаёт сама при первой записи, поэтому здесь — только индексы.
+     *
+     * Индексы не уникальные: в данных прежних версий могут быть дубли (параллельные
+     * первые запросы одного пользователя), и уникальный индекс на них не создался бы.
+     * Создание существующего индекса — no-op. Если у пользователя БД нет прав на
+     * создание индексов, адаптер пишет предупреждение и продолжает работу.
+     *
+     * @param tables Описание встроенных таблиц (`DB_TABLES_SCHEMA`)
+     * @returns true, если все индексы есть; false, если какой-то создать не удалось
+     *
+     * @example
+     * ```ts
+     * // Вызывается фреймворком автоматически после connect(); вручную — например, в миграции:
+     * await mongoAdapter.ensureSchema(DB_TABLES_SCHEMA);
+     * ```
+     */
+    public async ensureSchema(tables: readonly IDbTableSchema[]): Promise<boolean> {
+        const client = this._appContext.database.databaseInfo?.mongoConnect;
+        if (!client) {
+            return false;
+        }
+        const db = client.db(this._appContext.appConfig.db?.database);
+        let ok = true;
+        for (const table of tables) {
+            for (const fields of table.indexes) {
+                const name = `umbot_${fields.join('_')}`;
+                try {
+                    await db
+                        .collection(table.tableName)
+                        .createIndex(Object.fromEntries(fields.map((field) => [field, 1])), {
+                            name,
+                        });
+                } catch (err) {
+                    ok = false;
+                    this._appContext.logWarn(
+                        `MongoAdapter: не удалось создать индекс "${name}" для "${table.tableName}" — ` +
+                            'поиск будет работать без него, медленнее. Проверьте права пользователя БД ' +
+                            `(createIndex). Текст ошибки: ${(err as Error).message}`,
+                    );
+                }
+            }
+        }
+        return ok;
     }
 
     /**

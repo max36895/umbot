@@ -10,6 +10,7 @@ import {
     IQueryData,
     IQuery,
     isPromise,
+    IDbTableSchema,
 } from '../../../index';
 import { BasePlugin } from '../../Base';
 
@@ -91,6 +92,35 @@ export abstract class Base<TDbInfo extends IDatabaseInfo = IDatabaseInfo>
      * В случае успешного подключения возвращается true
      */
     connect(): Promise<boolean> | boolean {
+        return true;
+    }
+
+    /**
+     * Подготавливает хранилище под встроенные таблицы umbot (см. `DB_TABLES_SCHEMA`).
+     * Фреймворк вызывает метод после каждого успешного `connect()`, до первого запроса.
+     *
+     * Базовая реализация ничего не делает — так работают хранилища без схемы.
+     * Переопределите метод, если базе нужны таблицы или индексы: создайте
+     * недостающее («CREATE TABLE IF NOT EXISTS», createIndex) — повторный вызов
+     * не должен ничего ломать.
+     *
+     * @param _tables Описание встроенных таблиц
+     * @returns true, если схема готова; false — фреймворк запишет ошибку в лог
+     *   и продолжит работу
+     *
+     * @example
+     * ```ts
+     * class PgAdapter extends BaseDbAdapter {
+     *     async ensureSchema(tables: readonly IDbTableSchema[]): Promise<boolean> {
+     *         for (const table of tables) {
+     *             await this.#pool.query(`CREATE TABLE IF NOT EXISTS "${table.tableName}" (...)`);
+     *         }
+     *         return true;
+     *     }
+     * }
+     * ```
+     */
+    public ensureSchema(_tables: readonly IDbTableSchema[]): boolean | Promise<boolean> {
         return true;
     }
 

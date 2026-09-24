@@ -1333,7 +1333,7 @@ export abstract class BotController<
                                         },
                                     );
                                 }
-                                this._actionMetric(result, true);
+                                return this._actionMetric(result, true);
                             })
                             .catch((error) => {
                                 this.appContext.logError(
@@ -1354,7 +1354,7 @@ export abstract class BotController<
                             },
                         );
                     }
-                    this._actionMetric(result, true);
+                    return this._actionMetric(result, true);
                 } else if (this.appContext?.usedMetric) {
                     this.appContext.logMetric(EMetric.GET_COMMAND, performance.now() - startTimer, {
                         status: false,
@@ -1388,7 +1388,7 @@ export abstract class BotController<
                             status: true,
                         });
                     }
-                    this._actionMetric(commandName, true);
+                    return this._actionMetric(commandName, true);
                 })
                 .catch((err) => {
                     this.appContext.logError(
@@ -1405,7 +1405,7 @@ export abstract class BotController<
                 status: true,
             });
         }
-        this._actionMetric(commandName, true);
+        return this._actionMetric(commandName, true);
     }
 
     #getStartMetric(): number {
@@ -1643,11 +1643,10 @@ export abstract class BotController<
      *
      * Метод необходимо обязательно реализовать в дочерних классах.
      *
-     * ⚠️ Метод вызывается синхронно: фреймворк не дожидается возвращаемого значения.
-     * Не объявляйте его `async` — всё, что выполнится после первого `await`, не попадёт
-     * в ответ пользователю. Если `action()` всё же вернёт Promise, фреймворк напишет
-     * предупреждение в лог, а ошибки промиса будут залогированы вместо unhandledRejection.
-     * Для асинхронной логики используйте `addCommand`/`addStep` — их колбэки фреймворк ожидает.
+     * Метод может быть асинхронным: если он вернёт Promise, фреймворк дождётся его
+     * перед формированием ответа. Ошибка (синхронная или в промисе) логируется,
+     * а пользователь получает текст «Не удалось выполнить команду», если `text`
+     * ещё не заполнен.
      *
      * @param {string | null} intentName - Название интента или команды
      * @param {boolean} [isCommand=false] - Флаг, указывающий что это команда
@@ -1673,9 +1672,23 @@ export abstract class BotController<
      *     console.log(`Прошли по ${isCommand ? 'команде' : isStep ? 'шагу' : 'интенту'} с именем: ${intentName}`);
      *   }
      * }
+     *
+     * // Асинхронный action: фреймворк дождётся промиса
+     * class MyController extends BotController {
+     *   public async action(intentName: string | null): Promise<void> {
+     *     if (intentName === 'balance') {
+     *       const balance = await loadBalance(this.userId);
+     *       this.text = `Ваш баланс: ${balance}`;
+     *     }
+     *   }
+     * }
      * ```
      */
-    abstract action(intentName: string | null, isCommand?: boolean, isStep?: boolean): void;
+    abstract action(
+        intentName: string | null,
+        isCommand?: boolean,
+        isStep?: boolean,
+    ): void | Promise<void>;
 
     /**
      * Выполнение команды.
@@ -1722,50 +1735,66 @@ export abstract class BotController<
     }
 
     /**
-     * Запуск обработки пользовательских команд с учетом метрик.
+     * Запуск пользовательского action() с учетом метрик.
+     *
+     * Если action() асинхронный, возвращает промис, который фреймворк дожидается
+     * до формирования ответа. Синхронный путь промис не создаёт.
+     *
      * @param {string | null} commandName - Имя команды
      * @param {boolean} isCommand - Является ли обработка командой (а не шагом)
      * @param {boolean} isStep - Является ли обработка шагом диалога
+     * @returns Промис, если action() асинхронный, иначе void
      */
     protected _actionMetric(
         commandName: string | null,
         isCommand: boolean = false,
         isStep: boolean = false,
-    ): void {
+    ): void | Promise<void> {
         const start = this.appContext?.usedMetric ? performance.now() : 0;
         let res: void | Promise<void>;
         try {
-            res = this.action(commandName, isCommand, isStep) as void | Promise<void>;
+            res = this.action(commandName, isCommand, isStep);
         } catch (error) {
-            // Синхронное исключение обрабатываем так же, как async-ошибку:
-            // до webhook-обработчика оно дошло бы как 500 (Telegram повторяет
-            // апдейт, VK отключает сервер).
-            this.appContext?.logError(
-                `BotController: Произошла ошибка внутри action() для "${commandName}". Текст ошибки: "${error}"`,
-                { error },
-            );
-            if (!this.text) {
-                this.text = 'Не удалось выполнить команду. Попробуйте ещё раз.';
-            }
+            // Синхронное исключение не должно дойти до webhook-обработчика как 500
+            // (Telegram повторяет апдейт, VK отключает сервер).
+            this.#onActionError(commandName, error);
             res = undefined;
         }
         if (isPromise(res)) {
-            // Типичная ловушка: async-вариант action() компилируется без ошибки,
-            // но фреймворк не дожидается результата, и всё после первого await
-            // молча не попадало в ответ. Вместо тишины предупреждаем и вешаем catch,
-            // чтобы ошибка в пользовательском промисе не стала unhandledRejection.
-            this.appContext?.logWarn(
-                'BotController: action() вернул Promise. Метод action() должен быть синхронным: ' +
-                    'всё, что выполнится после первого await, не попадёт в ответ. ' +
-                    'Для асинхронной логики используйте колбэки addCommand/addStep/addForm — они поддерживают async.',
+            // Ответ формируется только после завершения асинхронного action().
+            return res.then(
+                () => this.#logActionMetric(start, commandName, isCommand),
+                (error: unknown) => {
+                    this.#onActionError(commandName, error);
+                    this.#logActionMetric(start, commandName, isCommand);
+                },
             );
-            res.catch((error) => {
-                this.appContext?.logError(
-                    `BotController: Произошла ошибка внутри async action(). Текст ошибки: "${error}"`,
-                    { error },
-                );
-            });
         }
+        this.#logActionMetric(start, commandName, isCommand);
+    }
+
+    /**
+     * Логирует ошибку action() и подставляет текст ответа, если он не задан.
+     * @param commandName Имя команды
+     * @param error Ошибка
+     */
+    #onActionError(commandName: string | null, error: unknown): void {
+        this.appContext?.logError(
+            `BotController: Произошла ошибка внутри action() для "${commandName}". Текст ошибки: "${error}"`,
+            { error },
+        );
+        if (!this.text) {
+            this.text = 'Не удалось выполнить команду. Попробуйте ещё раз.';
+        }
+    }
+
+    /**
+     * Пишет метрику времени выполнения action().
+     * @param start Время начала (0, если метрики выключены)
+     * @param commandName Имя команды
+     * @param isCommand Обработка командой
+     */
+    #logActionMetric(start: number, commandName: string | null, isCommand: boolean): void {
         if (this.appContext?.usedMetric) {
             this.appContext.logMetric(EMetric.ACTION, performance.now() - start, {
                 commandName,
@@ -1787,11 +1816,12 @@ export abstract class BotController<
                 for (const intent in intents) {
                     if (this.appContext.steps.has(intent)) {
                         step = this.appContext.steps.get(intent);
+                        break;
                     }
                 }
             }
             if (step) {
-                let res: void | false | Promise<void | false>;
+                let res: void | false | string | Promise<void | false | string>;
                 try {
                     res = step.cb(this);
                 } catch (error) {
@@ -1804,7 +1834,12 @@ export abstract class BotController<
                     this.text = 'Не удалось выполнить шаг диалога. Попробуйте ещё раз.';
                     return;
                 }
-                if (res) {
+                // Строка — текст ответа, как у обработчика addCommand.
+                if (typeof res === 'string') {
+                    this.text = res;
+                    return this._actionMetric(step.stepName, false, true);
+                }
+                if (isPromise(res)) {
                     // Двухаргументный then: ошибка самого шага гасится здесь,
                     // а продолжение конвейера (async-отказ шага) обрабатывает
                     // ошибки своими цепочками, как и синхронный путь.
@@ -1815,7 +1850,10 @@ export abstract class BotController<
                                 // false, продолжаем обычный конвейер (команды → интенты).
                                 return this.#runCommandOrIntent();
                             }
-                            this._actionMetric(step.stepName, false, true);
+                            if (typeof result === 'string') {
+                                this.text = result;
+                            }
+                            return this._actionMetric(step.stepName, false, true);
                         },
                         (error) => {
                             this.appContext.logError(
@@ -1836,8 +1874,7 @@ export abstract class BotController<
                     // Как правило, нужно в случаях, когда был записан какой-то шаг, и диалог открыли заново. В таком случае сам шаг отрабатывать не нужно.
                     return null;
                 }
-                this._actionMetric(step.stepName, false, true);
-                return;
+                return this._actionMetric(step.stepName, false, true);
             }
         }
         return null;
@@ -1858,12 +1895,9 @@ export abstract class BotController<
         if (!intent && fallbackCommand) {
             const res = this.#commandExecute(DEFAULT_FALLBACK_COMMAND, fallbackCommand);
             if (isPromise(res)) {
-                return res.then(() => {
-                    this._actionMetric(DEFAULT_FALLBACK_COMMAND, true);
-                });
+                return res.then(() => this._actionMetric(DEFAULT_FALLBACK_COMMAND, true));
             }
-            this._actionMetric(DEFAULT_FALLBACK_COMMAND, true);
-            return res;
+            return this._actionMetric(DEFAULT_FALLBACK_COMMAND, true);
         }
         // if (
         //     intent === null &&
@@ -1908,7 +1942,7 @@ export abstract class BotController<
                 break;
         }
 
-        this._actionMetric(intent);
+        return this._actionMetric(intent);
     }
 
     /**
@@ -2090,7 +2124,7 @@ export abstract class BotController<
                         if (typeof result === 'string') {
                             this.text = result;
                         }
-                        this._actionMetric(this.eventType, false, false);
+                        return this._actionMetric(this.eventType, false, false);
                     },
                     (error: unknown) => {
                         this.appContext.logError(
@@ -2110,8 +2144,7 @@ export abstract class BotController<
             if (typeof res === 'string') {
                 this.text = res;
             }
-            this._actionMetric(this.eventType, false, false);
-            return;
+            return this._actionMetric(this.eventType, false, false);
         }
         // Все обработчики отказались — событие не перехвачено.
         return null;

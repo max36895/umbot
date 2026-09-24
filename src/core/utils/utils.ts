@@ -627,7 +627,10 @@ function isExplosiveGroupBody(body: string): boolean {
  * повторённой неограниченным квантификатором (`(?:a{2,3})+`): интервал даёт
  * повторы переменной длины, а внешний `+` перебирает все разбиения.
  * IP-паттерн `(\d{1,3}\.){3}` сюда не попадает — его внешний квантификатор
- * ограничен (`{3}`), перебора разбиений он не порождает.
+ * фиксирован (`{3}`), перебора разбиений он не порождает.
+ *
+ * И ещё один: повтор переменной длины (`{n,m}`, `?`) внутри группы с переменным
+ * внешним интервалом — `(a{1,10}){1,10}`, `(a?){2,8}`.
  *
  * Простые `(abc)+` и `(.{2})` с фиксированным интервалом безопасны.
  */
@@ -653,9 +656,75 @@ function hasDangerousQuantifiedGroup(pattern: string): boolean {
             return true;
         }
         // Интервал под неограниченным внешним квантификатором: (?:a{2,3})+.
-        // Ограниченный внешний интервал ((a{2,3}){3}) безопасен — это
+        // Фиксированный внешний интервал ((a{2,3}){3}) безопасен — это
         // то же фиксированное число повторов, что и развёртка.
         if (quant.isUnbounded && hasIntervalQuantifier(body)) {
+            return true;
+        }
+        // Повтор переменной длины под переменным внешним интервалом:
+        // (a{1,10}){1,10}, (\w{1,5}){1,20}, (a?){2,8}. Это тот же класс вложенных
+        // квантификаторов, что (a+)+ (OWASP), только с ограниченными границами:
+        // перебор разбиений всё равно экспоненциальный — (a{1,10}){1,10}$
+        // на 40 символах блокирует поток на ~20 с.
+        const outer = getIntervalBounds(pattern, i + 1);
+        if (outer && outer.max > outer.min && outer.max >= 2 && hasVariableRepetition(body)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Границы интервального квантификатора `{n}`, `{n,m}`, `{n,}` в позиции i.
+ * @returns Границы (`max = Infinity` для `{n,}`) или null, если в позиции не интервал
+ */
+function getIntervalBounds(pattern: string, i: number): { min: number; max: number } | null {
+    if (pattern[i] !== '{') {
+        return null;
+    }
+    const close = skipInterval(pattern, i);
+    if (close === i) {
+        return null;
+    }
+    const [minRaw = '', maxRaw] = pattern.slice(i + 1, close - 1).split(',');
+    const min = Number(minRaw);
+    let max = min;
+    if (maxRaw !== undefined) {
+        max = maxRaw === '' ? Infinity : Number(maxRaw);
+    }
+    return { min, max };
+}
+
+/**
+ * Есть ли в теле группы повтор переменной длины: интервал `{n,m}` с m > n
+ * (или `{n,}`) либо необязательный атом `?`. `?` из префикса группы `(?:`
+ * и ленивый модификатор после квантификатора (`a+?`) повтором не считаются.
+ */
+function hasVariableRepetition(body: string): boolean {
+    for (let k = 0; k < body.length; k++) {
+        const ch = body.charAt(k);
+        if (ch === '\\') {
+            k++;
+            continue;
+        }
+        if (ch === '[') {
+            k++;
+            while (k < body.length && body.charAt(k) !== ']') {
+                if (body.charAt(k) === '\\') {
+                    k++;
+                }
+                k++;
+            }
+            continue;
+        }
+        if (ch === '{') {
+            const bounds = getIntervalBounds(body, k);
+            if (bounds && bounds.max > bounds.min) {
+                return true;
+            }
+            continue;
+        }
+        if (ch === '?' && k > 0 && !'(+*?}'.includes(body.charAt(k - 1))) {
             return true;
         }
     }

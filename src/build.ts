@@ -69,9 +69,8 @@ export interface IConfig {
      * Список плагинов, которые будут подключены к приложению.
      * Стоит использовать, когда необходимо подключить платформы, адаптеры для работы с базой данных и т.д.
      * Если список не передан, подключаются все доступные платформы (`fullPlatforms`) и адаптер БД:
-     * `MongoAdapter` с настройками из `appConfig.db` — всегда (условного «выбора по заданности db» нет:
-     * `db` в конфигурации — всегда объект с дефолтными значениями), а `FileAdapter` — только если
-     * передать его в списке явно.
+     * `MongoAdapter` — если задан адрес базы (`appConfig.db.host` или переменная окружения `DB_HOST`),
+     * иначе `FileAdapter` (данные в JSON-файлах папки `appConfig.json`).
      */
     plugins?: TPlugin[];
 }
@@ -105,7 +104,9 @@ function _initParam(bot: Bot | BotTest, config: IConfig): void {
             bot.use(fullPlatforms);
         }
         if (!appContext.database.adapter) {
-            if (appContext.appConfig.db) {
+            // `db` в конфигурации есть всегда (с пустыми значениями), поэтому
+            // проверяем именно адрес: без него MongoAdapter не подключится.
+            if (appContext.appConfig.db?.host) {
                 bot.use(new MongoAdapter(appContext.appConfig.db));
             } else {
                 bot.use(new FileAdapter());
@@ -172,21 +173,23 @@ export function run(
     port: number = 3000,
 ): Server | Promise<void> {
     let bot: BotTest | Bot;
+    // Режим выставляется до _initParam: strict_prod проверяет регулярные выражения
+    // в момент регистрации, и интенты из appParam/config.logic должны её пройти.
     switch (mode) {
         case 'dev':
             bot = new BotTest();
-            _initParam(bot, config);
             bot.setAppMode('dev');
+            _initParam(bot, config);
             return (bot as BotTest).test(config.testParams);
         case 'dev-online':
             bot = new Bot();
-            _initParam(bot, config);
             bot.setAppMode('dev');
+            _initParam(bot, config);
             return bot.start(hostname, port);
         case 'prod':
             bot = new Bot();
-            _initParam(bot, config);
             bot.setAppMode('strict_prod');
+            _initParam(bot, config);
             return bot.start(hostname, port);
     }
 }

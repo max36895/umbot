@@ -95,7 +95,7 @@ describe('Bot.addForm', () => {
         expect(ctrl.text).toBe('Готово, Иван!');
         expect(ctrl.thisIntentName).toBeNull();
         expect(completed).toEqual({ name: 'Иван', email: 'ivan@test.ru' });
-        expect((ctrl.userData as Record<string, unknown>).__formdata_signup).toBeUndefined();
+        expect((ctrl.userData as Record<string, unknown>).__formdata_signup).toBeNull();
     });
 
     it('команда отмены очищает состояние и не вызывает onComplete', async () => {
@@ -125,7 +125,7 @@ describe('Bot.addForm', () => {
         expect(ctrl.text).toBe('Прерываю форму.');
         expect(ctrl.thisIntentName).toBeNull();
         expect(completedCalled).toBe(false);
-        expect((ctrl.userData as Record<string, unknown>).__formdata_feedback).toBeUndefined();
+        expect((ctrl.userData as Record<string, unknown>).__formdata_feedback).toBeNull();
     });
 
     it('prompt может быть функцией', async () => {

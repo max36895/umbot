@@ -19,6 +19,7 @@ import { basename } from 'node:path';
 type IVkApiData = Record<string, unknown> & {
     peerId?: number | string;
     eventId?: string;
+    callbackAnswered?: boolean;
 };
 
 const VK_SUPPORTED: readonly TApiMethod[] = ['sendPhoto', 'sendDocument', 'answerCallback'];
@@ -110,6 +111,9 @@ export function makeVkApi(controller: BotController): IControllerApi {
                 );
                 return null;
             }
+            // Адаптер после обработки подтверждает событие сам; повторный ответ
+            // на тот же event_id не нужен — помечаем, что он уже дан.
+            data.callbackAnswered = true;
             return toRecord(
                 await request().sendMessageEvent(
                     controller.userId as number,

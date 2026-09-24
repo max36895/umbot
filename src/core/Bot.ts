@@ -31,7 +31,7 @@ import {
     WELCOME_INTENT_NAME,
     WELCOME_INTENT_SLOTS,
 } from './constants';
-import { UsersData } from '../models';
+import { UsersData, DB_TABLES_SCHEMA } from '../models';
 import { ILogger } from './interfaces/ILogger';
 import { Text, isPromise, keysCount } from '../utils';
 
@@ -104,6 +104,11 @@ const MAX_REQUEST_SIZE = 1024 * 1024 * 2;
  * Бизнес-логика по-прежнему видит полный текст в `originalUserCommand`.
  */
 const MAX_USER_COMMAND_LENGTH = 7000;
+
+/** Минимальная пауза перед повторным подключением к недоступной БД, мс. */
+const DB_RETRY_MIN_DELAY = 5000;
+/** Максимальная пауза перед повторным подключением к недоступной БД, мс. */
+const DB_RETRY_MAX_DELAY = 60000;
 
 /**
  * Функция для обработки следующего шага в цепочке промежуточных функций
@@ -435,6 +440,17 @@ export class Bot<
     readonly #appConnectStatus: IAppConnectStatus = {
         isConnecting: false,
     };
+
+    /**
+     * Момент (мс), до которого после неудачного подключения к БД новая попытка
+     * не делается, и текущая пауза между попытками.
+     *
+     * Попытка подключения к недоступной базе занимает секунды (у MongoAdapter ~6 с),
+     * а у платформ жёсткий лимит на ответ (у Алисы 3 с). Поэтому во время паузы
+     * запросы обрабатываются сразу без БД, а не ждут очередного таймаута.
+     */
+    #dbRetryAt = 0;
+    #dbRetryDelay = 0;
 
     #globalMiddlewares: MiddlewareFn[] = [];
     #platformMiddlewares: Partial<Record<TAppType, MiddlewareFn[]>> = {};
@@ -1033,7 +1049,9 @@ export class Bot<
      * Регистрирует многошаговую форму (опросник) с автоматической последовательностью шагов.
      *
      * Под капотом создаётся цепочка `addStep` — по одному на каждое поле. Состояние формы
-     * (частичные ответы) сохраняется в `ctx.userData.__formdata_<formName>`.
+     * (частичные ответы) сохраняется в `ctx.userData.__formdata_<formName>`; после
+     * заполнения или отмены формы поле получает значение `null` (не удаляется: Алиса
+     * очищает поле `user_state_update` только значением `null`).
      *
      * Чтобы запустить форму из команды, вызовите `ctx.thisIntentName = '__form_<formName>_0'` —
      * тогда следующий ответ пользователя пойдёт в обработчик первого поля.
@@ -1106,7 +1124,9 @@ export class Bot<
 
                 // Команда отмены
                 if (cancelCommands.includes(userText.toLowerCase())) {
-                    delete dataRec[dataKey];
+                    // null, а не delete: Алиса (user_state_update) удаляет поле
+                    // из состояния пользователя только при значении null.
+                    dataRec[dataKey] = null;
                     userCtx.thisIntentName = null;
                     userCtx.text = cancelText;
                     return;
@@ -1136,7 +1156,8 @@ export class Bot<
                 dataRec[dataKey] = formAnswers;
 
                 if (isLast) {
-                    delete dataRec[dataKey];
+                    // null вместо delete — см. ветку отмены выше.
+                    dataRec[dataKey] = null;
                     userCtx.thisIntentName = null;
                     // Дожидаемся onComplete: async-колбек иначе не успеет выставить
                     // ctx.text до формирования ответа, а его reject станет
@@ -1275,6 +1296,9 @@ export class Bot<
      * - 'strict_prod': строгая проверка безопасности — любая RegExp с потенциальным ReDoS отклоняется с ошибкой
      *
      * ⚠️ ВАЖНО: В продакшене всегда используйте 'strict_prod' для защиты от атак через регулярные выражения.
+     * Выражения проверяются в момент регистрации (addCommand, setPlatformParams), поэтому вызывайте
+     * метод до регистрации команд и параметров: уже зарегистрированное повторно не проверяется.
+     * Без вызова режим — `strict_prod` при `NODE_ENV=production`, иначе `dev`.
      * Режим 'prod' оставлен для обратной совместимости, но небезопасен.
      *
      * @returns {this} Текущий экземпляр Bot для цепочки вызовов
@@ -1601,39 +1625,86 @@ export class Bot<
     }
 
     async #getDbAdapter(dbAdapter: IDatabaseAdapter): Promise<IDatabaseAdapter | undefined> {
-        if (!this.#appContext.database.isSendConnect) {
-            if (this.#appConnectStatus.isConnecting) {
-                if (isPromise(this.#appConnectStatus.status)) {
-                    await this.#appConnectStatus.status;
-                }
-                if (!this.#appContext.database.isSendConnect) {
-                    return undefined;
-                }
-            } else {
-                this.#appConnectStatus.isConnecting = true;
-                try {
-                    const connectResult = dbAdapter.connect();
-                    this.#appConnectStatus.status = connectResult;
-                    let connected: boolean;
-                    if (isPromise(connectResult)) {
-                        connected = await connectResult;
-                    } else {
-                        connected = connectResult;
-                    }
-                    this.#appContext.database.isSendConnect = connected;
-                } catch (e) {
+        if (this.#appContext.database.isSendConnect) {
+            return dbAdapter;
+        }
+        if (this.#appConnectStatus.isConnecting) {
+            // Ошибку подключения логирует запрос, который его начал; здесь reject
+            // означает только «базы нет», а не 500 для параллельного запроса.
+            const connected = await Promise.resolve(this.#appConnectStatus.status).catch(
+                () => false,
+            );
+            return connected ? dbAdapter : undefined;
+        }
+        if (Date.now() < this.#dbRetryAt) {
+            return undefined;
+        }
+        this.#appConnectStatus.isConnecting = true;
+        let connected = false;
+        try {
+            // Параллельные запросы ждут этот же промис: к базе они пойдут только
+            // после подключения И подготовки схемы (иначе SQL-адаптер получил бы
+            // запрос к ещё не созданной таблице).
+            const attempt = this.#connectAndPrepare(dbAdapter);
+            this.#appConnectStatus.status = attempt;
+            connected = await attempt;
+        } catch (e) {
+            this.#appContext.logError(
+                `Bot:#getDbAdapter(): Ошибка при подключении к базе данных: ${(e as Error).message}`,
+                { error: e },
+            );
+        } finally {
+            this.#appConnectStatus.isConnecting = false;
+        }
+        this.#appContext.database.isSendConnect = connected;
+        if (connected) {
+            this.#dbRetryAt = 0;
+            this.#dbRetryDelay = 0;
+            return dbAdapter;
+        }
+        // Пауза растёт от 5 с до 60 с, пока база недоступна.
+        this.#dbRetryDelay = Math.min(
+            this.#dbRetryDelay ? this.#dbRetryDelay * 2 : DB_RETRY_MIN_DELAY,
+            DB_RETRY_MAX_DELAY,
+        );
+        this.#dbRetryAt = Date.now() + this.#dbRetryDelay;
+        this.#appContext.logError(
+            `Bot:#getDbAdapter(): Не удалось подключиться к базе данных. Запросы обрабатываются без БД ` +
+                `(userData не загружается и не сохраняется), следующая попытка подключения — через ` +
+                `${this.#dbRetryDelay / 1000} с.`,
+        );
+        return undefined;
+    }
+
+    /**
+     * Подключается к базе и после успешного подключения готовит схему
+     * (`ensureSchema`: таблицы, индексы). Сбой подготовки схемы не отменяет
+     * подключение — ошибка пишется в лог.
+     * @param dbAdapter DB-адаптер
+     * @returns true, если подключение установлено
+     */
+    async #connectAndPrepare(dbAdapter: IDatabaseAdapter): Promise<boolean> {
+        const connectResult = dbAdapter.connect();
+        const connected = isPromise(connectResult) ? await connectResult : connectResult;
+        if (connected && dbAdapter.ensureSchema) {
+            try {
+                const prepared = dbAdapter.ensureSchema(DB_TABLES_SCHEMA);
+                if ((isPromise(prepared) ? await prepared : prepared) === false) {
                     this.#appContext.logError(
-                        `Bot:#getDbAdapter(): Ошибка при подключении к базе данных: ${(e as Error).message}`,
-                        { error: e },
+                        'Bot:#getDbAdapter(): DB-адаптер не смог подготовить схему (ensureSchema вернул false). ' +
+                            'Проверьте права пользователя БД на создание таблиц и индексов.',
                     );
-                    return undefined;
-                } finally {
-                    this.#appConnectStatus.isConnecting = false;
                 }
+            } catch (e) {
+                this.#appContext.logError(
+                    `Bot:#getDbAdapter(): Ошибка при подготовке схемы базы данных: ${(e as Error).message}`,
+                    { error: e },
+                );
             }
         }
-        return dbAdapter;
+        return connected;
     }
+
     /* eslint-disable require-atomic-updates*/
     async #initUserData(
         botController: BotController<TUserData, TPlatformState>,
@@ -1647,8 +1718,10 @@ export class Bot<
         // (выключен в конфиге ИЛИ платформа его не поддерживает — чат-платформы),
         // поэтому источник userData — БД, независимо от appConfig.isLocalStorage.
         if (userData) {
+            // userId уникален только в пределах платформы.
             const query = {
                 userId: botController.userId,
+                platform: userData.platform,
             };
             if (await userData.whereOne(query)) {
                 botController.userData = userData.data as TUserData;
@@ -2559,6 +2632,8 @@ export class Bot<
      * @param {string | object | null} data - Тело запроса. Рекомендуется передавать сырую строку
      *        (как она пришла от платформы), чтобы проверка подписи (HMAC) считалась от исходного тела.
      * @param {Record<string, unknown>} [headers] - Заголовки запроса (для проверки подписи и авторизации).
+     *        Регистр имён не важен: они приводятся к нижнему регистру (serverless-платформы
+     *        передают заголовки как `X-Telegram-Bot-Api-Secret-Token`).
      * @param {string} [clientIp] - IP-адрес клиента (опционально, для middleware и логирования).
      * @returns {Promise<IWebhookEventResult>} Объект с HTTP-статусом и телом ответа для возврата из cloud-функции.
      *
@@ -2566,7 +2641,13 @@ export class Bot<
      * ```ts
      * // Обработчик Yandex Cloud Function
      * export const handler = async (event: Record<string, unknown>) => {
-     *     const result = await bot.webhookEvent(event.body, event.headers);
+     *     const requestContext = event.requestContext as { identity?: { sourceIp?: string } } | undefined;
+     *     // Третий аргумент — IP клиента (нужен middleware ipFilter)
+     *     const result = await bot.webhookEvent(
+     *         event.body as string,
+     *         event.headers as Record<string, unknown>,
+     *         requestContext?.identity?.sourceIp,
+     *     );
      *     return {
      *         statusCode: result.statusCode,
      *         headers: { 'Content-Type': 'application/json' },
@@ -2601,19 +2682,28 @@ export class Bot<
             return { statusCode: 400, body: 'Empty request' };
         }
 
+        // Имена HTTP-заголовков регистронезависимы. Node отдаёт их в нижнем регистре,
+        // а Yandex Cloud Functions и API Gateway — как прислал клиент
+        // (`X-Telegram-Bot-Api-Secret-Token`). Адаптеры ищут заголовки подписи
+        // в нижнем регистре, поэтому приводим имена к нему.
+        const normalizedHeaders: Record<string, unknown> = {};
+        for (const name in headers) {
+            normalizedHeaders[name.toLowerCase()] = headers[name];
+        }
+
         let auth: TBotAuth = null;
-        const authHeader = headers.authorization ?? headers.Authorization;
+        const authHeader = normalizedHeaders.authorization;
         if (authHeader) {
             auth = String(authHeader).replace('Bearer ', '');
         }
 
-        const appType = this.#getAppType(query, headers);
+        const appType = this.#getAppType(query, normalizedHeaders);
         if (appType && this.#appContext.platforms[appType]) {
-            if (!this.#appContext.platforms[appType].isCorrectQuery(data, headers)) {
+            if (!this.#appContext.platforms[appType].isCorrectQuery(data, normalizedHeaders)) {
                 // Логируем только мета-информацию, не всё тело запроса.
                 this.#appContext.logError(
                     `Bot:webhookEvent(): Для платформы "${appType}" пришёл запрос с неверным токеном. Дальнейшая обработка остановлена.`,
-                    { userAgent: headers['user-agent'] },
+                    { userAgent: normalizedHeaders['user-agent'] },
                 );
                 return { statusCode: 401, body: 'Unauthorized' };
             }
@@ -2764,7 +2854,8 @@ export class Bot<
                 'Bot:start(): Приложение запущено в режиме dev. Проверка регулярных выражений ' +
                     'на ReDoS выполняется, но опасные выражения только логируются (без отклонения), ' +
                     'а подробные логи и отладочная информация доступны всем, кто знает URL вебхука. ' +
-                    'Для продакшена вызовите setAppMode("strict_prod") — там опасные выражения отклоняются.',
+                    'Для продакшена вызовите setAppMode("strict_prod") или запустите процесс с NODE_ENV=production — ' +
+                    'там опасные выражения отклоняются.',
             );
         }
         const insecurePlatforms: string[] = [];

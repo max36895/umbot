@@ -361,6 +361,27 @@ const keyboard = controller.buttons.getButtons(myPlatformButtonProcessing);
 при несериализуемом значении хелпер вернёт `null` и напишет в лог предупреждение вместо того, чтобы
 уронить сборку всей клавиатуры.
 
+#### Раскладка по рядам (`buttons.row()`)
+
+Разработчик бота раскладывает кнопки по рядам через `ctx.buttons.row()`; в кнопке это видно как
+группа `options._group` — у кнопок одного ряда она одинаковая, у кнопки без группы её нет. Если у платформы
+клавиатура из рядов, не разбирайте группы сами — используйте `pUtils.layoutButtonRows`, как встроенные
+адаптеры Telegram, VK, MAX и Viber. Хелпер собирает кнопки одной группы в один ряд, кнопке без группы
+отдаёт отдельную строку, а ряд длиннее лимита платформы переносит с предупреждением в лог:
+
+```ts
+import { pUtils } from 'umbot/plugins';
+
+function myPlatformButtonProcessing(buttons: IButtonType[], appContext?: AppContext): MyButton[][] {
+    const items: pUtils.IButtonRowItem<MyButton>[] = buttons.map((btn) => ({
+        group: btn.options?._group,
+        item: { text: btn.title },
+    }));
+    // Второй аргумент — лимит кнопок в ряду; может зависеть от типов кнопок ряда
+    return pUtils.layoutButtonRows(items, () => 5, 'MyPlatform', appContext);
+}
+```
+
 #### Callback-кнопки и `bot.addAction`
 
 Если платформа умеет callback-кнопки (нажатие приходит отдельным апдейтом с payload), адаптер
@@ -522,7 +543,8 @@ const audioToken = await pUtils.getSoundToken(
 - `shouldProcessChatSound(controller, platformName)` — нужно ли вообще обрабатывать звук: есть добавленные звуки либо задан `speech_kit_token`;
 - `defaultSoundProcessing(soundInfo, defaultSounds, defaultEffects?)` — стандартная подстановка звуков и эффектов (используют Алиса и Маруся);
 - `getCorrectButtons(buttons, limit, appContext?)` — обрезает массив кнопок до лимита платформы (дефолт 10; с `appContext` пишет предупреждение об усечении);
-- `serializePlatformPayload(payload, platform, appContext?)` — сериализует payload кнопки в строку, возвращает `null` с предупреждением вместо исключения.
+- `serializePlatformPayload(payload, platform, appContext?)` — сериализует payload кнопки в строку, возвращает `null` с предупреждением вместо исключения;
+- `layoutButtonRows(items, getRowLimit, platform, appContext?)` — раскладывает кнопки по рядам клавиатуры по `options._group` (`buttons.row()`) с учётом лимита ряда (см. «Раскладка по рядам» выше).
 
 **Медиа-токены:** `getImageToken` и `getSoundToken` разобраны выше; `cacheMediaToken(model, controller)` —
 записывает уже полученный токен в модель `ImageTokens`/`SoundTokens`. Кэш здесь — оптимизация, а не

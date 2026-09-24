@@ -81,6 +81,31 @@ export interface IQuery {
      */
     primaryKeyName: TKey;
     /**
+     * Дополнительные поля, которые вместе с `primaryKeyName` однозначно
+     * определяют запись. Нужны, когда значение первичного ключа уникально только
+     * в паре с другим полем: `userId` у `UsersData` уникален лишь в пределах
+     * платформы (пользователь Telegram 42 и пользователь VK 42 — разные люди).
+     *
+     * Модель сама добавляет эти поля в `query` для selectOne/update/remove.
+     * Адаптер, который ищет запись только по `primaryKeyName` (как FileAdapter
+     * по ключу объекта), обязан учитывать и эти поля, иначе записи разных
+     * пользователей сольются. Поле опционально: без него поведение прежнее.
+     *
+     * @example
+     * ```ts
+     * // UsersData: запись определяется парой userId + platform
+     * const query: IQuery = {
+     *     query: { userId: '42', platform: 'telegram' },
+     *     data: null,
+     *     tableName: 'UsersData',
+     *     primaryKeyName: 'userId',
+     *     uniqueKeys: ['platform'],
+     *     rules: [],
+     * };
+     * ```
+     */
+    uniqueKeys?: string[];
+    /**
      * Правила валидации модели
      */
     rules: IModelRules[];

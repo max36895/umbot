@@ -251,8 +251,15 @@ export interface IStepParam<TBotController extends BotController = BotController
      * - `void` или `Promise<void>` — шаг активен. Обработка останавливается на этом шаге, ожидается ввод пользователя.
      * - `false` (или `Promise<false>` у async-обработчика) — шаг **игнорируется**. Фреймворк считает,
      *   что шаг не применим, и передаёт управление дальше (команды → интенты → fallback).
+     * - строка (или `Promise<string>`) — шаг активен, строка становится текстом ответа
+     *   (`ctx.text`), как у обработчика `addCommand`.
+     *
+     * @example
+     * ```ts
+     * bot.addStep('ask_name', (ctx) => `Приятно познакомиться, ${ctx.originalUserCommand}!`);
+     * ```
      */
-    cb: (botController: TBotController) => void | false | Promise<void | false>;
+    cb: (botController: TBotController) => void | false | string | Promise<void | false | string>;
 }
 
 /**

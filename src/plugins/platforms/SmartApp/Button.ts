@@ -97,7 +97,11 @@ export function buttonProcessing(
                 const object: ISberSmartAppSuggestionButton = {
                     title,
                 };
-                if (button.payload) {
+                if (button.url) {
+                    // Без deep_link кнопка-ссылка стала бы текстовым действием
+                    // и при нажатии отправила бы свой заголовок как реплику.
+                    object.actions = [{ type: 'deep_link', deep_link: button.url }];
+                } else if (button.payload) {
                     const action = getServerAction(button.payload, appContext);
                     if (!action) {
                         return;

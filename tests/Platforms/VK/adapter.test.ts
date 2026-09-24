@@ -225,6 +225,40 @@ describe('VkAdapter', () => {
             expect(sendMessage).toHaveBeenCalledTimes(1);
             expect(sendMessage).toHaveBeenCalledWith(12345, 'Успешный ответ', expect.any(Object));
         });
+
+        it('не подтверждает событие повторно после api.answerCallback()', async () => {
+            const sendMessageEvent = jest
+                .spyOn(VkRequest.prototype, 'sendMessageEvent')
+                .mockResolvedValue({});
+            jest.spyOn(VkRequest.prototype, 'messagesSend').mockResolvedValue({ message_id: 1 });
+
+            const adapter = new VkAdapter();
+            adapter.init(appContext);
+            await adapter.setQueryData(
+                {
+                    type: 'message_event',
+                    group_id: '1',
+                    object: {
+                        user_id: 12345,
+                        peer_id: 12345,
+                        event_id: 'event-789',
+                        payload: { command: 'buy' },
+                    },
+                } as never,
+                controller,
+            );
+            controller.setApiFactory((ctrl) => adapter.createApi(ctrl));
+            await controller.api?.answerCallback?.('Готово');
+            await adapter.getContent(controller);
+
+            expect(sendMessageEvent).toHaveBeenCalledTimes(1);
+            expect(sendMessageEvent).toHaveBeenCalledWith(
+                12345,
+                'event-789',
+                { type: 'show_snackbar', text: 'Готово' },
+                12345,
+            );
+        });
     });
 
     describe('setQueryData', () => {
@@ -274,14 +308,19 @@ describe('VkAdapter', () => {
             expect(controller.platformOptions.sendInInit).toBe('env-confirm-456');
         });
 
-        it('не падает при confirmation без настроенного токена', async () => {
+        it('confirmation без токена: не запускает обработку и объясняет причину в логе', async () => {
+            // Регресс: sendInInit был null, и запрос подтверждения уходил в обычную
+            // обработку (middleware, fallback, messages.send с пустым адресатом).
+            const logError = jest.spyOn(appContext, 'logError');
             const adapter = new VkAdapter();
             adapter.init(appContext);
 
             await expect(
                 adapter.setQueryData({ type: 'confirmation', group_id: '1' }, controller),
             ).resolves.toBe(true);
-            expect(controller.platformOptions.sendInInit).toBeNull();
+            expect(controller.platformOptions.sendInInit).toBe('ok');
+            expect(controller.skipAutoReply).toBe(true);
+            expect(logError).toHaveBeenCalledWith(expect.stringContaining('confirmation_token'));
         });
         it('заполняет имя пользователя из массива users.get', async () => {
             // users.get всегда возвращает массив — адаптер должен взять первый элемент

@@ -32,6 +32,9 @@ const VK_UPLOAD_TIMEOUT = 30_000;
  */
 const VK_API_ENDPOINT = 'https://api.vk.ru/method/';
 
+/** Числовой идентификатор VK (пользователь, чат 2000000000+, сообщество с минусом). */
+const VK_NUMERIC_ID = /^-?\d{1,15}$/;
+
 /**
  * Класс для взаимодействия с API ВКонтакте.
  * Предоставляет методы для отправки сообщений, загрузки файлов и работы с другими функциями API.
@@ -369,7 +372,11 @@ export class VkRequest {
             random_id: this.#generateRandomId(),
         };
 
-        if (typeof peerId !== 'number') {
+        if (typeof peerId === 'string' && VK_NUMERIC_ID.test(peerId)) {
+            // Числовой id строкой ('123' — после escapeString DB-адаптера или из
+            // bot.send('123', ...)) — это peer_id: короткий адрес VK не бывает чисто цифровым.
+            this._request.post.peer_id = Number(peerId);
+        } else if (typeof peerId !== 'number') {
             // peer_id может быть строкой (screen_name) — тогда адресат идёт через domain.
             this._request.post.domain = peerId;
             delete this._request.post.peer_id;

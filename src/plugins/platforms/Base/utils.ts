@@ -455,6 +455,77 @@ export function getCorrectButtons<TButton = IButtonType>(
 }
 
 /**
+ * Кнопка платформы вместе с группой ряда исходной кнопки (`options._group`).
+ */
+export interface IButtonRowItem<T> {
+    /** Группа ряда: кнопки с одной группой выводятся в одну строку; без группы — своя строка */
+    group: unknown;
+    /** Готовая кнопка платформы */
+    item: T;
+}
+
+/**
+ * Раскладывает кнопки по рядам клавиатуры.
+ *
+ * Кнопки с одинаковой группой (`options._group`, её же назначает `buttons.row()`)
+ * попадают в одну строку — на место первой кнопки группы; кнопка без группы
+ * занимает отдельную строку (прежняя раскладка). Ряд, в котором кнопок больше,
+ * чем разрешает платформа, переносится на следующие строки с предупреждением.
+ *
+ * @param items Кнопки платформы с группами, в порядке добавления
+ * @param getRowLimit Сколько кнопок платформа разрешает в ряду (может зависеть от типов кнопок ряда)
+ * @param platform Имя платформы для лога
+ * @param appContext Контекст для предупреждения
+ * @returns Ряды кнопок
+ *
+ * @example
+ * ```ts
+ * layoutButtonRows([{ group: 'r0', item: 'a' }, { group: 'r0', item: 'b' }, { group: undefined, item: 'c' }], () => 8, 'Telegram');
+ * // [['a', 'b'], ['c']]
+ * ```
+ */
+export function layoutButtonRows<T>(
+    items: readonly IButtonRowItem<T>[],
+    getRowLimit: (row: readonly T[]) => number,
+    platform: string,
+    appContext?: { logWarn(message: string, meta?: Record<string, unknown>): void },
+): T[][] {
+    const rows: T[][] = [];
+    const rowByGroup = new Map<string, T[]>();
+    for (const { group, item } of items) {
+        if (group === undefined || group === null || group === '') {
+            rows.push([item]);
+            continue;
+        }
+        const key = String(group);
+        const row = rowByGroup.get(key);
+        if (row) {
+            row.push(item);
+        } else {
+            const newRow = [item];
+            rowByGroup.set(key, newRow);
+            rows.push(newRow);
+        }
+    }
+    const result: T[][] = [];
+    for (const row of rows) {
+        const limit = Math.max(1, getRowLimit(row));
+        if (row.length <= limit) {
+            result.push(row);
+            continue;
+        }
+        appContext?.logWarn(
+            `[${platform}] В ряду ${row.length} кнопок, а платформа разрешает не больше ${limit}: ` +
+                'лишние кнопки перенесены на следующую строку.',
+        );
+        for (let i = 0; i < row.length; i += limit) {
+            result.push(row.slice(i, i + limit));
+        }
+    }
+    return result;
+}
+
+/**
  * Проверяет, что payload можно безопасно передать в JSON платформы.
  *
  * @param payload Данные кнопки.

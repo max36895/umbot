@@ -206,6 +206,25 @@ describe('middleware', () => {
             expect(next.called).toBe(true);
         });
 
+        it('без IP клиента запрос по умолчанию пропускается', async () => {
+            const ctx = makeCtxWithIp(null);
+            const next = makeNext();
+            await ipFilter({ whitelist: ['192.168.1.0/24'] })(ctx as never, next.fn);
+            expect(next.called).toBe(true);
+        });
+
+        it('rejectWithoutIp: запрос без IP клиента отклоняется', async () => {
+            const ctx = makeCtxWithIp(null);
+            const next = makeNext();
+            await ipFilter({
+                whitelist: ['192.168.1.0/24'],
+                deniedText: 'No ip',
+                rejectWithoutIp: true,
+            })(ctx as never, next.fn);
+            expect(next.called).toBe(false);
+            expect(ctx.text).toBe('No ip');
+        });
+
         it('0.0.0.0/0 в whitelist разрешает любой IP', async () => {
             const ctx = makeCtxWithIp('8.8.8.8');
             const next = makeNext();

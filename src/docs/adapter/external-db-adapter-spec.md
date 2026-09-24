@@ -49,6 +49,58 @@ import { BaseDbAdapter } from 'umbot/plugins';
 | -------------- | ----------------------------------------------------------------------------------------------------- |
 | `_query`       | Если хотите поддержать `model.query(callback)` — произвольный запрос. По умолчанию возвращает `null`. |
 | `escapeString` | Для SQL-баз **обязательно** переопределить: базовая реализация просто приводит к строке.              |
+| `ensureSchema` | Для баз со схемой (SQL) **обязательно**: создать таблицы и индексы. См. раздел ниже.                  |
+
+### Подготовка схемы: `ensureSchema`
+
+Фреймворк хранит данные в трёх таблицах — `UsersData`, `ImageTokens`, `SoundTokens`. Кто их создаёт:
+
+- **Хранилища без схемы** (`FileAdapter`, MongoDB) — сами: файл или коллекция появляются при первой записи.
+- **Базы со схемой** (PostgreSQL, MySQL, SQLite и т.д.) — **адаптер**. Без этого первый же запрос упадёт с ошибкой
+  «таблица не существует».
+
+Для этого у адаптера есть метод `ensureSchema(tables)`. Фреймворк вызывает его **после каждого успешного
+`connect()`** и **до первого запроса к базе** (параллельные запросы ждут его завершения) и передаёт описание таблиц —
+`DB_TABLES_SCHEMA` (экспортируется из `umbot`): имя таблицы, первичный ключ, `uniqueKeys`, поля с типами
+(`string` с `maxLength` / `text`) и наборы полей, по которым нужны индексы. Базовая реализация ничего не делает и
+возвращает `true`.
+
+Требования:
+
+- метод идемпотентный — таблицы и индексы, которые уже есть, не пересоздаются (`CREATE TABLE IF NOT EXISTS`,
+  `CREATE INDEX IF NOT EXISTS`);
+- при сбое (нет прав на DDL) вернуть `false` или бросить исключение — фреймворк запишет ошибку в лог и продолжит работу;
+- новые колонки в будущих версиях umbot появятся в `DB_TABLES_SCHEMA` — добавляйте недостающие (`ALTER TABLE ... ADD
+COLUMN`), а не только создавайте таблицу.
+
+```ts
+import { BaseDbAdapter } from 'umbot/plugins';
+import type { IDbTableSchema } from 'umbot';
+
+class PgAdapter extends BaseDbAdapter {
+    async ensureSchema(tables: readonly IDbTableSchema[]): Promise<boolean> {
+        for (const table of tables) {
+            const columns = Object.entries(table.fields).map(
+                ([name, field]) =>
+                    `"${name}" ${field.type === 'text' ? 'TEXT' : `VARCHAR(${field.maxLength ?? 255})`}`,
+            );
+            await this.#pool.query(
+                `CREATE TABLE IF NOT EXISTS "${table.tableName}" (${columns.join(', ')})`,
+            );
+            for (const fields of table.indexes) {
+                const name = `umbot_${table.tableName}_${fields.join('_')}`;
+                const list = fields.map((field) => `"${field}"`).join(', ');
+                await this.#pool.query(
+                    `CREATE INDEX IF NOT EXISTS "${name}" ON "${table.tableName}" (${list})`,
+                );
+            }
+        }
+        return true;
+    }
+}
+```
+
+`MongoAdapter` в `ensureSchema` создаёт индексы из `indexes` (коллекции MongoDB создаёт сама).
 
 ### 2.3 Форматы данных
 
@@ -58,11 +110,21 @@ import { BaseDbAdapter } from 'umbot/plugins';
 {
   tableName: 'UsersData',       // имя таблицы/коллекции
   primaryKeyName: 'userId',     // первичный ключ (string | number | null)
-  query: { userId: '123' },     // условия WHERE (может быть null)
+  query: { userId: '123', platform: 'telegram' }, // условия WHERE (может быть null)
+  uniqueKeys: ['platform'],     // поля составного ключа (опционально, с 3.1.4)
   data: { name: 'John' },       // данные для SET/INSERT (может быть null)
   rules: [{ name: ['name'], type: 'string', max: 50 }] // правила валидации
 }
 ```
+
+**`uniqueKeys` — составной ключ.** Если значение первичного ключа уникально только в паре с другими полями,
+модель передаёт эти поля в `uniqueKeys` и добавляет их в `query` для select/update/remove. Так устроена `UsersData`:
+`userId` уникален в пределах платформы (пользователь Telegram 42 и пользователь VK 42 — разные люди), поэтому
+запрос выглядит как `{ userId: '42', platform: 'telegram' }`, а `uniqueKeys: ['platform']`. Адаптер, который
+фильтрует по всем полям `query` (SQL `WHERE`, фильтр MongoDB), поддерживает это без изменений. Адаптер, который
+ищет запись только по `primaryKeyName` (например, по ключу объекта, как `FileAdapter`), обязан учитывать и поля
+`uniqueKeys` — иначе записи разных пользователей сольются. `FileAdapter` хранит такие строки под ключом
+`<platform>:<userId>` и сам переносит строки прежнего формата (ключ — `userId`) при первом обращении.
 
 **Условия — `IQueryData`.** Значения могут быть примитивами или объектами с операторами. Фреймворк не навязывает диалект — адаптер сам решает, как интерпретировать операторы (`$gt`, `$in` и т.д.):
 
@@ -265,6 +327,7 @@ const bot = new Bot()
 
 - [ ] Наследуется от `BaseDbAdapter`, переопределены только `_`-методы.
 - [ ] `connect`/`isConnected`/`destroy`/`close` реализованы и безопасны к повторному вызову.
+- [ ] Для баз со схемой: `ensureSchema` создаёт недостающие таблицы и индексы и безопасен к повторному вызову.
 - [ ] `_select` возвращает `IModelRes` (`status: true` только при найденных записях; отсутствие записи — `status: false`).
 - [ ] Нет исключений из методов контракта.
 - [ ] Поддержаны операторы `$gt/$gte/$lt/$lte/$ne/$in` (минимум).

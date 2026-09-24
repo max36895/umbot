@@ -133,6 +133,19 @@ generateFromFlow(jsonPath, outputPath)
 - **setTTS** — условный импорт через needsTTS.
 - **helpText** — берётся из doc.helpText.text, fallback как запас.
 - **branch → step/command** — генерируется thisIntentName вместо несуществующей функции.
+- **deploy.js SyntaxError** — escape-последовательности регулярок в template literal `deployScript` были одинарными
+  (`\r`, `\u0000`): в генерате получался настоящий перевод строки внутри регулярки, и `npm run deploy` падал сразу.
+  В шаблоне генерата обратные слеши пишутся двойными; тест `deploySanitize` исполняет сгенерированный скрипт
+  с заглушкой `yc`.
+- **deploy.js и .env** — значения разбираются как в `loadEnvFile` фреймворка (инлайн-комментарий « #», кавычки,
+  пустые значения); на Windows команда передаётся одной строкой (массив аргументов с `shell: true` — DEP0190).
+- **serverless.yml** — убран блок `secrets`, которого деплой не использует; вместо него — комментарий про Lockbox.
+- **fetchWithTimeout** — таймаут покрывает и чтение тела ответа (раньше снимался после заголовков).
+- **Cloud handler** — передаёт IP клиента (`event.requestContext.identity.sourceIp`) в `webhookEvent` для `ipFilter`
+  и декодирует тело при `isBase64Encoded`.
+- **mode** — без поля `mode` генерируется `strict_prod`; `setAppMode` стоит сразу после `new Bot()`, до регистрации
+  команд (strict_prod проверяет регулярки при регистрации). В шаблонах `create` — тот же порядок.
+- **Dockerfile** — каталоги `/app/json` и `/app/logs` создаются и отдаются пользователю `umbot` до `USER`.
 
 ## Тесты
 
