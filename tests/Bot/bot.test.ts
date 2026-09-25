@@ -128,6 +128,8 @@ describe('Bot', () => {
         'ALISA_TOKEN',
         'YANDEX_TOKEN',
         'SPEECH_KIT_TOKEN',
+        'TELEGRAM_WEBHOOK_SECRET',
+        'MAX_WEBHOOK_SECRET',
         'DB_HOST',
         'DB_USER',
         'DB_PASSWORD',
@@ -1103,6 +1105,8 @@ describe('Bot', () => {
             const noSignWarn = warnings.find((w) => w.includes('БЕЗ проверки подписи'));
             expect(noSignWarn).toBeDefined();
             expect(noSignWarn).toContain('telegram');
+            // У Алисы подписи нет — советовать задать секрет бессмысленно
+            expect(noSignWarn).not.toContain('alisa');
 
             const ifaceWarn = warnings.find((w) => w.includes('0.0.0.0'));
             expect(ifaceWarn).toBeDefined();
@@ -1913,6 +1917,17 @@ describe('Bot', () => {
             expect(tokens.telegram?.speech_kit_token).toBe('speechkit-test-token');
             expect(tokens.vk?.speech_kit_token).toBe('speechkit-test-token');
             expect(tokens.max_app?.speech_kit_token).toBe('speechkit-test-token');
+        });
+
+        it('TELEGRAM_WEBHOOK_SECRET и MAX_WEBHOOK_SECRET включают проверку подписи вебхука', () => {
+            const envBot = new TestBot();
+            envBot.setLogger({ error: () => {}, warn: () => {} });
+            envBot.setAppConfig({
+                env: __dirname + '/env-webhook-secret',
+            });
+            const tokens = envBot.getAppContext().appConfig.tokens;
+            expect(tokens.telegram?.webhookSecret).toBe('tg-webhook-secret');
+            expect(tokens.max_app?.webhookSecret).toBe('max-webhook-secret');
         });
     });
 

@@ -3,6 +3,7 @@ const path = require('node:path');
 const CreateController = require(path.join(__dirname, 'CreateController.js')).create;
 const utils = require(path.join(__dirname, '..', 'utils.js')).utils;
 const flowGenerator = require(path.join(__dirname, '..', 'flowGenerator.js'));
+const { setupWebhook } = require(path.join(__dirname, 'WebhookController.js'));
 const fs = require('node:fs');
 
 const VERSION = require(path.join(__dirname, '..', '..', 'package.json')).version;
@@ -22,6 +23,67 @@ const FLAT_TOKEN_KEYS = [
     'max_token',
 ];
 
+/**
+ * Шаблон .env проекта. Значения пустые: фреймворк пропускает пустые переменные, а заглушка
+ * вида `your-token` стала бы настоящим значением — `VK_SECRET_KEY` с ней отклонял бы все запросы VK.
+ */
+const ENV_TEMPLATE = `# Файл читает приложение (env: './.env' в конфигурации), в git он не попадает.
+# Заполните переменные платформ, которые используете; пустые значения игнорируются.
+
+# Telegram
+TELEGRAM_TOKEN=
+# Секрет вебхука: создаётся командой \`npx umbot webhook telegram <https-url>\`
+TELEGRAM_WEBHOOK_SECRET=
+
+# VK
+VK_TOKEN=
+VK_CONFIRMATION_TOKEN=
+VK_SECRET_KEY=
+
+# MAX
+MAX_TOKEN=
+# Секрет вебхука: создаётся командой \`npx umbot webhook max <https-url>\`
+MAX_WEBHOOK_SECRET=
+
+# Viber
+VIBER_TOKEN=
+
+# Алиса и Сбер Салют
+ALISA_TOKEN=
+SMARTAPP_TOKEN=
+
+# Маруся (только существующие навыки)
+MARUSIA_TOKEN=
+
+# MongoDB (нужны только с MongoAdapter)
+DB_HOST=
+DB_USER=
+DB_PASSWORD=
+DB_NAME=
+`;
+
+/**
+ * Собирает .env по шаблону {@link ENV_TEMPLATE}, подставляя известные значения.
+ * Переменные, которых нет в шаблоне, дописываются в конец.
+ * @param {Array<[string, string]>} values Пары «имя — значение»
+ * @returns {string} Содержимое .env
+ */
+function buildEnvFile(values = []) {
+    const pending = new Map(values);
+    let content = ENV_TEMPLATE.replace(/^([A-Z0-9_]+)=$/gm, (line, name) => {
+        if (!pending.has(name)) {
+            return line;
+        }
+        const value = pending.get(name);
+        pending.delete(name);
+        return `${name}=${value}`;
+    });
+    for (const [name, value] of pending) {
+        content += `${name}=${value}\n`;
+    }
+    return content;
+}
+
 function getFlags(argv) {
     const flags = [];
     argv.forEach((arg) => {
@@ -38,26 +100,11 @@ function generateEnv(force = false, fileName = '.env') {
             `Файл ${fileName} уже существует. Укажите --force, чтобы перезаписать его.`,
         );
     }
-    utils.fwrite(
-        fileName,
-        `TELEGRAM_TOKEN=your-telegram-token
-VK_TOKEN=your-vk-token
-VK_CONFIRMATION_TOKEN=your-vk-confirmation-token
-VK_SECRET_KEY=your-vk-secret-key
-VIBER_TOKEN=your-viber-token
-ALISA_TOKEN=your-alisa-token
-MARUSIA_TOKEN=your-marusia-token
-MAX_TOKEN=your-max-token
-
-DB_HOST=localhost
-DB_USER=user
-DB_PASSWORD=password
-DB_NAME=bot_db`,
-    );
-    console.log('.env файл успешно создан');
+    utils.fwrite(fileName, buildEnvFile());
+    console.log(`Создан файл ${fileName}`);
     console.warn(
-        'ВНИМАНИЕ: файл .env содержит placeholder-значения. Замените их на реальные токены ' +
-            'и убедитесь, что .env добавлен в ваш .gitignore — токены нельзя коммитить в git.',
+        'Заполните токены платформ, которые используете, и проверьте, что .env есть в .gitignore: ' +
+            'токены нельзя коммитить в git.',
     );
 }
 
@@ -81,6 +128,7 @@ async function main(
         '\n - validate <flow.json> - Проверить корректность flow.json перед генерацией' +
         '\n - stats --log <path> - Агрегировать метрики из лога (число строк/ошибок/предупреждений, топ команд, p50/p95/p99 latency)' +
         '\n - generateEnv - Сгенерировать файл .env' +
+        '\n - webhook <telegram|max> <https-url> - Зарегистрировать вебхук с секретом. Секрет генерируется, сохраняется в .env (TELEGRAM_WEBHOOK_SECRET / MAX_WEBHOOK_SECRET) и включает проверку подписи. Токен берётся из .env' +
         '\n - add <feature> - Добавляет данные в проект. Доступные типы: ' +
         '\n\t docker  Добавляет Dockerfile и .dockerignore' +
         '\n\t deploy  Добавляет файл для деплоя на сервер' +
@@ -151,7 +199,6 @@ async function main(
                         );
                     }
                 }
-                let envContent = '';
                 const TOKEN_ENV_NAMES = {
                     telegram: 'TELEGRAM_TOKEN',
                     vk: 'VK_TOKEN',
@@ -254,16 +301,16 @@ async function main(
                         );
                     }
                 }
+                let envPairs = [];
                 if (param.params?.isEnv) {
-                    envContent = envPairList
+                    envPairs = envPairList
                         .filter(
                             ([, value]) => value !== undefined && value !== null && value !== '',
                         )
                         // Переводы строк в значении дописали бы в .env произвольные
                         // переменные (атака "TELEGRAM_TOKEN=x\nFOO=bar"). flow.json —
                         // недоверенный ввод, поэтому санитизируем так же, как flowGenerator.
-                        .map(([key, value]) => `${key}=${String(value).replace(/[\r\n\0]+/g, '')}`)
-                        .join('\n');
+                        .map(([key, value]) => [key, String(value).replace(/[\r\n\0]+/g, '')]);
 
                     delete create.params?.config?.db;
                     for (const key of FLAT_TOKEN_KEYS) {
@@ -271,47 +318,45 @@ async function main(
                     }
                 }
                 await create.init(param.appName, type);
-                if (envContent) {
+                // Путь повторяет логику CreateController.init(): params.path
+                // или имя проекта (приватное #path снаружи недоступно).
+                const projectDir = path.resolve(
+                    create.params?.path ?? String(param.appName).replace(/\W/g, '_'),
+                );
+                const envPath = path.join(projectDir, '.env');
+                // Каталога нет — проект не создан (не указано имя), .env писать некуда.
+                if (utils.isDir(projectDir) && !fs.existsSync(envPath)) {
+                    // Проект читает .env всегда (env: './.env' в конфигурации), поэтому
+                    // файл создаётся и без значений: пустые переменные подсказывают, что заполнить.
+                    create.generateFile('.env', buildEnvFile(envPairs));
+                } else if (utils.isDir(projectDir) && envPairs.length) {
                     // Существующий .env НЕ перезаписываем: при повторной генерации
                     // с --force в него уже могли быть вписаны реальные токены, и
                     // затирание значениями-черновиками из JSON теряло бы их.
                     // Дописываем только переменные, которых в файле нет (как в
                     // from-flow — см. flowGenerator).
-                    // Путь повторяет логику CreateController.init(): params.path
-                    // или имя проекта (приватное #path снаружи недоступно).
-                    const projectDir = path.resolve(
-                        create.params?.path ?? String(param.appName).replace(/\W/g, '_'),
+                    const existing = fs.readFileSync(envPath, 'utf8');
+                    const existingNames = new Set(
+                        existing
+                            .split(/\r?\n/)
+                            .map((l) => l.trim())
+                            .filter(Boolean)
+                            .map((l) => l.split('=')[0]),
                     );
-                    const envPath = path.join(projectDir, '.env');
-                    if (fs.existsSync(envPath)) {
-                        const existing = fs.readFileSync(envPath, 'utf8');
-                        const existingNames = new Set(
-                            existing
-                                .split(/\r?\n/)
-                                .map((l) => l.trim())
-                                .filter(Boolean)
-                                .map((l) => l.split('=')[0]),
+                    const missing = envPairs
+                        .filter(([name]) => !existingNames.has(name))
+                        .map(([name, value]) => `${name}=${value}`);
+                    if (missing.length > 0) {
+                        const addition =
+                            (existing.endsWith('\n') ? '' : '\n') + missing.join('\n') + '\n';
+                        fs.appendFileSync(envPath, addition, 'utf8');
+                        console.warn(
+                            `  .env: дописаны переменные (${missing
+                                .map((l) => l.split('=')[0])
+                                .join(', ')}), существующие значения не изменены.`,
                         );
-                        const missing = envContent.split(/\r?\n/).filter((line) => {
-                            const name = line.split('=')[0];
-                            return line.trim() && !existingNames.has(name);
-                        });
-                        if (missing.length > 0) {
-                            const addition =
-                                (existing.endsWith('\n') ? '' : '\n') + missing.join('\n') + '\n';
-                            fs.appendFileSync(envPath, addition, 'utf8');
-                            console.warn(
-                                `  .env: дописаны переменные (${missing
-                                    .map((l) => l.split('=')[0])
-                                    .join(', ')}), существующие значения не изменены.`,
-                            );
-                        } else {
-                            console.log(
-                                '  .env уже существует — значения из конфига не перезаписаны.',
-                            );
-                        }
                     } else {
-                        create.generateFile('.env', envContent);
+                        console.log('  .env уже существует — значения из конфига не перезаписаны.');
                     }
                 }
                 create.format();
@@ -339,6 +384,29 @@ async function main(
                     errors.forEach((err) => {
                         console.error(`  - ${err}`);
                     });
+                    process.exitCode = 1;
+                }
+                break;
+            }
+
+            case 'webhook': {
+                const platform = argv[3];
+                const url = argv[4];
+                if (!platform || !url) {
+                    console.log('Использование: npx umbot webhook <telegram|max> <https-url>');
+                    process.exitCode = 1;
+                    break;
+                }
+                try {
+                    const { secretCreated } = await setupWebhook({ platform, url });
+                    console.log(`Вебхук зарегистрирован: ${url}`);
+                    console.log(
+                        secretCreated
+                            ? 'Секрет вебхука сгенерирован и сохранён в .env. Перезапустите бота, чтобы включилась проверка подписи.'
+                            : 'Использован секрет вебхука из .env или окружения.',
+                    );
+                } catch (e) {
+                    console.error(`Ошибка: ${e.message}`);
                     process.exitCode = 1;
                 }
                 break;
@@ -404,7 +472,7 @@ async function main(
 function computeLogStats(logPath) {
     const resolved = path.resolve(logPath);
     if (!fs.existsSync(resolved)) {
-        throw new Error(`файл не найден: ${resolved}`);
+        throw new Error(`Файл не найден: ${resolved}`);
     }
     const raw = fs.readFileSync(resolved, 'utf8');
     const lines = raw.split(/\r?\n/).filter(Boolean);

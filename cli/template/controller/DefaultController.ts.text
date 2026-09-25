@@ -20,7 +20,7 @@ export class __className__Controller extends BotController {
     public action(intentName: string | null, _isCommand?: boolean, _isStep?: boolean): void {
         switch (intentName) {
             case WELCOME_INTENT_NAME:
-                this.text = 'Привет! Я новый навык на umbot. Скажите что-нибудь — я повторю.';
+                this.text = 'Привет! Я новый навык на umbot. Скажите что-нибудь, а я повторю.';
                 this.buttons.addBtn('Помощь');
                 break;
 

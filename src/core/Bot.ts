@@ -23,6 +23,7 @@ import {
 import { ALL_EVENT_TYPES, isEventType, type TEventType } from './events';
 import { MemorySessionStorage } from './utils/MemorySessionStorage';
 import { IncomingMessage, ServerResponse, createServer, Server } from 'node:http';
+import { createHash } from 'node:crypto';
 import type { BotController, IPlatformData, IUserData } from '../controller';
 import { AppContext, T_AUTO } from './AppContext';
 import {
@@ -105,6 +106,26 @@ const MAX_REQUEST_SIZE = 1024 * 1024 * 2;
  */
 const MAX_USER_COMMAND_LENGTH = 7000;
 
+/**
+ * Сколько запрос ждёт завершения предыдущего запроса того же пользователя, мс.
+ * Предел нужен, чтобы зависший обработчик не блокировал пользователя навсегда:
+ * после него запрос выполняется, не дожидаясь предыдущего.
+ */
+const USER_QUEUE_MAX_WAIT = 10_000;
+
+/** Сколько ID доставок помнит дедупликация вебхуков (старые вытесняются). */
+const DELIVERY_CACHE_SIZE = 10_000;
+/**
+ * Сколько помнится ID доставки, мс. Платформы повторяют доставку через секунды
+ * или минуты (MAX — через 60 с, затем с множителем 2.5), час покрывает эти повторы.
+ */
+const DELIVERY_CACHE_TTL = 60 * 60 * 1000;
+/**
+ * Сколько повтор доставки ждёт исхода исходного запроса, который ещё обрабатывается, мс.
+ * Предел не даёт повторам копить открытые соединения, если исходный запрос завис.
+ */
+const DELIVERY_WAIT_LIMIT = 30_000;
+
 /** Минимальная пауза перед повторным подключением к недоступной БД, мс. */
 const DB_RETRY_MIN_DELAY = 5000;
 /** Максимальная пауза перед повторным подключением к недоступной БД, мс. */
@@ -121,14 +142,82 @@ export type MiddlewareFn = (ctx: BotController, next: MiddlewareNext) => void | 
 
 /**
  * Ошибка «запрос платформы не может быть обработан».
- * Webhook отвечает на неё 400 вместо 500, чтобы Telegram и VK не крутили
- * повторную доставку запроса, который в принципе не может быть обработан.
+ * Webhook отвечает на неё 400: проблема в самом запросе, а не в сервере. Повтор
+ * такой доставки не спасает, но Telegram и MAX повторяют любой ответ, кроме 2xx,
+ * поэтому адаптеры мессенджеров не возвращают `false` для служебных событий,
+ * а подтверждают их через `skipAutoReply`.
  */
 class BotBadRequestError extends Error {
     constructor(message: string) {
         super(message);
         this.name = 'BotBadRequestError';
     }
+}
+
+/**
+ * Принятая доставка вебхука (см. `Bot.#acceptDelivery`).
+ */
+interface IDelivery {
+    /** Ключ доставки: платформа, ID и хэш тела */
+    key: string;
+    /** Время, после которого запись забывается, мс */
+    expiresAt: number;
+    /** Исход обработки: `true` — обработана, `false` — сбой сервера, повтор обрабатывается заново */
+    result: Promise<boolean>;
+    /** Сообщает исход обработки тем, кто ждёт `result` */
+    finish: (processed: boolean) => void;
+}
+
+/**
+ * Ждёт завершения промиса, но не дольше `ms`. Отказ промиса не пробрасывается.
+ * @param promise Промис, завершения которого ждём
+ * @param ms Предел ожидания, мс
+ * @returns Значение промиса; `undefined` — промис отклонён или предел истёк
+ */
+function waitWithLimit<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(undefined), ms);
+        timer.unref();
+        const done = (value?: T): void => {
+            clearTimeout(timer);
+            resolve(value);
+        };
+        promise.then(done, () => done());
+    });
+}
+
+/**
+ * Хэш тела запроса для ключа дедупликации. Повтор доставки платформа шлёт с тем же
+ * телом, а атакующий без секрета вебхука не угадает тело будущего апдейта и не
+ * сможет заранее «занять» его ID (у Telegram update_id идут подряд).
+ * @param body Тело запроса
+ * @returns Хэш тела
+ */
+function hashBody(body: string | object): string {
+    return createHash('sha1')
+        .update(typeof body === 'string' ? body : JSON.stringify(body))
+        .digest('base64');
+}
+
+/**
+ * Токен из заголовка Authorization (префикс `Bearer ` отбрасывается).
+ * @param header Значение заголовка
+ * @returns Токен или `null`, если заголовка нет
+ */
+function getBearerToken(header: unknown): TBotAuth {
+    return header ? String(header).replace('Bearer ', '') : null;
+}
+
+/**
+ * Ключ очереди запросов пользователя.
+ * @param appType Платформа запроса
+ * @param userId Идентификатор пользователя
+ * @returns `платформа:userId` или `null`, если пользователь неизвестен
+ */
+function getUserQueueKey(appType: string, userId: unknown): string | null {
+    return userId === null || userId === undefined || userId === ''
+        ? null
+        : `${appType}:${String(userId)}`;
 }
 
 function defaultSend(res: ServerResponse, state: IBotResponse): void {
@@ -471,6 +560,19 @@ export class Bot<
     #memorySession: MemorySessionStorage<IUserData> | null = null;
 
     #plugins: (IPlugin | ((bot: Bot) => void))[] = [];
+
+    /**
+     * Последний запрос в очереди каждого пользователя (`платформа:userId`).
+     * Запросы одного пользователя выполняются по очереди: иначе параллельные
+     * апдейты читают один и тот же userData, и сохраняется только последний.
+     */
+    readonly #userQueues = new Map<string, Promise<unknown>>();
+
+    /**
+     * Принятые доставки вебхуков по ключу. Повтор той же доставки (платформа не
+     * дождалась ответа) подтверждается без повторного выполнения логики.
+     */
+    readonly #deliveries = new Map<string, IDelivery>();
 
     /**
      * Получение корректного контроллера
@@ -1706,11 +1808,19 @@ export class Bot<
     }
 
     /* eslint-disable require-atomic-updates*/
+    /**
+     * Загружает userData из БД.
+     * @param botController Контроллер запроса
+     * @param userData Модель пользователя (если подключён DB-адаптер)
+     * @param localStateData Состояние из локального хранилища платформы
+     * @returns `true` — пользователь новый, `false` — найден, `null` — БД не ответила
+     *   (данные пользователя неизвестны, сохранять ответ этого запроса нельзя)
+     */
     async #initUserData(
         botController: BotController<TUserData, TPlatformState>,
         userData?: UsersData,
         localStateData?: unknown,
-    ): Promise<boolean> {
+    ): Promise<boolean | null> {
         if (botController.platformOptions.usedLocalStorage) {
             botController.state = localStateData as TPlatformState;
         }
@@ -1723,16 +1833,26 @@ export class Bot<
                 userId: botController.userId,
                 platform: userData.platform,
             };
-            if (await userData.whereOne(query)) {
+            // where(), а не whereOne(): только так «не найдено» отличается от ошибки БД.
+            const res = await userData.where(query, true);
+            if (res?.status) {
+                userData.init(this.#appContext.database.adapter?.getValue(res) ?? null);
                 botController.userData = userData.data as TUserData;
                 return false;
-            } else {
-                if (!botController.userData) {
-                    botController.userData = {} as TUserData;
-                }
-                userData.userId = botController.userId;
-                userData.meta = botController.userMeta as Record<string, unknown>;
             }
+            if (!botController.userData) {
+                botController.userData = {} as TUserData;
+            }
+            if (res?.error) {
+                this.#appContext.logError(
+                    `Bot:run(): Не удалось загрузить данные пользователя "${String(botController.userId)}": ` +
+                        'запрос обработан с пустыми userData, изменения не сохранены.',
+                    { error: res.error },
+                );
+                return null;
+            }
+            userData.userId = botController.userId;
+            userData.meta = botController.userMeta as Record<string, unknown>;
         }
         return true;
     }
@@ -1749,7 +1869,7 @@ export class Bot<
      * @param platformClass Адаптер платформы
      * @param userData Модель пользователя (если подключён DB-адаптер)
      * @param appType Тип платформы (для дедупликации предупреждений)
-     * @returns Флаг локального хранилища, признак нового пользователя и ключ
+     * @returns Флаг локального хранилища, признак нового пользователя (`null` — БД не ответила) и ключ
      * сессии в памяти (`null`, если сессия в памяти не используется)
      */
     async #initRequestState(
@@ -1757,7 +1877,7 @@ export class Bot<
         platformClass: IPlatformAdapter,
         userData: UsersData | undefined,
         appType: TAppType,
-    ): Promise<{ isLocalStorage: boolean; isNewUser: boolean; memoryKey: string | null }> {
+    ): Promise<{ isLocalStorage: boolean; isNewUser: boolean | null; memoryKey: string | null }> {
         botController.platformOptions.usedLocalStorage =
             platformClass.isLocalStorage(botController);
         const isLocalStorage: boolean =
@@ -1778,7 +1898,7 @@ export class Bot<
             }
         }
 
-        let isNewUser = true;
+        let isNewUser: boolean | null = true;
         let localStateData: unknown = botController.state;
         if (isLocalStorage) {
             localStateData = platformClass.getLocalStorage(botController);
@@ -1960,17 +2080,19 @@ export class Bot<
      * При использовании localStorage и отсутствии DB-адаптера сохранение пропускается.
      * @param botController Контроллер с данными текущего запроса
      * @param userData Экземпляр модели для работы с данными пользователя
-     * @param isNewUser true, если пользователь новый (ещё не записан в БД)
+     * @param isNewUser true, если пользователь новый (ещё не записан в БД); null — данные
+     *   не загрузились, и сохранение пустых userData затёрло бы или задублировало запись
      * @param isLocalStorage true, если данные хранятся в локальном хранилище платформы
      */
     async #saveUserData(
         botController: BotController<TUserData, TPlatformState>,
         userData: UsersData | undefined,
-        isNewUser: boolean,
+        isNewUser: boolean | null,
         isLocalStorage: boolean,
     ): Promise<void> {
         if (
             !userData ||
+            isNewUser === null ||
             (isLocalStorage &&
                 (!botController.state ||
                     (botController.state as unknown as object) ===
@@ -2370,7 +2492,12 @@ export class Bot<
                 if (botController.platformOptions.sendInInit) {
                     return botController.platformOptions.sendInInit as TRunResult;
                 }
-                return this.#runApp(botController, platformClass, botController.appType as string);
+                const appType = botController.appType as string;
+                return this.#runInUserQueue(
+                    getUserQueueKey(appType, botController.userId),
+                    this.#getUserQueueWait(platformClass, botController),
+                    () => this.#runApp(botController, platformClass, appType),
+                );
             } else {
                 const msg =
                     (botController.platformOptions.error as string) ||
@@ -2384,6 +2511,57 @@ export class Bot<
             this.#appContext.logError(msg);
             throw new BotBadRequestError(msg);
         }
+    }
+
+    /**
+     * Выполняет задачу после завершения предыдущего запроса того же пользователя.
+     *
+     * Без очереди два параллельных апдейта одного пользователя (двойное нажатие
+     * кнопки, повторная доставка, несколько соединений вебхука) читают один и тот же
+     * userData, и изменения первого теряются. Очередь живёт в памяти процесса:
+     * при нескольких репликах нужна маршрутизация пользователя на одну реплику.
+     *
+     * @param key Ключ `платформа:userId`; `null` — пользователь неизвестен, очередь не нужна
+     * @param maxWait Сколько ждать предыдущий запрос, мс (см. {@link #getUserQueueWait})
+     * @param task Обработка запроса
+     * @returns Результат задачи
+     */
+    #runInUserQueue<T>(key: string | null, maxWait: number, task: () => Promise<T>): Promise<T> {
+        if (key === null) {
+            return task();
+        }
+        const previous = this.#userQueues.get(key);
+        // Ожидающий получает отказ предыдущего запроса как обычное завершение
+        // (waitWithLimit): ошибка одного запроса не роняет следующие.
+        const run = previous && maxWait > 0 ? waitWithLimit(previous, maxWait).then(task) : task();
+        this.#userQueues.set(key, run);
+        // Ключ снимается до продолжения вызывающего кода: следующий последовательный
+        // запрос того же пользователя идёт быстрым путём, без ожидания.
+        return run.finally(() => {
+            if (this.#userQueues.get(key) === run) {
+                this.#userQueues.delete(key);
+            }
+        });
+    }
+
+    /**
+     * Сколько запрос ждёт предыдущий запрос того же пользователя.
+     *
+     * Без срока ответа у платформы — {@link USER_QUEUE_MAX_WAIT}. Если платформа ждёт ответ
+     * ограниченное время (`getResponseTimeout`, голосовые платформы), на ожидание уходит
+     * не больше половины оставшегося времени: вторая половина остаётся на сам запрос.
+     *
+     * @param adapter Адаптер платформы запроса
+     * @param controller Контроллер запроса (время начала обработки)
+     * @returns Предел ожидания, мс; `0` — не ждать
+     */
+    #getUserQueueWait(adapter: IPlatformAdapter, controller: BotController): number {
+        const timeout = adapter.getResponseTimeout?.() ?? null;
+        if (timeout === null) {
+            return USER_QUEUE_MAX_WAIT;
+        }
+        const remaining = timeout - adapter.getProcessingTime(controller);
+        return Math.max(0, Math.min(USER_QUEUE_MAX_WAIT, remaining / 2));
     }
 
     #parseContent(content: TBotContent): TBotContent {
@@ -2405,6 +2583,92 @@ export class Bot<
             throw new BotBadRequestError(msg);
         }
         return parsed;
+    }
+
+    /**
+     * Регистрирует доставку вебхука для дедупликации.
+     *
+     * Мессенджеры повторяют доставку, если не получили 2xx вовремя, — а ответ
+     * уходит только после исходящих вызовов API (загрузка медиа, очередь MAX).
+     * Без дедупликации повтор снова запускает логику, и пользователь получает
+     * ответ дважды. Работает для адаптеров, реализующих `getDeliveryId`.
+     *
+     * Повтор, пришедший, пока исходный запрос ещё обрабатывается, ждёт его исхода
+     * (не дольше {@link DELIVERY_WAIT_LIMIT}): после успеха подтверждается `200 ok`,
+     * после сбоя сервера обрабатывается заново — иначе апдейт потерялся бы, ведь
+     * платформа уже получила бы 2xx на повтор.
+     *
+     * @param adapter Адаптер платформы запроса
+     * @param query Разобранное тело запроса
+     * @param body Тело запроса в исходном виде (для хэша)
+     * @returns Доставка, исход которой нужно сообщить через {@link #finishDelivery};
+     *   `null` — адаптер не даёт ID; `false` — повтор, отвечать `200 ok` без обработки
+     */
+    async #acceptDelivery(
+        adapter: IPlatformAdapter,
+        query: unknown,
+        body: string | object,
+    ): Promise<IDelivery | null | false> {
+        let key: string;
+        try {
+            const id = adapter.getDeliveryId?.(query);
+            if (id === null || id === undefined || id === '') {
+                return null;
+            }
+            key = `${adapter.platformName}:${id}:${hashBody(body)}`;
+        } catch {
+            // Ошибка в адаптере не должна мешать обработке запроса.
+            return null;
+        }
+
+        let existing = this.#deliveries.get(key);
+        while (existing && existing.expiresAt > Date.now()) {
+            const processed = await waitWithLimit(existing.result, DELIVERY_WAIT_LIMIT);
+            if (processed !== false) {
+                this.#appContext.logWarn(
+                    `Bot: повторная доставка "${adapter.platformName}" подтверждена без обработки` +
+                        (processed === undefined ? ', не дождавшись исходного запроса. ' : '. ') +
+                        'Платформа повторяет запрос, если ответ не пришёл вовремя: проверьте время обработки.',
+                );
+                return false;
+            }
+            // Исходный запрос упал. Повторов могло прийти несколько: обработку берёт
+            // первый, остальные снова ждут — уже его.
+            existing = this.#deliveries.get(key);
+        }
+
+        const now = Date.now();
+        this.#deliveries.delete(key);
+        // TTL одинаков для всех записей, поэтому порядок вставки совпадает с порядком истечения.
+        for (const [oldKey, old] of this.#deliveries) {
+            if (old.expiresAt > now && this.#deliveries.size < DELIVERY_CACHE_SIZE) {
+                break;
+            }
+            this.#deliveries.delete(oldKey);
+        }
+        let finish: (processed: boolean) => void = () => {};
+        const result = new Promise<boolean>((resolve) => {
+            finish = resolve;
+        });
+        const delivery: IDelivery = { key, expiresAt: now + DELIVERY_CACHE_TTL, result, finish };
+        this.#deliveries.set(key, delivery);
+        return delivery;
+    }
+
+    /**
+     * Сообщает исход обработки доставки повторам, которые его ждут. После сбоя сервера
+     * доставка забывается, чтобы её повтор обработался заново.
+     * @param delivery Доставка из {@link #acceptDelivery}
+     * @param processed `false` — сбой сервера (ответ 500)
+     */
+    #finishDelivery(delivery: IDelivery | null, processed: boolean): void {
+        if (!delivery) {
+            return;
+        }
+        if (!processed && this.#deliveries.get(delivery.key) === delivery) {
+            this.#deliveries.delete(delivery.key);
+        }
+        delivery.finish(processed);
     }
 
     #isWebhookError(
@@ -2537,6 +2801,8 @@ export class Bot<
             return;
         }
         let appType: string | null = null;
+        let delivery: IDelivery | null = null;
+        let serverError = false;
         try {
             if (this.#appContext.usedMetric) {
                 this.#appContext.logMetric(EMetric.START_WEBHOOK, Date.now(), {});
@@ -2547,10 +2813,7 @@ export class Bot<
             if (!query) {
                 return this.#webhookHandleError(req, res, 400, responseCb);
             }
-            let auth: TBotAuth = null;
-            if (req.headers?.authorization) {
-                auth = req.headers.authorization.replace('Bearer ', '');
-            }
+            const auth = getBearerToken(req.headers?.authorization);
 
             appType = this.#getAppType(query, req.headers);
             const platformAdapter = appType ? this.#appContext.platforms[appType] : undefined;
@@ -2570,6 +2833,11 @@ export class Bot<
                     );
                     return this.#webhookHandleError(req, res, 401, responseCb);
                 }
+                const accepted = await this.#acceptDelivery(platformAdapter, query, data);
+                if (accepted === false) {
+                    return send(req, res, { statusCode: 200, body: 'ok', defaultSend }, responseCb);
+                }
+                delivery = accepted;
             }
             const result = await this.run(appType, query, auth, req.socket?.remoteAddress);
             const statusCode = result === 'notFound' ? 404 : 200;
@@ -2601,8 +2869,8 @@ export class Bot<
                 return this.#webhookHandleError(req, res, 422, responseCb);
             }
             if (error instanceof BotBadRequestError) {
-                // Проблема в самом запросе, а не в сервере. На 5xx Telegram и VK
-                // включают ретраи и отключают вебхук, поэтому отвечаем 400.
+                // Некорректный запрос — 400, см. BotBadRequestError. Доставка считается
+                // обработанной: повтор того же запроса подтвердится 200 без обработки.
                 return this.#webhookHandleError(req, res, 400, responseCb, 'Bad Request');
             }
             this.#appContext.logError(
@@ -2611,7 +2879,10 @@ export class Bot<
                     error,
                 },
             );
+            serverError = true;
             return this.#webhookHandleError(req, res, 500, responseCb);
+        } finally {
+            this.#finishDelivery(delivery, !serverError);
         }
     }
 
@@ -2691,15 +2962,13 @@ export class Bot<
             normalizedHeaders[name.toLowerCase()] = headers[name];
         }
 
-        let auth: TBotAuth = null;
-        const authHeader = normalizedHeaders.authorization;
-        if (authHeader) {
-            auth = String(authHeader).replace('Bearer ', '');
-        }
+        const auth = getBearerToken(normalizedHeaders.authorization);
 
         const appType = this.#getAppType(query, normalizedHeaders);
-        if (appType && this.#appContext.platforms[appType]) {
-            if (!this.#appContext.platforms[appType].isCorrectQuery(data, normalizedHeaders)) {
+        const platformAdapter = appType ? this.#appContext.platforms[appType] : undefined;
+        let delivery: IDelivery | null = null;
+        if (platformAdapter) {
+            if (!platformAdapter.isCorrectQuery(data, normalizedHeaders)) {
                 // Логируем только мета-информацию, не всё тело запроса.
                 this.#appContext.logError(
                     `Bot:webhookEvent(): Для платформы "${appType}" пришёл запрос с неверным токеном. Дальнейшая обработка остановлена.`,
@@ -2707,8 +2976,14 @@ export class Bot<
                 );
                 return { statusCode: 401, body: 'Unauthorized' };
             }
+            const accepted = await this.#acceptDelivery(platformAdapter, query, data ?? query);
+            if (accepted === false) {
+                return { statusCode: 200, body: 'ok' };
+            }
+            delivery = accepted;
         }
 
+        let serverError = false;
         try {
             const result = await this.run(appType, query, auth, clientIp);
             return { statusCode: result === 'notFound' ? 404 : 200, body: result };
@@ -2723,7 +2998,10 @@ export class Bot<
                 }`,
                 { error },
             );
+            serverError = true;
             return { statusCode: 500, body: 'Internal Server Error' };
+        } finally {
+            this.#finishDelivery(delivery, !serverError);
         }
     }
 
@@ -2807,7 +3085,7 @@ export class Bot<
         });
 
         this.#serverInst.listen(port, hostname, () => {
-            this.#appContext.log(`Server running at //${hostname}:${port}/`);
+            this.#appContext.log(`Server running at http://${hostname}:${port}/`);
         });
         // Если завершили процесс, то закрываем все подключения и чистим ресурсы.
         // Удаляем старые обработчики, если start() вызывается повторно
@@ -2864,16 +3142,13 @@ export class Bot<
             if (!adapter) {
                 continue;
             }
-            // Адаптер сам знает, включает ли его конфигурация проверку подписи:
-            // Telegram/MAX — webhookSecret, VK — secret_key (VK шлёт подпись в теле,
-            // signatureName у него нет — ориентируемся только на метод), Viber — token.
-            // Платформы без метода и без signatureName (Alisa, Marusia, SmartApp)
-            // проверять бессмысленно: подписи не существует по построению платформы,
-            // там нужна защита на уровне логики.
-            const hasAnySignatureSupport =
-                Boolean(adapter.signatureName) ||
-                typeof adapter.isSignatureCheckEnabled === 'function';
-            if (!hasAnySignatureSupport) {
+            // Предупреждаем только о платформах с механизмом подписи: у Алисы, Маруси
+            // и SmartApp его нет, и совет «задайте секрет» был бы невыполним.
+            const hasSignature = adapter.isSignatureSupported
+                ? adapter.isSignatureSupported()
+                : Boolean(adapter.signatureName) ||
+                  typeof adapter.isSignatureCheckEnabled === 'function';
+            if (!hasSignature) {
                 continue;
             }
             const enabled = adapter.isSignatureCheckEnabled
@@ -2889,14 +3164,20 @@ export class Bot<
                     ', ',
                 )}] БЕЗ проверки подписи: секрет вебхука не задан в конфигурации. ` +
                     'Любой, кто знает URL вебхука, может отправлять поддельные запросы. ' +
-                    'Задайте tokens.<platform>.webhookSecret (Telegram/MAX), vk_secret_key (VK) ' +
-                    'или используйте ViberAdapter(token).',
+                    'Для Telegram/MAX выполните `npx umbot webhook <telegram|max> <https-url>` ' +
+                    '(секрет попадёт в .env как TELEGRAM_WEBHOOK_SECRET/MAX_WEBHOOK_SECRET) ' +
+                    'или задайте tokens.<platform>.webhookSecret; для VK — VK_SECRET_KEY, ' +
+                    'для Viber — токен в ViberAdapter(token).',
+                undefined,
+                { stderr: true },
             );
         }
         if (hostname === '0.0.0.0' || hostname === '::') {
             this.#appContext.logWarn(
                 'Bot:start(): Сервер слушает все сетевые интерфейсы (0.0.0.0). ' +
                     'Убедитесь, что вебхук закрыт reverse proxy с ограничением доступа.',
+                undefined,
+                { stderr: true },
             );
         }
     }

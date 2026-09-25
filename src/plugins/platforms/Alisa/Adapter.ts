@@ -225,6 +225,14 @@ export class AlisaAdapter extends BasePlatform<string | IAlisaWebhookRequest> {
     }
 
     /**
+     * Срок ответа Алисе: после него навык считается не ответившим.
+     * @returns `MAX_TIME_REQUEST`, мс
+     */
+    getResponseTimeout(): number {
+        return this.MAX_TIME_REQUEST;
+    }
+
+    /**
      * Разбирает запрос Алисы и наполняет контроллер данными: команда, NLU,
      * идентификатор пользователя, состояние, метаданные, health-check ping.
      * @param query Входящий webhook-запрос Алисы

@@ -170,6 +170,11 @@ git push origin HEAD --tags
 npm pack
 tar tzf umbot-X.Y.Z.tgz | head -20  # состав пакета по files из package.json: dist + cli + package.json + README + LICENSE (src/ и docs/ в пакет НЕ входят)
 
+# Проверка пакета как чёрного ящика: CLI из tarball, а не из исходников.
+# npm вырезает из пакета файлы .gitignore/.npmrc — тесты из репозитория этого не видят.
+mkdir ../pack-check && cd ../pack-check && npm init -y && npm i ../umbot/umbot-X.Y.Z.tgz
+npx umbot create echo && cat echo/.gitignore   # не пустой, содержит .env и /json/*
+
 # И потом:
 npm publish
 ```

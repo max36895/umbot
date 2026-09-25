@@ -294,6 +294,19 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
     }
 
     /**
+     * ID доставки для дедупликации повторов вебхука — `event_id` события.
+     * `confirmation` не дедуплицируется: ответ на него — строка подтверждения, а не `ok`.
+     * @param query Входящее событие Callback API
+     * @returns `event_id` или `null`
+     */
+    getDeliveryId(query: IVkRequestContent): string | null {
+        if (!query?.event_id || query.type === 'confirmation') {
+            return null;
+        }
+        return query.event_id;
+    }
+
+    /**
      * Заполняет контроллер данными нового сообщения VK.
      */
     async #setMessageNew(query: IVkRequestContent, controller: BotController): Promise<boolean> {

@@ -2058,11 +2058,13 @@ function generateTsConfig() {
 }
 
 function generateGitIgnore() {
-    const file = __dirname + '/template/.gitignore';
+    // Шаблон называется gitignore.text: файлы `.gitignore` npm вырезает из пакета.
+    const file = __dirname + '/template/gitignore.text';
     if (utils.isFile(file)) {
         return utils.fread(file);
     }
-    return '';
+    // Пустой .gitignore молча отправил бы .env с токенами в git.
+    throw new Error(`Не найден шаблон ${file}. Переустановите umbot.`);
 }
 
 /** Документация по подключению платформ (webhook, токены, проверка подписи). */

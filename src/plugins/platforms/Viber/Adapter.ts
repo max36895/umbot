@@ -138,6 +138,24 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
     }
 
     /**
+     * ID доставки для дедупликации повторов вебхука — событие и `message_token`.
+     * `webhook` и `conversation_started` не дедуплицируются: ответ на них несёт
+     * содержимое (подтверждение вебхука, приветствие), а повтор получил бы пустой `ok`.
+     * @param query Входящее событие
+     * @returns Ключ доставки или `null`
+     */
+    getDeliveryId(query: IViberContent): string | null {
+        if (
+            query?.message_token === undefined ||
+            query.event === 'webhook' ||
+            query.event === 'conversation_started'
+        ) {
+            return null;
+        }
+        return `${query.event}:${query.message_token}:${query.timestamp ?? ''}`;
+    }
+
+    /**
      * Обрабатывает событие conversation_started: запоминает пользователя и версию API.
      */
     #onConversationStarted(query: IViberContent, controller: BotController): boolean {

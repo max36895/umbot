@@ -8,7 +8,7 @@ SSL-сертификата до настройки CI/CD.
 
 - Сервер с публичным IP-адресом
 - Доменное имя
-- SSL-сертификат (обязателен для Алисы, Маруси, Сбер SmartApp, Viber и других платформ)
+- SSL-сертификат (обязателен для Алисы, Сбер SmartApp, Telegram, MAX, Viber и других платформ)
 
 ## Получение SSL-сертификата через acme.sh
 
@@ -145,7 +145,7 @@ docker run -p 3000:3000 -e ALISA_TOKEN=... -e TELEGRAM_TOKEN=... my-bot
 
 ## Serverless
 
-Для платформ без постоянного сервера (Алиса, Маруся, SmartApp) можно использовать serverless-функции.
+Для платформ без постоянного сервера (Алиса, SmartApp, Маруся) можно использовать serverless-функции.
 
 ### Яндекс Cloud Functions
 
@@ -207,7 +207,7 @@ export const handler = async (event: Record<string, unknown>) => {
 Регистр имён заголовков не важен: Cloud Functions передаёт их как прислал клиент
 (`X-Telegram-Bot-Api-Secret-Token`), а `webhookEvent()` приводит их к нижнему регистру перед проверкой подписи.
 
-> В serverless `isLocalStorage: true` надёжно хранит данные только на Алисе, Марусе и SmartApp (состояние приходит в
+> В serverless `isLocalStorage: true` надёжно хранит данные только на Алисе, SmartApp и Марусе (состояние приходит в
 > запросе). На Telegram/VK/MAX/Viber без DB-адаптера `userData` живёт в памяти экземпляра функции и теряется, когда
 > вызов попадает в новый экземпляр, — для шагов диалога на чат-платформах подключите БД (например, `MongoAdapter`).
 

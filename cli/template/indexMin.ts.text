@@ -9,8 +9,6 @@ import {{name}}Config from './config/{{name}}Config';
 import {{name}}Params from './config/{{name}}Params';
 
 const bot = new Bot();
-// Режим задаётся до регистрации параметров и команд: strict_prod проверяет
-// регулярные выражения в момент регистрации.
 bot.setAppMode('strict_prod');
 bot.use(fullPlatforms);
 bot.setAppConfig({{name}}Config());

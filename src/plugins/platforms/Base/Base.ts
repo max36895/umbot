@@ -321,6 +321,51 @@ export abstract class BasePlatform<TQuery = unknown>
     }
 
     /**
+     * Умеет ли платформа подписывать вебхук. По умолчанию — да, если задан
+     * `signatureName` (подпись в заголовке) или переопределён `isSignatureCheckEnabled`
+     * (подпись в теле, как у VK). Ядро по этому признаку решает, предупреждать ли
+     * при старте о вебхуке без проверки подписи.
+     *
+     * @returns `true`, если у платформы есть механизм подписи вебхука
+     *
+     * @example
+     * ```ts
+     * class MyAdapter extends BasePlatform {
+     *     // Платформа подписывает запрос полем в теле, заголовка нет
+     *     isSignatureSupported(): boolean {
+     *         return true;
+     *     }
+     * }
+     * ```
+     */
+    isSignatureSupported(): boolean {
+        return (
+            Boolean(this.signatureName) ||
+            this.isSignatureCheckEnabled !== BasePlatform.prototype.isSignatureCheckEnabled
+        );
+    }
+
+    /**
+     * Сколько платформа ждёт ответа на запрос, мс. По умолчанию `null` — срока нет
+     * (мессенджеры). Голосовые адаптеры возвращают `MAX_TIME_REQUEST`: по нему ядро
+     * ограничивает ожидание в очереди запросов пользователя.
+     *
+     * @returns Срок ответа в мс или `null`, если срока нет
+     *
+     * @example
+     * ```ts
+     * class MyVoiceAdapter extends BasePlatform {
+     *     getResponseTimeout(): number | null {
+     *         return this.MAX_TIME_REQUEST;
+     *     }
+     * }
+     * ```
+     */
+    getResponseTimeout(): number | null {
+        return null;
+    }
+
+    /**
      * Обрабатывает входящий запрос и заполняет контроллер данными.
      *
      * Обязательно установите:

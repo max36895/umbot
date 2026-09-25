@@ -10,8 +10,6 @@ import {{name}}Params from './config/{{name}}Params';
 import {__className__Controller} from './controller/__className__Controller';
 
 const bot = new Bot();
-// Режим задаётся до регистрации параметров и команд: strict_prod проверяет
-// регулярные выражения в момент регистрации.
 bot.setAppMode('strict_prod');
 bot.use(fullPlatforms);
 bot.use(new FileAdapter());

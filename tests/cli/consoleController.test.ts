@@ -59,7 +59,7 @@ describe('CLI stats (computeLogStats)', () => {
     });
 
     it('кидает ошибку при отсутствии файла', () => {
-        expect(() => computeLogStats(path.join(tmpDir, 'absent.log'))).toThrow('файл не найден');
+        expect(() => computeLogStats(path.join(tmpDir, 'absent.log'))).toThrow('Файл не найден');
     });
 
     it('корректно работает с пустым файлом', () => {
@@ -78,7 +78,50 @@ describe('CLI stats (computeLogStats)', () => {
         expect(fs.readFileSync(envFile, 'utf8')).toBe('USER_TOKEN=keep');
 
         generateEnv(true, envFile);
-        expect(fs.readFileSync(envFile, 'utf8')).toContain('TELEGRAM_TOKEN=your-telegram-token');
+        expect(fs.readFileSync(envFile, 'utf8')).toMatch(/^TELEGRAM_TOKEN=$/m);
+    });
+
+    it('generateEnv пишет пустые значения: заглушка VK_SECRET_KEY отклоняла бы все запросы VK', () => {
+        const envFile = path.join(tmpDir, '.env');
+        generateEnv(true, envFile);
+        const content = fs.readFileSync(envFile, 'utf8');
+
+        expect(content).not.toContain('your-');
+        expect(content).toMatch(/^VK_SECRET_KEY=$/m);
+        expect(content).toMatch(/^TELEGRAM_WEBHOOK_SECRET=$/m);
+        expect(content).toMatch(/^MAX_WEBHOOK_SECRET=$/m);
+        expect(content).toMatch(/^SMARTAPP_TOKEN=$/m);
+    });
+
+    it('create без isEnv создаёт .env из шаблона и не перезаписывает существующий', async () => {
+        const projectDir = path.join(tmpDir, 'env-template-bot');
+        const logSpy = jest.spyOn(console, 'log').mockImplementation();
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+        const createArgs = {
+            command: 'create',
+            appName: 'env_template_bot',
+            mode: 'prod',
+            hostname: '0.0.0.0',
+            port: 3000,
+            params: { path: projectDir },
+        };
+
+        await main(createArgs, ['node', 'umbot', 'create', 'env_template_bot']);
+
+        const envPath = path.join(projectDir, '.env');
+        expect(fs.readFileSync(envPath, 'utf8')).toMatch(/^TELEGRAM_TOKEN=$/m);
+        // Конфиг проекта читает этот файл — иначе секрет `umbot webhook` не подхватится
+        // Кавычки зависят от того, отформатировал ли проект prettier
+        expect(readGeneratedConfig(projectDir, 'env_template_botConfig.ts')).toMatch(
+            /["']?env["']?: ["']\.\/\.env["']/,
+        );
+
+        fs.writeFileSync(envPath, 'TELEGRAM_TOKEN=real-token\n');
+        await main(createArgs, ['node', 'umbot', 'create', 'env_template_bot', '--force']);
+        expect(fs.readFileSync(envPath, 'utf8')).toBe('TELEGRAM_TOKEN=real-token\n');
+
+        logSpy.mockRestore();
+        warnSpy.mockRestore();
     });
 
     it('не сохраняет токены в Params.ts при create с isEnv (утечка секретов)', async () => {
@@ -199,7 +242,7 @@ describe('CLI stats (computeLogStats)', () => {
                 port: 3000,
                 params: {
                     path: projectDir,
-                    // isEnv не задан — .env не создаётся
+                    // isEnv не задан — токены из конфига в .env не переносятся
                     params: {
                         welcome_text: 'Привет!',
                     },
@@ -213,11 +256,14 @@ describe('CLI stats (computeLogStats)', () => {
             ['node', 'umbot', 'create', 'tokens_noenv_bot'],
         );
 
-        // .env не генерируется без isEnv — секреты некуда мигрировать,
-        // поэтому они обязаны исчезнуть из сериализуемой конфигурации
+        // Без isEnv секреты не мигрируют в .env, поэтому обязаны исчезнуть
+        // из сериализуемой конфигурации
         const configContent = readGeneratedConfig(projectDir, 'tokens_noenv_botConfig.ts');
         expect(configContent).not.toContain('SECRET-TG-NO-ENV');
         expect(configContent).not.toContain('tokens');
+        expect(fs.readFileSync(path.join(projectDir, '.env'), 'utf8')).not.toContain(
+            'SECRET-TG-NO-ENV',
+        );
 
         // Пользователь должен узнать, что токены удалены и как их задать
         const warnCalls = warnSpy.mock.calls.map((c) => String(c[0]));

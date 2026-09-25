@@ -118,6 +118,23 @@ describe('rateLimiter middleware', () => {
         expect(next).toHaveBeenCalledTimes(5);
     });
 
+    it('getKey: общий ключ ограничивает платформу целиком, смена userId лимит не обходит', async () => {
+        const middleware = rateLimiter(100, 60000, (c) => c.appType ?? '');
+        const other = new BaseBotController();
+        other.setAppContext(ctx.appContext);
+        other.appType = T_TELEGRAM;
+        other.userId = 'attacker-rotated-id';
+
+        await middleware(ctx, next); // 1
+        await middleware(other, next); // 2 — тот же ключ платформы
+        const queued = middleware(other, next); // лимит 2 исчерпан — в очередь
+
+        expect(next).toHaveBeenCalledTimes(2);
+        jest.advanceTimersByTime(1000);
+        await queued;
+        expect(next).toHaveBeenCalledTimes(3);
+    });
+
     it('destroyRateLimiter очищает все инстансы, а не только последний', async () => {
         ctx.appContext.platforms[T_TELEGRAM].limit = 1;
         const limiter1 = rateLimiter(10);

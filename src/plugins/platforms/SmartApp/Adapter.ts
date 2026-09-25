@@ -195,6 +195,14 @@ export class SmartAppAdapter extends BasePlatform<string | ISberSmartAppWebhookR
     }
 
     /**
+     * Срок ответа SmartApp: после него смартап считается не ответившим.
+     * @returns `MAX_TIME_REQUEST`, мс
+     */
+    getResponseTimeout(): number {
+        return this.MAX_TIME_REQUEST;
+    }
+
+    /**
      * Разбирает запрос SmartApp и наполняет контроллер данными: команда,
      * NLU, персонаж, сессия, метаданные и данные экрана устройства.
      * @param query Входящий webhook-запрос SmartApp

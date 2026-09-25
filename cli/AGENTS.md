@@ -26,14 +26,15 @@ my-bot/
 
 ## Файлы
 
-| Файл                               | Назначение                                                                                                                          |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `flowGenerator.js`                 | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.            |
-| `umbot.js`                         | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                              |
-| `controllers/ConsoleController.js` | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                       |
-| `controllers/CreateController.js`  | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                      |
-| `utils.js`, `index.ts`             | Файловые хелперы CLI и TS-обёртка.                                                                                                  |
-| `template/`                        | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`. |
+| Файл                               | Назначение                                                                                                                                            |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flowGenerator.js`                 | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.                              |
+| `umbot.js`                         | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                                                |
+| `controllers/ConsoleController.js` | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                                         |
+| `controllers/CreateController.js`  | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                                        |
+| `controllers/WebhookController.js` | Команда `webhook`: регистрирует вебхук Telegram/MAX с секретом и пишет секрет в `.env` только после успеха.                                           |
+| `utils.js`, `index.ts`             | Файловые хелперы CLI и TS-обёртка.                                                                                                                    |
+| `template/`                        | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`, `gitignore.text`. |
 
 Тесты: каталог `tests/cli/` (Jest) — `flowGenerator`, `flowGeneratorUserScenario`, `flowUtilsIsEqual`,
 `createController`, `consoleController`, `deploySanitize`. При изменении генератора или шаблонов добавляй проверку
@@ -120,6 +121,13 @@ generateFromFlow(jsonPath, outputPath)
 
 ### Исправленные баги
 
+- **Пустой `.gitignore` из npm-пакета** — npm никогда не публикует файлы с именем `.gitignore` (и `.npmrc`, `.npmignore`),
+  поэтому шаблон называется `template/gitignore.text`. Без шаблона `create` и `from-flow` падают с ошибкой, а не пишут
+  пустой файл. Тест в `flowGenerator.test.ts` («Шаблоны в npm-пакете») запрещает такие имена в `cli/template`.
+- **`.env` в `create`** — конфиг проекта читает `.env` всегда (`env: './.env'`), иначе секрет от `umbot webhook`
+  не подхватывался. `.env` создаётся из общего шаблона `ENV_TEMPLATE` (`ConsoleController.js`) с пустыми значениями:
+  заглушка вроде `VK_SECRET_KEY=your-vk-secret-key` стала бы настоящим секретом и отклоняла все запросы VK.
+  Существующий `.env` не перезаписывается. `isEnv` отвечает только за перенос значений из JSON-конфига.
 - **textExpr** — экранирование `` ` `` и `${` в шаблонных литералах.
 - **set_variable** — выражения разбираются ограниченным парсером, поэтому значения flow не могут внедрить произвольный TypeScript.
 - **HTTP headers** — передаются в fetch через fetchOpts.

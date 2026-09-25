@@ -198,6 +198,20 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         );
     }
 
+    /**
+     * ID доставки для дедупликации повторов вебхука — `update_id`.
+     * В режиме `telegram_webhook_reply` ответ передаётся телом вебхука, и повтор,
+     * подтверждённый пустым `ok`, потерял бы его — там дедупликация выключена.
+     * @param query Входящий update
+     * @returns `update_id` строкой или `null`
+     */
+    getDeliveryId(query: ITelegramContent): string | null {
+        if (this._platformOptions?.telegram_webhook_reply === true) {
+            return null;
+        }
+        return typeof query?.update_id === 'number' ? String(query.update_id) : null;
+    }
+
     #setCallbackQuery(query: ITelegramContent, controller: BotController): boolean {
         const cb = query.callback_query;
         if (cb) {

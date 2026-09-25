@@ -40,6 +40,10 @@ describe('CreateController', () => {
             expect(fs.existsSync(path.join(projectDir, 'package.json'))).toBe(true);
             expect(fs.existsSync(path.join(projectDir, 'tsconfig.json'))).toBe(true);
             expect(fs.existsSync(path.join(projectDir, '.gitignore'))).toBe(true);
+            // Пустой .gitignore отправил бы .env с токенами и json/ с данными в git.
+            const gitignore = fs.readFileSync(path.join(projectDir, '.gitignore'), 'utf8');
+            expect(gitignore).toContain('.env');
+            expect(gitignore).toContain('/json/*');
         });
 
         it('создаёт проект по вложенному пути', async () => {
@@ -207,11 +211,11 @@ describe('CreateController', () => {
             expect(result).toContain('3000');
         });
 
-        it('добавляет env-поле при isEnv=true', () => {
+        it('конфиг всегда читает .env — и без isEnv (туда пишет секрет `umbot webhook`)', () => {
             const ctrl = new CreateController();
+            expect(ctrl._initConfig({ host: 'localhost' })).toContain('"env": "./.env"');
             ctrl.params = { isEnv: true };
-            const result = ctrl._initConfig({ host: 'localhost' });
-            expect(result).toContain('./.env');
+            expect(ctrl._initConfig({ host: 'localhost' })).toContain('"env": "./.env"');
         });
 
         it('генерирует params с IAppParam импортом', () => {
@@ -421,7 +425,7 @@ describe('CreateController', () => {
             ctrl._resolvePrettier = (): string => fakeBin;
             const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
             ctrl.format();
-            expect(warnSpy).toHaveBeenCalledWith('Предупреждение: не удалось отформатировать код');
+            expect(warnSpy).toHaveBeenCalledWith('Не удалось отформатировать код');
             warnSpy.mockRestore();
         });
     });

@@ -312,6 +312,10 @@ function getOrCreateState(stateMap: Map<string, PlatformState>, key: string): Pl
  *                       При превышении очередь перестаёт принимать новые запросы и выбрасывается исключение.
  * @param inactivityTimeout - Время в миллисекундах, после которого запись (очередь + счётчик) удаляется,
  *                            если не было активности. По умолчанию 60000 (1 минута).
+ * @param getKey - Ключ счётчика для запроса. По умолчанию `{platform}:{userId}`. На платформах
+ *                 без подписи вебхука (Алиса, Маруся, SmartApp) и без заданного секрета `userId`
+ *                 задаёт отправитель: меняя его, атакующий обходит лимит на пользователя. Ключ
+ *                 `ctx => ctx.appType ?? ''` ограничивает суммарную нагрузку на платформу.
  * @returns Middleware-функцию для использования в `bot.use()`.
  *
  * @example
@@ -323,6 +327,9 @@ function getOrCreateState(stateMap: Map<string, PlatformState>, key: string): Pl
  *
  * // Или с кастомными настройками
  * bot.use(rateLimiter(200, 120000));
+ *
+ * // Общий лимит на платформу, а не на пользователя
+ * bot.use(rateLimiter(100, 60000, (ctx) => ctx.appType ?? ''));
  * ```
  *
  * @remarks
@@ -337,6 +344,7 @@ function getOrCreateState(stateMap: Map<string, PlatformState>, key: string): Pl
 export function rateLimiter(
     maxQueueSize = 100,
     inactivityTimeout = 60000,
+    getKey?: (ctx: BotController) => string,
 ): (ctx: BotController, next: MiddlewareNext) => Promise<void> {
     const stateMap = new Map<string, PlatformState>();
     const instance: IRateLimiterInstance = {
@@ -363,7 +371,7 @@ export function rateLimiter(
             return next();
         }
 
-        const key = `${platform}:${userId}`;
+        const key = getKey ? `${platform}:${getKey(ctx)}` : `${platform}:${userId}`;
         const st = getOrCreateState(stateMap, key);
 
         const now = (st.lastActivity = Date.now());

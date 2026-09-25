@@ -137,6 +137,32 @@ export interface IEnvConfig {
     MAX_TOKEN?: string;
 
     /**
+     * Секрет вебхука Telegram (`secret_token` из `setWebhook`). Записывается в
+     * `tokens.telegram.webhookSecret` и включает проверку заголовка
+     * `X-Telegram-Bot-Api-Secret-Token`. Команда `npx umbot webhook telegram <url>`
+     * генерирует его и регистрирует вебхук с ним.
+     *
+     * @example
+     * ```ts
+     * TELEGRAM_WEBHOOK_SECRET=Hk3v...43 символа
+     * ```
+     */
+    TELEGRAM_WEBHOOK_SECRET?: string;
+
+    /**
+     * Секрет вебхука MAX (`secret` из `POST /subscriptions`). Записывается в
+     * `tokens.max_app.webhookSecret` и включает проверку заголовка
+     * `X-Max-Bot-Api-Secret`. Команда `npx umbot webhook max <url>` генерирует его
+     * и регистрирует подписку с ним.
+     *
+     * @example
+     * ```ts
+     * MAX_WEBHOOK_SECRET=Hk3v...43 символа
+     * ```
+     */
+    MAX_WEBHOOK_SECRET?: string;
+
+    /**
      * Токен для Сбер SmartApp
      * Используется для авторизации в API Сбер SmartApp
      *

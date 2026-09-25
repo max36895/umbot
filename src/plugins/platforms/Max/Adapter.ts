@@ -193,6 +193,26 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
     }
 
     /**
+     * ID доставки для дедупликации повторов вебхука. Отдельного ID у обновления MAX нет,
+     * поэтому ключ собирается из типа, времени и объекта события: одно сообщение (`mid`)
+     * приходит и как `message_created`, и как `message_edited`.
+     * @param query Входящее обновление
+     * @returns Ключ доставки или `null`, если в обновлении нет времени
+     */
+    getDeliveryId(query: IMaxRequestContent): string | null {
+        if (!query?.update_type || query.timestamp === undefined) {
+            return null;
+        }
+        const target =
+            query.callback?.callback_id ??
+            query.message?.body?.mid ??
+            query.chat_id ??
+            query.user?.user_id ??
+            '';
+        return `${query.update_type}:${query.timestamp}:${target}`;
+    }
+
+    /**
      * Заполняет контроллер данными callback-кнопки MAX.
      */
     #setCallbackData(query: IMaxRequestContent, controller: BotController): boolean {

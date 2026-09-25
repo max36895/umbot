@@ -27,7 +27,7 @@ if (argv[2]) {
                     // Проверяем name сразу при парсинге — с понятным сообщением.
                     if (!jsonParam.name) {
                         console.error(
-                            `В JSON файле "${argv[3]}" отсутствует поле "name" (имя проекта).`,
+                            `В JSON файле "${argv[3]}" отсутствует поле "name" (имя проекта). Проект не создан.`,
                         );
                         process.exit(1);
                     }
@@ -44,7 +44,7 @@ if (argv[2]) {
                     process.exit(1);
                 }
             } else {
-                console.error(`Файл не найден: ${argv[3]}`);
+                console.error(`Не удалось найти файл "${argv[3]}"`);
                 process.exit(1);
             }
         } else {
