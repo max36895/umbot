@@ -494,7 +494,7 @@ export interface IAlisaResponse {
      * @example
      * ```ts
      * // Простой текст
-     * tts: "Привет, как дела?"
+     * tts: "Привет как дела?"
      *
      * // Со стандартным звуком
      * tts: 'Слушайте <speaker audio="alice-sounds-game-win-1.opus">'

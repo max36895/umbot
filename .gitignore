@@ -21,9 +21,6 @@ benchmark/comparison/baseline.json
 # отладочные скрипты — не исходники umbot (lint их не проверяет).
 /audit/*
 /tmp-surgery/*
-/docs-seo-ai-audit-report.md
-/docs-audit-report.md
-/prompt-doc-seo-audit.md
 
 # Артефакты тестов (FileAdapter-таблицы, логи) — см. tests/helpers/tmpDir.ts
 /tests/.tmp/

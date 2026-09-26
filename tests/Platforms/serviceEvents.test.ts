@@ -36,12 +36,12 @@ describe('Служебные события платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData(
+        expect(
+            await adapter.setQueryData(
                 { event: 'webhook', timestamp: 1, message_token: 1 } as never,
                 controller,
             ),
-        ).resolves.toBe(true);
+        ).toBe(true);
         expect(controller.skipAutoReply).toBe(true);
     });
 
@@ -52,9 +52,12 @@ describe('Служебные события платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData({ event: 'client_status', timestamp: 1 } as never, controller),
-        ).resolves.toBe(true);
+        expect(
+            await adapter.setQueryData(
+                { event: 'client_status', timestamp: 1 } as never,
+                controller,
+            ),
+        ).toBe(true);
         expect(controller.skipAutoReply).toBe(true);
     });
 
@@ -67,12 +70,12 @@ describe('Служебные события платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData(
+        expect(
+            await adapter.setQueryData(
                 { event: 'unsubscribed', timestamp: 1, user: { id: 'user-1' } } as never,
                 controller,
             ),
-        ).resolves.toBe(true);
+        ).toBe(true);
         expect(controller.skipAutoReply).toBe(true);
         expect(controller.userId).toBe('user-1');
     });
@@ -84,12 +87,12 @@ describe('Служебные события платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData(
+        expect(
+            await adapter.setQueryData(
                 { event: 'subscribed', timestamp: 1, user: { id: 'user-1' } } as never,
                 controller,
             ),
-        ).resolves.toBe(true);
+        ).toBe(true);
         expect(controller.skipAutoReply).toBeFalsy();
     });
 
@@ -111,12 +114,12 @@ describe('Служебные события платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData(
+        expect(
+            await adapter.setQueryData(
                 { update_id: 7, my_chat_member: { chat: { id: 1 }, from: { id: 1 } } } as never,
                 controller,
             ),
-        ).resolves.toBe(true);
+        ).toBe(true);
         expect(controller.skipAutoReply).toBe(true);
     });
 
@@ -128,12 +131,12 @@ describe('Служебные события платформ', () => {
 
         for (const type of ['group_join', 'message_reply', 'message_allow']) {
             const controller = new TestController(context);
-            await expect(
-                adapter.setQueryData(
+            expect(
+                await adapter.setQueryData(
                     { type, group_id: 1, object: { user_id: 5 } } as never,
                     controller,
                 ),
-            ).resolves.toBe(true);
+            ).toBe(true);
             expect(controller.skipAutoReply).toBe(true);
             expect(controller.userId).toBe(5);
         }
@@ -158,12 +161,12 @@ describe('Служебные события платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData(
+        expect(
+            await adapter.setQueryData(
                 { update_type: 'bot_stopped', timestamp: 1, user: { user_id: 9 } } as never,
                 controller,
             ),
-        ).resolves.toBe(true);
+        ).toBe(true);
         expect(controller.skipAutoReply).toBe(true);
     });
 });

@@ -49,6 +49,24 @@ npm run lint
 
 Если хоть один шаг падает — **остановись**. Релизить нельзя с красным CI.
 
+### Шаг 1.1: Регрессия производительности
+
+```bash
+npm i --prefix benchmark/comparison   # если зависимости стенда ещё не стоят
+npm run baseline:check                # p50 маркерного сценария против baseline.json, допуск +15%
+```
+
+`baseline.json` — локальный файл машины, где его записали (`npm run baseline:update`); на другой машине сравнение бессмысленно — запиши baseline на прошлом релизе и сверяй на той же машине. Падение `baseline:check` — стоп: найди, какой коммит занёс регрессию в горячий путь.
+
+Если релиз трогает горячий путь запроса (`Bot.run`/`webhookHandle`, `BotController`, `CommandReg`, адаптеры, middleware) — перемерь и обнови опубликованные цифры до релиза:
+
+- `npm run compare`, `compare:alisa`, `compare:vk`, `compare:viber`, `compare:max` → таблицы в `src/docs/BENCHMARKS.md`;
+- `npm run stress:compare` (и `:alisa`/`:vk`/`:viber`/`:max`) → раздел стресс-стенда в `BENCHMARKS.md`;
+- `npm run stress` → RPS в `src/docs/performance-and-guarantees.md` и `README.md`;
+- `npm run baseline:update` — новый baseline после релиза.
+
+Прогоны — строго последовательно, без параллельной нагрузки (тесты, сборка, другие стенды): иначе цифры шумят. Цифры, которые на этой машине не воспроизвести (48-часовой soak, внешние серверы), оставь с пометкой, на какой версии они сняты, — не выдавай старые замеры за новые.
+
 ### Шаг 2: Version bump
 
 ```bash
@@ -201,6 +219,7 @@ npm publish
 - [ ] `npm run test` — все пройдены
 - [ ] `npm run prettier` — no diff
 - [ ] `npm run lint` — 0 errors
+- [ ] `npm run baseline:check` — без регрессии; если менялся горячий путь — цифры в `BENCHMARKS.md`/`performance-and-guarantees.md`/`README.md` перемерены (Шаг 1.1)
 - [ ] `git status` — чистая рабочая директория
 - [ ] `CHANGELOG.md` обновлён, соответствует git log, секции `[Unreleased]` нет, дата секции согласована с пользователем, compare-ссылка добавлена
 - [ ] Каждый пункт релизной секции CHANGELOG отражён в `src/docs/`/`README.md`/JSDoc (или пробел явно принят пользователем)

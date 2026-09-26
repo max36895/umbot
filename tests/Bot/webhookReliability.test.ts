@@ -143,6 +143,64 @@ describe('Очередь запросов одного пользователя'
     });
 });
 
+describe('Очередь пользователя при большом числе пользователей', () => {
+    it('после чистки свободных записей очередь по-прежнему упорядочивает запросы пользователя', async () => {
+        const bot = createBot();
+        let active = 0;
+        let maxActive = 0;
+        class TrackController extends BotController {
+            async action(): Promise<void> {
+                active++;
+                maxActive = Math.max(maxActive, active);
+                await new Promise((resolve) => setImmediate(resolve));
+                active--;
+                this.skipAutoReply = true;
+            }
+        }
+        bot.initBotController(TrackController);
+        // Больше порога чистки (1024 записи) — срабатывает пакетное удаление свободных записей.
+        for (let userId = 1; userId <= 1100; userId++) {
+            await bot.run('telegram', tgUpdate(userId, userId));
+        }
+        maxActive = 0;
+        await Promise.all([1, 2, 3].map((n) => bot.run('telegram', tgUpdate(5000 + n, 7))));
+        expect(maxActive).toBe(1);
+    });
+
+    it('тысячи одновременных запросов разных пользователей обрабатываются за линейное время', async () => {
+        const bot = createBot();
+        class ImmediateController extends BotController {
+            async action(): Promise<void> {
+                await new Promise((resolve) => setImmediate(resolve));
+                this.skipAutoReply = true;
+            }
+        }
+        bot.initBotController(ImmediateController);
+        const burst = async (count: number, offset: number): Promise<number> => {
+            const started = performance.now();
+            await Promise.all(
+                Array.from({ length: count }, (_, i) =>
+                    bot.run('telegram', tgUpdate(offset + i, offset + i)),
+                ),
+            );
+            return performance.now() - started;
+        };
+        await burst(500, 100_000); // прогрев JIT
+        const small = await burst(2000, 200_000);
+        const large = await burst(8000, 300_000);
+        // Линейный рост — ~4× при 4× запросов. Чистка очереди на каждого нового
+        // пользователя давала O(n²) — ~16×. Порог с запасом на шум CI.
+        expect(large / small).toBeLessThan(9);
+    });
+
+    it('синхронная ошибка разбора запроса приходит отклонённым промисом', async () => {
+        const bot = createBot();
+        const result = bot.run('telegram', '{не json');
+        expect(result).toBeInstanceOf(Promise);
+        await expect(result).rejects.toThrow();
+    });
+});
+
 describe('Дедупликация повторных доставок', () => {
     it('повтор той же доставки подтверждается 200 ok без повторной обработки', async () => {
         const bot = createBot();
@@ -215,6 +273,39 @@ describe('Дедупликация повторных доставок', () => {
         await bot.webhookEvent(tgUpdate(30), {});
 
         expect(seen.calls).toBe(2);
+    });
+
+    it('с проверенной подписью ключ — ID доставки: тело не хэшируется, повтор с тем же update_id подтверждается', async () => {
+        const bot = createBot();
+        bot.getAppContext().appConfig.tokens.telegram!.webhookSecret = 'secret';
+        const headers = { 'x-telegram-bot-api-secret-token': 'secret' };
+        await bot.webhookEvent(tgUpdate(70, 42, 'первое'), headers);
+        const retry = await bot.webhookEvent(tgUpdate(70, 42, 'изменённое'), headers);
+
+        expect(retry).toEqual({ statusCode: 200, body: 'ok' });
+        expect(seen.calls).toBe(1);
+    });
+
+    it('кэш доставок ограничен: старейшая доставка вытесняется, её повтор обрабатывается заново', async () => {
+        let calls = 0;
+        class FastController extends BotController {
+            action(): void {
+                calls++;
+                this.skipAutoReply = true;
+            }
+        }
+        const bot = createBot();
+        bot.initBotController(FastController);
+        // Размер кэша — 10 000 доставок (DELIVERY_CACHE_SIZE в Bot.ts).
+        for (let id = 1; id <= 10_001; id++) {
+            await bot.webhookEvent(tgUpdate(id, 42, 't'), {});
+        }
+        expect(calls).toBe(10_001);
+        // Вторая доставка ещё в кэше, первая вытеснена.
+        await bot.webhookEvent(tgUpdate(2, 42, 't'), {});
+        expect(calls).toBe(10_001);
+        await bot.webhookEvent(tgUpdate(1, 42, 't'), {});
+        expect(calls).toBe(10_002);
     });
 
     it('bot.run() не дедуплицирует: повторы приходят только через вебхук', async () => {

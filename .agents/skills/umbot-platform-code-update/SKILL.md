@@ -129,7 +129,8 @@ API-классов (`src/plugins/platforms/API/...`) на предмет их с
 > - доработать адаптер/метод `...` для поддержки новой фичи
 > - написать тесты на новый функционал
 > - обновить документацию: `src/docs/platform-integration.md`, `src/docs/platform-contract-comparison.md`,
->   матрица платформ в AGENTS.md (раздел 9) — по карте из AGENTS.md раздела 6
+>   матрица платформ в AGENTS.md (раздел 9), проверенные факты — `.agents/platform-contracts.md` —
+>   по карте из AGENTS.md раздела 6
 > - запись в CHANGELOG в секцию по правилам AGENTS.md раздела 6 (`[Unreleased]` не использовать)
 
 🔴 **Сценарий 3: "Нужно переделать"**
@@ -145,7 +146,7 @@ API-классов (`src/plugins/platforms/API/...`) на предмет их с
 > - проверить, что может сломаться у пользователей фреймворка
 > - написать/обновить тесты
 > - обновить документацию платформы (`src/docs/platform-integration.md`,
->   `src/docs/platform-contract-comparison.md`, матрица AGENTS.md раздел 9) — старые
+>   `src/docs/platform-contract-comparison.md`, матрица AGENTS.md раздел 9, `.agents/platform-contracts.md`) — старые
 >   лимиты и форматы в доке после breaking change опаснее, чем их отсутствие
 > - подготовить миграционную инструкцию: блок `### Миграция с X.Y.z` вверху релизной
 >   секции CHANGELOG (секцию выбирать по AGENTS.md разделу 6, `[Unreleased]` не использовать)
@@ -172,7 +173,7 @@ API-классов (`src/plugins/platforms/API/...`) на предмет их с
     - `ViberRequest.ts` — методы Viber API
 
     Точки VK, которые проверяются при любом обновлении VK API: `users.get` использует только
-    документированный `user_ids` (legacy `user_id` не использовать, AGENTS.md 9); адаптер
+    документированный `user_ids` (legacy `user_id` не использовать, `.agents/platform-contracts.md`); адаптер
     вызывает `users.get` только через кэш `getVkUserInfo` (TTL 1 ч), отключаемый опцией
     `vk_load_user_info: false`; `messagesSend` спредит остаток `params` в запрос — произвольные
     параметры VK API пользователь может передать уже сегодня без правок фреймворка; версию API

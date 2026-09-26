@@ -87,6 +87,41 @@ describe('MemorySessionStorage', () => {
         expect(storage.size).toBe(1);
     });
 
+    it('вытеснение идёт по давности обновления и после удалений из середины', () => {
+        const storage = new MemorySessionStorage<number>({ maxSize: 3 });
+        storage.set('a', 1);
+        storage.set('b', 2);
+        storage.set('c', 3);
+        expect(storage.delete('b')).toBe(true);
+        expect(storage.delete('b')).toBe(false);
+        storage.set('a', 10); // «a» становится самой свежей, самая давняя — «c»
+        storage.set('d', 4);
+        storage.set('e', 5);
+        expect(storage.get('c')).toBeUndefined();
+        expect(storage.get('a')).toBe(10);
+        expect(storage.get('d')).toBe(4);
+        expect(storage.get('e')).toBe(5);
+        storage.clear();
+        expect(storage.size).toBe(0);
+        storage.set('f', 6);
+        expect(storage.get('f')).toBe(6);
+    });
+
+    it('обновление пользователя не требует обхода остальных записей (10 000 пользователей)', () => {
+        const storage = new MemorySessionStorage<number>({ maxSize: 10_000 });
+        for (let i = 0; i < 10_000; i++) {
+            storage.set(`u${i}`, i);
+        }
+        const started = performance.now();
+        for (let i = 0; i < 50_000; i++) {
+            storage.set(`u${(i * 7919) % 10_000}`, i);
+        }
+        // Раньше каждый set обходил «дыры» хэш-таблицы (~9 мкс на запись при 10 000
+        // пользователей, ~450 мс на цикл). Порог с большим запасом на медленные CI.
+        expect(performance.now() - started).toBeLessThan(200);
+        expect(storage.size).toBe(10_000);
+    });
+
     it('ttl: 0 — без ограничения по времени', () => {
         let now = 0;
         jest.spyOn(Date, 'now').mockImplementation(() => now);

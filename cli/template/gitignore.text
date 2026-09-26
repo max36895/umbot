@@ -1,6 +1,7 @@
 .idea/*
 .gigacode/*
 .mimocode/*
+.claude/*
 .vscode/*
 /logs/*
 /json/*

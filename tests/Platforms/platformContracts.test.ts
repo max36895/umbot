@@ -401,7 +401,7 @@ describe('Контракты платформ', () => {
         const sendMessage = jest.spyOn(MaxRequest.prototype, 'messagesSend');
 
         expect(adapter.isPlatformOnQuery(event)).toBe(true);
-        await expect(adapter.setQueryData(event, controller)).resolves.toBe(true);
+        expect(await adapter.setQueryData(event, controller)).toBe(true);
         await adapter.getContent(controller);
 
         expect(controller.skipAutoReply).toBe(true);
@@ -415,15 +415,15 @@ describe('Контракты платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData(
+        expect(
+            await adapter.setQueryData(
                 {
                     update_type: 'message_created',
                     message: { body: null, recipient: { chat_id: 42, chat_type: 'chat' } },
                 } as never,
                 controller,
             ),
-        ).resolves.toBe(true);
+        ).toBe(true);
         expect(controller.userCommand).toBe('');
         expect(controller.messageId).toBe(0);
         expect(controller.userId).toBe(0);

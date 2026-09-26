@@ -35,7 +35,7 @@ class CreateController {
     _getFileContent(file) {
         let content = '';
         if (file && utils.isFile(file)) {
-            content = utils.fread(file);
+            content = utils.read(file);
         }
         return content;
     }
@@ -168,7 +168,7 @@ class CreateController {
         const replace = [date, time, rawName, name, name, imageName, '', hostname, port];
         fileName = this._replace(find, replace, fileName);
         const content = this._replace(find, replace, templateContent);
-        utils.fwrite(fileName, content);
+        utils.write(fileName, content);
         return fileName;
     }
 
@@ -329,7 +329,7 @@ class CreateController {
      * @param content
      */
     generateFile(fileName, content) {
-        utils.fwrite(`${this.#path}/${fileName}`, content);
+        utils.write(`${this.#path}/${fileName}`, content);
         console.log(`Создан файл ${fileName}`);
     }
 

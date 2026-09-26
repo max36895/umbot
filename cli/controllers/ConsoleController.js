@@ -8,10 +8,8 @@ const fs = require('node:fs');
 
 const VERSION = require(path.join(__dirname, '..', '..', 'package.json')).version;
 
-/**
- * Плоские поля токенов в `params` JSON-конфига (наследие 2.x). Фреймворк 3.x их
- * не читает — секрет в них только утекал бы в сгенерированный Params.ts.
- */
+// Плоские поля токенов в `params` JSON-конфига (наследие 2.x). Фреймворк 3.x их
+// не читает — секрет в них только утекал бы в сгенерированный Params.ts.
 const FLAT_TOKEN_KEYS = [
     'telegram_token',
     'vk_token',
@@ -55,7 +53,7 @@ SMARTAPP_TOKEN=
 # Маруся (только существующие навыки)
 MARUSIA_TOKEN=
 
-# MongoDB (нужны только с MongoAdapter)
+# MongoDB (нужны только с MongoAdapter или другой базой данных)
 DB_HOST=
 DB_USER=
 DB_PASSWORD=
@@ -100,7 +98,7 @@ function generateEnv(force = false, fileName = '.env') {
             `Файл ${fileName} уже существует. Укажите --force, чтобы перезаписать его.`,
         );
     }
-    utils.fwrite(fileName, buildEnvFile());
+    utils.write(fileName, buildEnvFile());
     console.log(`Создан файл ${fileName}`);
     console.warn(
         'Заполните токены платформ, которые используете, и проверьте, что .env есть в .gitignore: ' +
@@ -245,11 +243,9 @@ async function main(
                         // '[object Object]' в .env — пропускаем с предупреждением.
                         if (value !== undefined && value !== null && typeof value === 'object') {
                             console.warn(
-                                'ВНИМАНИЕ: токен для «' +
-                                    platform +
-                                    '» — объект, а не строка; переменная ' +
-                                    (TOKEN_ENV_NAMES[platform] ?? sanitizeEnvName(platform)) +
-                                    ' не записана.',
+                                `ВНИМАНИЕ: токен для «${platform}» — объект, а не строка; переменная ${
+                                    TOKEN_ENV_NAMES[platform] ?? sanitizeEnvName(platform)
+                                } не записана.`,
                             );
                             continue;
                         }

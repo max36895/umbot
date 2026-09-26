@@ -11,9 +11,58 @@ import os from 'os';
 import { BotController } from '../../controller';
 import { TAppPlugin } from '../interfaces/IAppContext';
 import { TCommandGroupMode } from '../interfaces/IBot';
-import { Text } from '../../utils';
+import { Text } from '../../utils/standard/Text';
 import { FALLBACK_COMMAND } from '../constants';
 import type { TEventType } from '../events';
+import { LiteralIndex, LiteralSet } from './LiteralIndex';
+import { requiredLiteral, foldString, groupSourceLiterals } from './RegexPrefilter';
+
+/**
+ * С какого числа литеральных команд поиск подстрок идёт через индекс
+ * (LiteralIndex). На малых базах перебор нескольких команд дешевле автомата.
+ */
+const LITERAL_INDEX_MIN_COMMANDS = 16;
+
+/**
+ * С какого числа команд с обязательной подстрокой строится префильтр регулярок.
+ * На малых базах проверить регулярки подряд дешевле, чем сканировать текст.
+ */
+const PREFILTER_MIN_CHECKS = 16;
+
+/**
+ * Через сколько мс после последнего изменения набора команд собирается план
+ * поиска (чуть позже debounce-сборки регулярок групп — 35 мс).
+ */
+const PLAN_BUILD_DELAY = 40;
+
+/**
+ * Сколько поисков обслуживает простой план (без индексов), пока не сработал
+ * таймер сборки полного. Нужен для циклов без выхода в event loop (бенчмарки,
+ * пакетная обработка): там таймер не срабатывает, а полный план всё равно нужен.
+ */
+const SIMPLE_PLAN_SEARCHES = 64;
+
+/**
+ * План поиска команд (см. {@link CommandReg.getSearchPlan}). Позиции — индексы
+ * в снимке команд {@link CommandReg.commandsList}, то есть порядок регистрации.
+ * @internal Внутренняя структура конвейера поиска, может меняться.
+ */
+export interface ISearchPlan {
+    /** Индекс строковых слотов литеральных команд; null — команд мало, индекс не нужен */
+    literal: LiteralIndex | null;
+    /** Группа регулярок для позиции-хоста группы */
+    groups: (IGroupData | undefined)[];
+    /** Префильтр регулярок; null — не нужен (мало регулярок или кастомный движок) */
+    prefilter: LiteralSet | null;
+    /** Позиции для проверки по порядку (без литеральных команд и участников групп) */
+    visit: Int32Array;
+    /** Позиции без обязательной подстроки — проверяются всегда (при префильтре) */
+    always: Int32Array;
+    /** Номер подстроки префильтра → позиции, которым она нужна */
+    idPositions: Int32Array[];
+    /** Буфер кандидатов: переиспользуется, поиск синхронный */
+    scratch: Int32Array;
+}
 
 /**
  * Данные группы команд для оптимизации поиска.
@@ -346,8 +395,276 @@ export class CommandReg {
                 this.commandsList.push(entry);
             }
             this.#commandsListDirty = false;
+            this.#searchPlan = null;
         }
         return this.commandsList;
+    }
+
+    #searchPlan: ISearchPlan | null = null;
+
+    #planTimer: ReturnType<typeof setTimeout> | undefined;
+
+    /**
+     * Помечает снимок устаревшим и откладывает сборку полного плана поиска: при
+     * массовой регистрации команд индексы строятся один раз и вне пути запроса.
+     */
+    #markDirty(): void {
+        this.#commandsListDirty = true;
+        this.#searchPlan = null;
+        if (this.#planTimer) {
+            clearTimeout(this.#planTimer);
+        }
+        this.#planTimer = setTimeout(() => {
+            this.#planTimer = undefined;
+            this.#setPlan(this.#buildPlan(this.getActualCommandsList(), true), true);
+        }, PLAN_BUILD_DELAY).unref();
+    }
+
+    /**
+     * План поиска команд под текущий снимок: индекс строковых слотов,
+     * префильтр регулярок и позиции для обхода. Полный план строится отложенно
+     * после регистрации команд. Запрос, пришедший раньше (serverless: команды
+     * регистрируются прямо перед первым запросом), получает простой план без
+     * индексов — сборка индексов на 1000 команд в холодном процессе стоит
+     * миллисекунды, а перебор для одного запроса дешевле.
+     *
+     * @internal Используется конвейером поиска BotController.
+     * @returns План поиска
+     */
+    public getSearchPlan(): ISearchPlan {
+        const list = this.getActualCommandsList();
+        if (this.#searchPlan !== null && !this.#planIsSimple) {
+            return this.#searchPlan;
+        }
+        // Страховка для циклов без выхода в event loop (таймер не срабатывает):
+        // после SIMPLE_PLAN_SEARCHES поисков полный план строится на пути запроса.
+        const full =
+            this.#planTimer === undefined || ++this.#simplePlanSearches > SIMPLE_PLAN_SEARCHES;
+        if (this.#searchPlan === null || full) {
+            this.#setPlan(this.#buildPlan(list, full), full);
+        }
+        return this.#searchPlan as ISearchPlan;
+    }
+
+    #planIsSimple = false;
+    #simplePlanSearches = 0;
+
+    /**
+     * Сохраняет план поиска.
+     * @param plan План
+     * @param full true — полный план (с индексами)
+     */
+    #setPlan(plan: ISearchPlan, full: boolean): void {
+        this.#searchPlan = plan;
+        this.#planIsSimple = !full;
+        this.#simplePlanSearches = 0;
+        if (full && this.#planTimer) {
+            clearTimeout(this.#planTimer);
+            this.#planTimer = undefined;
+        }
+    }
+
+    /**
+     * Строит план поиска.
+     * @param list Снимок команд
+     * @param full true — с индексом подстрок и префильтром регулярок; false —
+     *   только порядок обхода (дёшево, для запросов до отложенной сборки)
+     * @returns План поиска
+     */
+    #buildPlan(list: [string, ICommandParam][], full: boolean): ISearchPlan {
+        const groups: (IGroupData | undefined)[] = new Array(list.length);
+        let literalCommands = 0;
+        for (let i = 0; i < list.length; i++) {
+            const [name, command] = list[i] as [string, ICommandParam];
+            if (command.isPattern) {
+                groups[i] = this.regexpGroup.get(name);
+            }
+            if (this.#isLiteralCommand(name, command)) {
+                literalCommands++;
+            }
+        }
+        const useIndex = full && literalCommands >= LITERAL_INDEX_MIN_COMMANDS;
+        const covered = this.#groupMembersMask(list, groups);
+        const patterns: [string, number][] = [];
+        const visit: number[] = [];
+        for (let i = 0; i < list.length; i++) {
+            const [name, command] = list[i] as [string, ICommandParam];
+            if (useIndex && this.#isLiteralCommand(name, command)) {
+                for (const slot of command.slots as string[]) {
+                    patterns.push([slot, i]);
+                }
+            } else if (!covered[i]) {
+                visit.push(i);
+            }
+        }
+        const { prefilter, required } = full
+            ? this.#buildPrefilter(list, visit, groups)
+            : { prefilter: null, required: [] };
+        const always: number[] = [];
+        const idPositions: number[][] = [];
+        // Позиция попадает в кандидаты по разу на каждую найденную подстроку —
+        // буфер рассчитан на все пары «подстрока → позиция».
+        let pairs = 0;
+        for (const i of visit) {
+            const req = required[i];
+            if (req === undefined) {
+                always.push(i);
+                continue;
+            }
+            for (const id of req) {
+                (idPositions[id] ??= []).push(i);
+                pairs++;
+            }
+        }
+        return {
+            literal: useIndex ? new LiteralIndex(patterns) : null,
+            groups,
+            prefilter,
+            visit: Int32Array.from(visit),
+            always: Int32Array.from(always),
+            idPositions: Array.from(idPositions, (p) => Int32Array.from(p ?? [])),
+            scratch: new Int32Array(always.length + pairs),
+        };
+    }
+
+    /**
+     * Позиции участников групп регулярок (кроме хоста): их проверяет одна
+     * регулярка группы у хоста, поэтому в обход они не попадают. Участники
+     * определяются по именам, а не как «N позиций после хоста»: после удаления
+     * или перерегистрации участника соседние позиции занимают другие команды.
+     * @param list Снимок команд
+     * @param groups Группы регулярок по позиции хоста
+     * @returns 1 — позиция участника группы
+     */
+    #groupMembersMask(
+        list: [string, ICommandParam][],
+        groups: (IGroupData | undefined)[],
+    ): Uint8Array {
+        const positions = new Map<string, number>();
+        for (let i = 0; i < list.length; i++) {
+            positions.set((list[i] as [string, ICommandParam])[0], i);
+        }
+        const covered = new Uint8Array(list.length);
+        for (let i = 0; i < list.length; i++) {
+            const group = groups[i];
+            if (!group) {
+                continue;
+            }
+            const host = (list[i] as [string, ICommandParam])[0];
+            for (const member of group.commands) {
+                const position = positions.get(member);
+                if (member !== host && position !== undefined) {
+                    covered[position] = 1;
+                }
+            }
+        }
+        return covered;
+    }
+
+    /**
+     * Обязательные подстроки команды — по одной на слот (см. requiredLiteral).
+     * @param command Команда
+     * @returns Подстроки или null, если хотя бы у одного слота обязательной
+     *   подстроки нет (такую команду проверяем всегда)
+     */
+    #commandLiterals(command: ICommandParam): string[] | null {
+        const slots = command.slots;
+        if (!slots?.length) {
+            return null;
+        }
+        const res: string[] = [];
+        for (const slot of slots) {
+            let lit: string | null = null;
+            if (isRegex(slot)) {
+                lit = requiredLiteral(slot.source, slot.flags);
+            } else if (command.isPattern) {
+                lit = requiredLiteral(slot, 'ium');
+            } else if (slot.length) {
+                // Строковый слот ищется подстрокой — он сам и есть обязательная подстрока.
+                lit = foldString(slot);
+            }
+            if (lit === null) {
+                return null;
+            }
+            res.push(lit);
+        }
+        return res;
+    }
+
+    /**
+     * Строит префильтр регулярок для позиций обхода.
+     * @param list Снимок команд
+     * @param visit Позиции, которые проверяются по порядку
+     * @param groups Группы регулярок по позиции хоста
+     * @returns Префильтр (null — не нужен) и номера подстрок для каждой позиции
+     */
+    #buildPrefilter(
+        list: [string, ICommandParam][],
+        visit: number[],
+        groups: (IGroupData | undefined)[],
+    ): { prefilter: LiteralSet | null; required: (number[] | undefined)[] } {
+        const none = { prefilter: null, required: [] };
+        if (this.plugins.regExp) {
+            // Кастомный движок (re2) может трактовать синтаксис иначе — не рискуем.
+            return none;
+        }
+        const required: (number[] | undefined)[] = [];
+        const literals: string[] = [];
+        const ids = new Map<string, number>();
+        let checks = 0;
+        for (const i of visit) {
+            const [name, command] = list[i] as [string, ICommandParam];
+            if (name === FALLBACK_COMMAND) {
+                continue;
+            }
+            const group = command.isPattern ? groups[i] : undefined;
+            // Для группы подстроки берутся из её скомпилированной регулярки, а не
+            // из текущих команд: префильтр отражает ровно то, что исполняется.
+            const lits = group
+                ? groupSourceLiterals(
+                      typeof group.regExp === 'string' ? group.regExp : group.regExp?.source,
+                      group.flags ?? 'ium',
+                  )
+                : this.#commandLiterals(command);
+            if (lits === null || lits.length === 0) {
+                continue;
+            }
+            const own = new Set<number>();
+            for (const lit of lits) {
+                let id = ids.get(lit);
+                if (id === undefined) {
+                    id = literals.length;
+                    literals.push(lit);
+                    ids.set(lit, id);
+                }
+                own.add(id);
+            }
+            required[i] = [...own];
+            checks++;
+        }
+        if (checks < PREFILTER_MIN_CHECKS) {
+            return none;
+        }
+        return { prefilter: new LiteralSet(literals), required };
+    }
+
+    /**
+     * Команда проверяется только подстроками: не fallback, без isPattern,
+     * все слоты — строки.
+     * @param name Имя команды
+     * @param command Команда
+     * @returns true — команду обслуживает индекс строковых слотов
+     */
+    #isLiteralCommand(name: string, command: ICommandParam): boolean {
+        if (name === FALLBACK_COMMAND || command.isPattern || !command.slots?.length) {
+            return false;
+        }
+        for (const slot of command.slots) {
+            if (typeof slot !== 'string') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -846,10 +1163,17 @@ export class CommandReg {
         cb: ICommandParam<TBotController>['cb'],
         isPattern: boolean = false,
     ): void {
-        if (this.commands.get(commandName)) {
+        const previous = this.commands.get(commandName);
+        if (previous) {
             this.logWarn(
                 `Команда с названием "${commandName === FALLBACK_COMMAND ? '* (fallback command)' : commandName}" уже создавалась ранее. Ранее созданная команда будет перезаписана. Рекомендуется проверить корректность регистрации команды`,
             );
+            if (commandName !== FALLBACK_COMMAND) {
+                // Перезапись полная: старые слоты не должны срабатывать (иначе фраза
+                // из прежней регистрации продолжала бы вызывать команду). Запись в Map
+                // остаётся на месте — приоритет команды не меняется.
+                this.#forgetCommand(commandName, previous);
+            }
         }
         if (commandName === FALLBACK_COMMAND) {
             this.commands.set(commandName, {
@@ -858,7 +1182,7 @@ export class CommandReg {
                 isRegExpString: false,
                 __$groupName: commandName,
             });
-            this.#commandsListDirty = true;
+            this.#markDirty();
             return;
         }
 
@@ -907,7 +1231,12 @@ export class CommandReg {
                 commandName,
                 this.#buildCommandParam(correctSlots, isPatternCommand, cb, regExp, groupName),
             );
-            this.#commandsListDirty = true;
+            this.#markDirty();
+        } else if (previous) {
+            // Все новые слоты отклонены (strictMode) — у прежней записи рабочих
+            // слотов не осталось, она удаляется.
+            this.commands.delete(commandName);
+            this.#markDirty();
         }
     }
 
@@ -1068,37 +1397,47 @@ export class CommandReg {
     }
 
     /**
+     * Убирает следы регистрации команды: счётчик регулярок, точные совпадения
+     * её строковых слотов и участие в группе регулярок. Саму запись из
+     * {@link commands} не удаляет (это решает вызывающий код).
+     * @param commandName Имя команды
+     * @param command Текущая запись команды
+     */
+    #forgetCommand(commandName: string, command: ICommandParam): void {
+        if (command.isPattern && (command.regExp || command.__$groupName)) {
+            this.#regExpCommandCount = Math.max(0, this.#regExpCommandCount - 1);
+        }
+        for (const slot of command.slots ?? []) {
+            // Слот мог достаться точному совпадению другой команды (регистрация
+            // раньше) — чужую запись не трогаем.
+            if (!isRegex(slot) && this.#exactMatchMap.get(slot) === commandName) {
+                this.#exactMatchMap.delete(slot);
+            }
+        }
+        this.#removeRegexpInGroup(commandName);
+    }
+
+    /**
      * Удаляет команду
      * @param commandName - Имя команды
      */
     public removeCommand(commandName: string): void {
         if (commandName === FALLBACK_COMMAND) {
             this.commands.delete(commandName);
+            this.#markDirty();
             return;
         }
-        if (this.commands.has(commandName)) {
-            const command = this.commands.get(commandName);
-            if (command?.isPattern && (command.regExp || command.__$groupName)) {
-                this.#regExpCommandCount--;
-                if (this.#regExpCommandCount < 0) {
-                    this.#regExpCommandCount = 0;
-                }
-            }
-            command?.slots?.forEach((slot) => {
-                if (!isRegex(slot)) {
-                    this.#exactMatchMap.delete(slot);
-                }
-            });
-            // Сначала удаляем из regexp-групп (пока информация о команде ещё доступна),
-            // и только потом удаляем из this.commands — иначе #removeRegexpInGroup
-            // не сможет найти принадлежность к группе через __$groupName.
-            this.#removeRegexpInGroup(commandName);
+        const command = this.commands.get(commandName);
+        if (command) {
+            // Сначала убираем следы команды (группы, точные совпадения), пока
+            // информация о ней доступна, и только потом саму команду.
+            this.#forgetCommand(commandName, command);
             this.commands.delete(commandName);
         } else {
             // Команды нет в this.commands, но она могла остаться хостом группы
             this.#removeRegexpInGroup(commandName);
         }
-        this.#commandsListDirty = true;
+        this.#markDirty();
     }
 
     /**
@@ -1114,7 +1453,7 @@ export class CommandReg {
         this.#oldFnGroup = undefined;
         clearTimeout(this.#timeOutReg);
         this.#timeOutReg = undefined;
-        this.#commandsListDirty = true;
+        this.#markDirty();
         Text.clearCache();
     }
 

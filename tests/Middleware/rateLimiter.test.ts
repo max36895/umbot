@@ -135,6 +135,54 @@ describe('rateLimiter middleware', () => {
         expect(next).toHaveBeenCalledTimes(3);
     });
 
+    it('при переполнении вытесняется давно неактивный пользователь, а недавно активный сохраняет счётчик', async () => {
+        const middleware = rateLimiter(10, 60 * 60 * 1000);
+        const asUser = (userId: string): BaseBotController => {
+            const user = new BaseBotController(ctx.appContext);
+            user.appType = T_TELEGRAM;
+            user.userId = userId;
+            return user;
+        };
+        // «old» исчерпал лимит (2) первым, «fresh» — последним перед переполнением.
+        await middleware(asUser('old'), next);
+        await middleware(asUser('old'), next);
+        for (let i = 0; i < 9_998; i++) {
+            await middleware(asUser(`u${i}`), next);
+        }
+        await middleware(asUser('fresh'), next);
+        await middleware(asUser('fresh'), next);
+        // Новый пользователь сверх 10 000 записей вытесняет самую давнюю — «old».
+        await middleware(asUser('newcomer'), next);
+        const calls = next.mock.calls.length;
+
+        // «old» вытеснен: счётчик новый, запрос проходит сразу.
+        await middleware(asUser('old'), next);
+        expect(next).toHaveBeenCalledTimes(calls + 1);
+        // «fresh» не вытеснен: лимит исчерпан, запрос встаёт в очередь.
+        const queued = middleware(asUser('fresh'), next);
+        expect(next).toHaveBeenCalledTimes(calls + 1);
+        jest.advanceTimersByTime(1000);
+        await queued;
+        expect(next).toHaveBeenCalledTimes(calls + 2);
+    });
+
+    it('очистка по таймеру удаляет только записи без активности дольше inactivityTimeout', async () => {
+        const middleware = rateLimiter(10, 2000);
+        await middleware(ctx, next);
+        await middleware(ctx, next);
+        // Запись ещё жива: третий запрос в том же окне встаёт в очередь.
+        jest.advanceTimersByTime(500);
+        const queued = middleware(ctx, next);
+        jest.advanceTimersByTime(1000);
+        await queued;
+        expect(next).toHaveBeenCalledTimes(3);
+        // Неактивность дольше 2 с: запись удалена, новый счётчик пропускает сразу два запроса.
+        jest.advanceTimersByTime(5000);
+        await middleware(ctx, next);
+        await middleware(ctx, next);
+        expect(next).toHaveBeenCalledTimes(5);
+    });
+
     it('destroyRateLimiter очищает все инстансы, а не только последний', async () => {
         ctx.appContext.platforms[T_TELEGRAM].limit = 1;
         const limiter1 = rateLimiter(10);

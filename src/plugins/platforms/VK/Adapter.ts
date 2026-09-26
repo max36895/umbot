@@ -53,6 +53,17 @@ const VK_USER_CACHE_MAX_SIZE = 5000;
 const vkUserCache = new Map<string, { value: IVkUserInfo | null; expiresAt: number }>();
 
 /**
+ * Данные пользователя VK из кэша без обращения к API.
+ *
+ * @param userId Идентификатор пользователя VK
+ * @returns Имя и фамилия (`null` — VK не вернул данных); `undefined` — в кэше нет свежей записи
+ */
+function peekVkUserInfo(userId: string | number): IVkUserInfo | null | undefined {
+    const cached = vkUserCache.get(String(userId));
+    return cached && cached.expiresAt > Date.now() ? cached.value : undefined;
+}
+
+/**
  * Возвращает данные пользователя VK из кэша либо запрашивает их у API.
  *
  * @param appContext Контекст приложения
@@ -63,12 +74,12 @@ async function getVkUserInfo(
     appContext: AppContext,
     userId: string | number,
 ): Promise<IVkUserInfo | null> {
+    const cached = peekVkUserInfo(userId);
+    if (cached !== undefined) {
+        return cached;
+    }
     const key = String(userId);
     const now = Date.now();
-    const cached = vkUserCache.get(key);
-    if (cached && cached.expiresAt > now) {
-        return cached.value;
-    }
     const users = await new VkRequest(appContext).usersGet(userId as number);
     if (users === null) {
         // Сбой сети или ошибка API не кэшируем: иначе транзитивная ошибка VK
@@ -245,9 +256,15 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
      * Если проверка включена, поле обязательно для всех событий, включая `confirmation`.
      *
      * @param query — тело запроса от VK
+     * @param _headers — заголовок от VK
+     * @param parsedQuery — то же тело, уже разобранное из JSON фреймворком.
      * @returns `true`, если секрет совпадает или проверка не включена; `false` при отсутствии или несовпадении
      */
-    isCorrectQuery(query: IVkRequestContent | string): boolean {
+    isCorrectQuery(
+        query: IVkRequestContent | string,
+        _headers?: Record<string, unknown>,
+        parsedQuery?: unknown,
+    ): boolean {
         const expectedSecret = this.appContext?.appConfig.tokens[this.platformName]?.secret_key as
             string | undefined;
         // Если secret_key не настроен — проверка не требуется
@@ -255,7 +272,15 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
             return true;
         }
         let content: IVkRequestContent;
-        if (typeof query === 'string') {
+        if (
+            typeof query === 'string' &&
+            parsedQuery &&
+            typeof parsedQuery === 'object' &&
+            !Array.isArray(parsedQuery)
+        ) {
+            // Тело уже разобрано фреймворком — второй JSON.parse не нужен.
+            content = parsedQuery as IVkRequestContent;
+        } else if (typeof query === 'string') {
             try {
                 const parsed: unknown = JSON.parse(query);
                 if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -309,7 +334,10 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
     /**
      * Заполняет контроллер данными нового сообщения VK.
      */
-    async #setMessageNew(query: IVkRequestContent, controller: BotController): Promise<boolean> {
+    #setMessageNew(
+        query: IVkRequestContent,
+        controller: BotController,
+    ): boolean | Promise<boolean> {
         const object = query.object;
         const message = object?.message;
         if (!object || !message) {
@@ -341,7 +369,27 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
         if (this._platformOptions?.vk_load_user_info === false) {
             return true;
         }
-        const user = await getVkUserInfo(this.appContext as AppContext, controller.userId);
+        // Имя из кэша подставляем синхронно: промис нужен только для запроса в VK API.
+        const cached = peekVkUserInfo(controller.userId as number);
+        if (cached !== undefined) {
+            if (cached) {
+                setThisUserToNlu(controller, { username: null, ...cached });
+            }
+            return true;
+        }
+        return this.#loadUserInfo(controller);
+    }
+
+    /**
+     * Загружает имя пользователя из VK API (с кэшированием) и записывает его в NLU.
+     * @param controller Контроллер запроса
+     * @returns Всегда `true`: без имени запрос обрабатывается как обычно
+     */
+    async #loadUserInfo(controller: BotController): Promise<boolean> {
+        const user = await getVkUserInfo(
+            this.appContext as AppContext,
+            controller.userId as number,
+        );
         if (user) {
             // setThisUserToNlu сам пропустит запись, если VK не вернул полей.
             setThisUserToNlu(controller, { username: null, ...user });
@@ -394,7 +442,7 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
      * @param controller Контроллер приложения
      * @returns `true`, если запрос успешно разобран
      */
-    async setQueryData(query: IVkRequestContent, controller: BotController): Promise<boolean> {
+    setQueryData(query: IVkRequestContent, controller: BotController): boolean | Promise<boolean> {
         if (!this.appContext) {
             return false;
         }
@@ -524,79 +572,84 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
      * @param controller Контроллер приложения
      * @returns Тело ответа для webhook ('ok')
      */
-    async getContent(controller: BotController): Promise<string> {
-        if (!controller.skipAutoReply) {
-            const vkApi = new VkRequest(this.appContext as AppContext);
-            const requestData = getPlatformRequestData<IVkRequestData>(
-                controller,
-                this.platformName,
-            );
-            const eventId = requestData.eventId ?? controller.platformOptions.eventId;
-            const callbackPeerId = requestData.peerId ?? controller.userId ?? undefined;
+    getContent(controller: BotController): string | Promise<string> {
+        // Без автоответа отвечать нечем — без промиса и без async-кадра.
+        return controller.skipAutoReply ? 'ok' : this.#sendContent(controller);
+    }
 
-            // Для callback-кнопок (message_event) отправляем sendMessageEvent вместо messagesSend.
-            // Если в процессе обработки возникла ошибка — показываем её пользователю через show_snackbar
-            // и не отправляем обычное сообщение.
-            if (eventId) {
-                if (controller.platformOptions.error) {
-                    await vkApi.sendMessageEvent(
-                        controller.userId as string,
-                        eventId,
-                        {
-                            type: 'show_snackbar',
-                            text: Text.resize(controller.platformOptions.error as string, 90),
-                        },
-                        callbackPeerId,
-                    );
-                    return 'ok';
-                }
-                if (!requestData.callbackAnswered) {
-                    await vkApi.sendMessageEvent(
-                        controller.userId as string,
-                        eventId,
-                        undefined,
-                        callbackPeerId,
-                    );
-                }
-            }
+    /**
+     * Отправляет ответ в VK API (часть {@link getContent}).
+     * @param controller Контроллер приложения
+     * @returns Тело ответа для webhook ('ok')
+     */
+    async #sendContent(controller: BotController): Promise<string> {
+        const vkApi = new VkRequest(this.appContext as AppContext);
+        const requestData = getPlatformRequestData<IVkRequestData>(controller, this.platformName);
+        const eventId = requestData.eventId ?? controller.platformOptions.eventId;
+        const callbackPeerId = requestData.peerId ?? controller.userId ?? undefined;
 
-            const params: IVkParams = {};
-            if (controller.isCardInit() && controller.card.images.length) {
-                // cardProcessing асинхронный (upload картинок в VK), сбой слоя
-                // БД/API не должен ронять весь ответ в 500 — серия 5xx отключает
-                // вебхук VK Callback API. Деградируем: сообщение без карточки.
-                const attach = await this.#getCardAttachSafe(controller);
-                if (attach) {
-                    this.#applyCardToParams(attach, params);
-                }
-            }
-            const keyboard = this.#buildKeyboard(controller);
-            if (keyboard && params.template === undefined) {
-                params.keyboard = keyboard;
-            }
-            if (shouldProcessChatSound(controller, this.platformName)) {
-                const attach = await controller.sound.getSounds(
-                    controller.tts,
-                    soundProcessing,
-                    controller,
+        // Для callback-кнопок (message_event) отправляем sendMessageEvent вместо messagesSend.
+        // Если в процессе обработки возникла ошибка — показываем её пользователю через show_snackbar
+        // и не отправляем обычное сообщение.
+        if (eventId) {
+            if (controller.platformOptions.error) {
+                await vkApi.sendMessageEvent(
+                    controller.userId as string,
+                    eventId,
+                    {
+                        type: 'show_snackbar',
+                        text: Text.resize(controller.platformOptions.error as string, 90),
+                    },
+                    callbackPeerId,
                 );
-                const attachments = [...(attach as string[]), ...(params.attachments || [])];
-                if (attachments.length) {
-                    params.attachments = attachments;
-                }
+                return 'ok';
             }
-            // Если заполнен только tts, используем его как текст сообщения:
-            // иначе общая с голосовой платформой логика оставляла бы ВК без ответа.
-            let text = getChatText(controller.text, controller.tts);
-            if (!text && params.template !== undefined) {
-                text = this.#getCarouselText(controller);
+            if (!requestData.callbackAnswered) {
+                await vkApi.sendMessageEvent(
+                    controller.userId as string,
+                    eventId,
+                    undefined,
+                    callbackPeerId,
+                );
             }
-            await vkApi.messagesSend(
-                (requestData.peerId ?? controller.userId) as string,
-                Text.resize(text, 4096),
-                params,
-            );
         }
+
+        const params: IVkParams = {};
+        if (controller.isCardInit() && controller.card.images.length) {
+            // cardProcessing асинхронный (upload картинок в VK), сбой слоя
+            // БД/API не должен ронять весь ответ в 500 — серия 5xx отключает
+            // вебхук VK Callback API. Деградируем: сообщение без карточки.
+            const attach = await this.#getCardAttachSafe(controller);
+            if (attach) {
+                this.#applyCardToParams(attach, params);
+            }
+        }
+        const keyboard = this.#buildKeyboard(controller);
+        if (keyboard && params.template === undefined) {
+            params.keyboard = keyboard;
+        }
+        if (shouldProcessChatSound(controller, this.platformName)) {
+            const attach = await controller.sound.getSounds(
+                controller.tts,
+                soundProcessing,
+                controller,
+            );
+            const attachments = [...(attach as string[]), ...(params.attachments || [])];
+            if (attachments.length) {
+                params.attachments = attachments;
+            }
+        }
+        // Если заполнен только tts, используем его как текст сообщения:
+        // иначе общая с голосовой платформой логика оставляла бы ВК без ответа.
+        let text = getChatText(controller.text, controller.tts);
+        if (!text && params.template !== undefined) {
+            text = this.#getCarouselText(controller);
+        }
+        await vkApi.messagesSend(
+            (requestData.peerId ?? controller.userId) as string,
+            Text.resize(text, 4096),
+            params,
+        );
         return 'ok';
     }
 

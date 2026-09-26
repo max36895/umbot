@@ -34,7 +34,7 @@ function isDir(file) {
  * @param fileName
  * @returns {string}
  */
-function fread(fileName) {
+function read(fileName) {
     return fs.readFileSync(fileName, 'utf-8');
 }
 
@@ -44,7 +44,7 @@ function fread(fileName) {
  * @param fileContent
  * @param mode
  */
-function fwrite(fileName, fileContent, mode = 'w') {
+function write(fileName, fileContent, mode = 'w') {
     if (mode === 'w') {
         fs.writeFileSync(fileName, fileContent);
     } else {
@@ -73,12 +73,12 @@ exports.utils = {
      * @param fileName
      * @returns {string}
      */
-    fread,
+    read,
     /**
      * Метод используется для записи в файл.
      * @param fileName
      * @param fileContent
      * @param mode
      */
-    fwrite,
+    write,
 };

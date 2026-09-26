@@ -29,7 +29,7 @@ import { BotController, Text } from 'umbot'; // BotController и Text экспо
 | `supportedEvents`                                        | нет                  | `['message']`                                                                  | События, которые адаптер выставляет в `controller.eventType` (см. «События платформы»)                            |
 | `createApi(controller)`                                  | нет                  | `null`                                                                         | Фасад `controller.api` (см. «API-фасад платформы»)                                                                |
 | `signatureName`                                          | нет                  | не задан                                                                       | Имя HTTP-заголовка, в котором платформа передаёт подпись вебхука                                                  |
-| `isCorrectQuery(query, headers?)`                        | нет                  | HMAC SHA256 по `signatureName` и токену                                        | Проверка подлинности запроса                                                                                      |
+| `isCorrectQuery(query, headers?, parsedQuery?)`          | нет                  | HMAC SHA256 по `signatureName` и токену                                        | Проверка подлинности запроса; `parsedQuery` — тело, уже разобранное фреймворком                                   |
 | `isSignatureCheckEnabled()`                              | нет                  | `true`, если заданы токен и `signatureName`                                    | Сообщает ядру, защищён ли вебхук: по нему `bot.start()` предупреждает о незащищённой точке входа                  |
 | `isSignatureSupported()`                                 | нет                  | `true`, если задан `signatureName` или переопределён `isSignatureCheckEnabled` | Есть ли у платформы механизм подписи вебхука; платформы без него не попадают в предупреждение при старте          |
 | `getDeliveryId(query)`                                   | нет                  | не задан (дедупликации нет)                                                    | ID доставки вебхука для дедупликации повторов (см. «Дедупликация повторных доставок»)                             |
@@ -126,6 +126,17 @@ isPlatformOnQuery(query: unknown, headers?: Record<string, unknown>): boolean {
 Если стандартной проверки недостаточно (например, платформа использует Ed25519 вместо HMAC SHA256), переопределите метод
 `isCorrectQuery` и реализуйте свою логику валидации.
 
+`webhookHandle` и `webhookEvent` передают первым аргументом сырое тело строкой (от него считается HMAC), а третьим —
+то же тело, уже разобранное из JSON (`parsedQuery`). Если подпись лежит в теле запроса (как секрет у VK), берите её из
+`parsedQuery`: повторный `JSON.parse` тела на каждом запросе — лишние микросекунды.
+
+```ts
+isCorrectQuery(query: string | IMyQuery, headers?: Record<string, unknown>, parsedQuery?: unknown): boolean {
+    const body = (parsedQuery ?? (typeof query === 'string' ? JSON.parse(query) : query)) as IMyQuery;
+    return body.secret === this.secret;
+}
+```
+
 **Примечание:** Если вы получаете ошибки при проверке подписи, убедитесь, что:
 
 1. Поле `signatureName` установлено в классе адаптера
@@ -166,8 +177,9 @@ isSignatureCheckEnabled(): boolean {
 
 Мессенджеры повторяют доставку вебхука, если не получили ответ 2xx вовремя. Реализуйте
 `getDeliveryId(query)`, и ядро будет помнить принятые доставки (час, до 10 000 в памяти процесса) и отвечать
-на повтор `200 ok` без повторного запуска логики. Ключ дополняется хэшем тела запроса, а проверка идёт после
-`isCorrectQuery`, поэтому поддельный запрос с угаданным ID не заблокирует настоящий.
+на повтор `200 ok` без повторного запуска логики. Проверка идёт после `isCorrectQuery`. Если подпись вебхука включена
+(`isSignatureCheckEnabled()` возвращает `true`), ключ — сам ID: подделать запрос нельзя. Без подписи ключ — хэш тела
+запроса, поэтому поддельный запрос с угаданным ID не заблокирует настоящий.
 
 Повтор часто приходит, пока исходный запрос ещё обрабатывается (платформа не дождалась ответа). Такой повтор ждёт
 исхода исходного запроса, но не дольше 30 секунд:
@@ -253,6 +265,33 @@ setQueryData(query: unknown, controller: BotController): boolean {
     return true;
 }
 ```
+
+### Синхронно, если ждать нечего
+
+`setQueryData` и `getContent` могут вернуть значение сразу или промис (`boolean | Promise<boolean>`,
+`TContent`). Не объявляйте их `async`, если внутри нечего ждать: каждый async-метод на каждом запросе создаёт
+промис и асинхронный кадр, а это заметная доля времени обработки (у встроенных адаптеров — до трети). Встроенные
+адаптеры отдают промис только там, где есть сетевой вызов:
+
+```ts
+setQueryData(query: IMyQuery, controller: BotController): boolean | Promise<boolean> {
+    // ...разбор запроса...
+    const cached = userCache.get(controller.userId);
+    if (cached) {
+        controller.setThisUser(cached);
+        return true; // синхронно: имя уже есть в кэше
+    }
+    return this.#loadUser(controller); // промис — только когда нужен запрос к API
+}
+
+getContent(controller: BotController): string | Promise<string> {
+    // Без автоответа отвечать нечем — без промиса.
+    return controller.skipAutoReply ? 'ok' : this.#send(controller);
+}
+```
+
+Код, который вызывает методы адаптера напрямую, должен использовать `await`: он работает и со значением, и с
+промисом, а `.then()` — только с промисом.
 
 ## События платформы (`controller.eventType` и `supportedEvents`)
 

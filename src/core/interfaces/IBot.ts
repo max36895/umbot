@@ -5,7 +5,7 @@
 
 import { AppContext } from '../AppContext';
 import { BotController, IControllerApi } from '../../controller';
-import { IncomingMessage, ServerResponse } from 'node:http';
+import { IncomingMessage, type ServerResponse } from 'node:http';
 import { IButtonType, Buttons, IImageType, ISound } from '../../components';
 import { IModelRes, TQueryCb, IQuery, IQueryData, IDbTableSchema } from '../../models';
 import { Bot } from '../Bot';
@@ -267,11 +267,29 @@ export interface IPlatformAdapter<TQuery = unknown> extends IPlugin {
     isPlatformOnQuery: (query: TQuery, headers?: Record<string, unknown>) => boolean;
     /**
      * Проверяет полученный запрос от платформы на корректность.
-     * Реализация зависит от адаптера, как правило, в чувствительных платформах есть токен, который приходит с запросом, и желательно проверять, что пришедший токен соответствует тому, который сохранён в настройках.
-     * @param {TQuery} query - Объект запроса от платформы
+     * Реализация зависит от адаптера, как правило, в чувствительных платформах есть токен,
+     * который приходит с запросом, и желательно проверять, что пришедший токен соответствует тому, который сохранён в настройках.
+     * @param {TQuery} query - Запрос от платформы. В `webhookHandle` — сырое тело строкой
+     *   (от него считается HMAC-подпись)
      * @param {Record<string, unknown>} [headers] - HTTP-заголовки запроса
+     * @param {unknown} [parsedQuery] - То же тело, уже разобранное из JSON фреймворком.
+     *   Передаётся в `webhookHandle`/`webhookEvent`: адаптеру, которому для проверки нужен
+     *   объект (секрет в теле, как у VK), не нужно разбирать JSON второй раз.
+     * @returns `true`, если запрос прошёл проверку
+     *
+     * @example
+     * ```ts
+     * isCorrectQuery(query, headers, parsedQuery) {
+     *   const body = (parsedQuery ?? (typeof query === 'string' ? JSON.parse(query) : query)) as { secret?: string };
+     *   return body.secret === this.secret;
+     * }
+     * ```
      */
-    isCorrectQuery: (query: TQuery, headers?: Record<string, unknown>) => boolean;
+    isCorrectQuery: (
+        query: TQuery,
+        headers?: Record<string, unknown>,
+        parsedQuery?: unknown,
+    ) => boolean;
     /**
      * Инициализирует данные запроса в контроллере приложения.
      *

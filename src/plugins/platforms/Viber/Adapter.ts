@@ -261,7 +261,7 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
      * @param controller Контроллер, который нужно заполнить.
      * @returns `true` — данные заполнены, `false` — запрос повреждён.
      */
-    async setQueryData(query: IViberContent, controller: BotController): Promise<boolean> {
+    setQueryData(query: IViberContent, controller: BotController): boolean {
         if (!this.appContext) {
             return false;
         }
@@ -353,57 +353,65 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
      * @param controller Контроллер приложения
      * @returns Тело ответа для webhook ('ok' либо JSON приветственного сообщения)
      */
-    async getContent(controller: BotController): Promise<string | Record<string, unknown>> {
-        if (!controller.skipAutoReply) {
-            const viberApi = new ViberRequest(controller.appContext);
-            viberApi.apiVersion = controller.platformOptions.apiVersion;
-            const params: IViberParams = {};
-            const keyboard = controller.isButtonsInit()
-                ? controller.buttons.getButtons<IViberButtonObject>((buttons) =>
-                      buttonProcessing(buttons, controller.appContext),
-                  )
-                : null;
-            if (keyboard) {
-                params.keyboard = keyboard;
-                params.keyboard.Type = 'keyboard';
-            }
-            if (
-                (controller.requestObject as IViberContent | null)?.event === 'conversation_started'
-            ) {
-                return this.#getWelcomeContent(controller, viberApi, params);
-            }
+    getContent(
+        controller: BotController,
+    ): string | Record<string, unknown> | Promise<string | Record<string, unknown>> {
+        // Без автоответа отвечать нечем — без промиса и без async-кадра.
+        return controller.skipAutoReply ? 'ok' : this.#sendContent(controller);
+    }
 
-            // Viber отклоняет type=text с пустым text. Карточки и звуки
-            // отправляются отдельными API-вызовами, поэтому пустое сообщение им не требуется.
-            // Если заполнен только tts (общая логика писалась под голосовую платформу),
-            // используем его как текст: иначе Viber не получал вообще ничего.
-            const text = getChatText(controller.text, controller.tts);
-            if (text) {
-                await viberApi.sendMessage(
-                    <string>controller.userId,
-                    controller.appContext.appConfig.tokens[this.platformName]?.sender as
-                        string | IViberSender,
-                    text,
-                    params,
-                );
-            } else if (keyboard) {
-                controller.appContext.logWarn(
-                    'ViberAdapter.getContent(): клавиатура задана без текста и не может быть отправлена отдельным сообщением.',
-                );
-            }
+    /**
+     * Отправляет ответ в API платформы (часть {@link getContent}).
+     * @param controller Контроллер приложения
+     * @returns Тело ответа для webhook ('ok' либо JSON приветственного сообщения)
+     */
+    async #sendContent(controller: BotController): Promise<string | Record<string, unknown>> {
+        const viberApi = new ViberRequest(controller.appContext);
+        viberApi.apiVersion = controller.platformOptions.apiVersion;
+        const params: IViberParams = {};
+        const keyboard = controller.isButtonsInit()
+            ? controller.buttons.getButtons<IViberButtonObject>((buttons) =>
+                  buttonProcessing(buttons, controller.appContext),
+              )
+            : null;
+        if (keyboard) {
+            params.keyboard = keyboard;
+            params.keyboard.Type = 'keyboard';
+        }
+        if ((controller.requestObject as IViberContent | null)?.event === 'conversation_started') {
+            return this.#getWelcomeContent(controller, viberApi, params);
+        }
 
-            if (controller.isCardInit() && controller.card.images.length) {
-                const res = controller.card.getCards(cardProcessing, controller);
-                // `cardProcessing` может вернуть одиночный объект (для одной картинки) или массив (для галереи)
-                const list = Array.isArray(res) ? res : res ? [res] : [];
-                if (list.length) {
-                    await viberApi.richMedia(<string>controller.userId, list);
-                }
-            }
+        // Viber отклоняет type=text с пустым text. Карточки и звуки
+        // отправляются отдельными API-вызовами, поэтому пустое сообщение им не требуется.
+        // Если заполнен только tts (общая логика писалась под голосовую платформу),
+        // используем его как текст: иначе Viber не получал вообще ничего.
+        const text = getChatText(controller.text, controller.tts);
+        if (text) {
+            await viberApi.sendMessage(
+                <string>controller.userId,
+                controller.appContext.appConfig.tokens[this.platformName]?.sender as
+                    string | IViberSender,
+                text,
+                params,
+            );
+        } else if (keyboard) {
+            controller.appContext.logWarn(
+                'ViberAdapter.getContent(): клавиатура задана без текста и не может быть отправлена отдельным сообщением.',
+            );
+        }
 
-            if (controller.isSoundInit() && controller.sound.sounds.length) {
-                await controller.sound.getSounds(controller.tts, soundProcessing, controller);
+        if (controller.isCardInit() && controller.card.images.length) {
+            const res = controller.card.getCards(cardProcessing, controller);
+            // `cardProcessing` может вернуть одиночный объект (для одной картинки) или массив (для галереи)
+            const list = Array.isArray(res) ? res : res ? [res] : [];
+            if (list.length) {
+                await viberApi.richMedia(<string>controller.userId, list);
             }
+        }
+
+        if (controller.isSoundInit() && controller.sound.sounds.length) {
+            await controller.sound.getSounds(controller.tts, soundProcessing, controller);
         }
         return 'ok';
     }

@@ -305,7 +305,7 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
      * @param controller Контроллер приложения
      * @returns `true`, если запрос успешно разобран
      */
-    async setQueryData(query: IMaxRequestContent, controller: BotController): Promise<boolean> {
+    setQueryData(query: IMaxRequestContent, controller: BotController): boolean {
         if (!this.appContext) {
             return false;
         }
@@ -364,10 +364,17 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
      * @param controller Контроллер приложения
      * @returns Тело ответа для webhook ('ok')
      */
-    async getContent(controller: BotController): Promise<string> {
-        if (controller.skipAutoReply) {
-            return 'ok';
-        }
+    getContent(controller: BotController): string | Promise<string> {
+        // Без автоответа отвечать нечем — без промиса и без async-кадра.
+        return controller.skipAutoReply ? 'ok' : this.#sendContent(controller);
+    }
+
+    /**
+     * Отправляет ответ в API платформы (часть {@link getContent}).
+     * @param controller Контроллер приложения
+     * @returns Тело ответа для webhook ('ok')
+     */
+    async #sendContent(controller: BotController): Promise<string> {
         const params = await this.#buildParams(controller);
         const maxApi = new MaxRequest(controller.appContext);
         const requestData = getPlatformRequestData<IMaxRequestData>(controller, this.platformName);

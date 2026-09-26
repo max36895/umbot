@@ -23,11 +23,11 @@ if (argv[2]) {
         if (argv[3].endsWith('.json')) {
             if (utils.isFile(argv[3])) {
                 try {
-                    const jsonParam = JSON.parse(utils.fread(argv[3]));
+                    const jsonParam = JSON.parse(utils.read(argv[3]));
                     // Проверяем name сразу при парсинге — с понятным сообщением.
                     if (!jsonParam.name) {
                         console.error(
-                            `В JSON файле "${argv[3]}" отсутствует поле "name" (имя проекта). Проект не создан.`,
+                            `В файле "${argv[3]}" отсутствует поле "name" (имя проекта). Проект не создан.`,
                         );
                         process.exit(1);
                     }
@@ -40,7 +40,7 @@ if (argv[2]) {
                         param.port = jsonParam.port;
                     }
                 } catch (e) {
-                    console.error(`Ошибка чтения JSON файла: ${e.message}`);
+                    console.error(`Ошибка чтения файла: ${e.message}`);
                     process.exit(1);
                 }
             } else {

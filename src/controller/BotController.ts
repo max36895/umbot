@@ -2,11 +2,16 @@
  * Модуль контроллера - основной компонент для обработки бизнес-логики вашего приложения
  */
 import { Buttons, Card, Sound, Nlu, INluThisUser } from '../components';
-import { Text } from '../utils';
+import { Text } from '../utils/standard/Text';
 import { AppContext, IAppIntent, ICommandParam, TAppType, EMetric } from '../core';
 import { FALLBACK_COMMAND, HELP_INTENT_NAME, WELCOME_INTENT_NAME } from '../core/constants';
 import { isPromise } from '../utils/isPromise';
-import { IGroupData, getGroupRegExpCompiled, IEventParam } from '../core/utils/CommandReg';
+import {
+    IGroupData,
+    getGroupRegExpCompiled,
+    IEventParam,
+    ISearchPlan,
+} from '../core/utils/CommandReg';
 import type { TEventType } from '../core/events';
 import { __$usedRe2, type TPatternRegExp } from '../utils/standard/RegExp';
 
@@ -1428,6 +1433,10 @@ export abstract class BotController<
     /**
      * Извлекает нужную команду из запроса.
      *
+     * Порядок: кастомный резолвер → точное совпадение (хэш-таблица) → план
+     * поиска (индекс подстрок и префильтр регулярок, см. {@link CommandReg.getSearchPlan}).
+     * При любом пути побеждает команда, зарегистрированная раньше других.
+     *
      * @returns {void | null | Promise<void | null>} результат выполнения обработчика
      * найденной команды или null, если подходящая команда не найдена
      */
@@ -1444,58 +1453,76 @@ export abstract class BotController<
         if (exactCommand !== null) {
             return exactCommand;
         }
+        const plan = commandReg.getSearchPlan();
+        const literalPos = plan.literal === null ? -1 : plan.literal.firstMatch(this.userCommand);
+        return this.#getCommandByPlan(plan, literalPos, start);
+    }
 
-        const regexpGroups = commandReg.regexpGroup as Map<string, IGroupData>;
-        // Снимок команд: индексированный обход не аллоцирует пары на каждой
-        // итерации, в отличие от for...of по Map. Снимок актуален: пересобирается
-        // в CommandReg на addCommand/removeCommand/clearCommands.
-        const commandList = commandReg.getActualCommandsList();
+    /**
+     * Поиск по плану. Литеральные команды проверяет индекс подстрок (`literalPos`),
+     * остальные — по порядку регистрации; с префильтром — только те, чья
+     * обязательная подстрока есть в тексте. Команда с меньшей позицией
+     * побеждает, как и в линейном переборе.
+     *
+     * @param plan План поиска текущего набора команд
+     * @param literalPos Позиция первой литеральной команды, чей слот есть в тексте (-1 — нет)
+     * @param start Время начала поиска (для метрики)
+     * @returns Результат обработчика найденной команды или null
+     */
+    #getCommandByPlan(
+        plan: ISearchPlan,
+        literalPos: number,
+        start: number,
+    ): void | null | Promise<void> {
+        const commandReg = this.appContext.command;
+        const commandList = commandReg.commandsList;
+        const userCommand = this.userCommand as string;
         // С re2 RegExp-слоты не используются напрямую: Text пересоберёт их через
         // re2 (с кэшем), иначе нативный движок обходил бы защиту от ReDoS.
         const useDirectRegExp =
             !__$usedRe2 && (commandReg.commands as Map<string, ICommandParam>).size < 500;
         const getCustomRegExp = this.#getCustomRegExp;
-        const userCommand = this.userCommand;
-        let contCount = 0;
-
-        for (let i = 0; i < commandList.length; i++) {
+        const order = plan.prefilter === null ? plan.visit : plan.scratch;
+        const count =
+            plan.prefilter === null ? order.length : this.#collectCandidates(plan, userCommand);
+        let prev = -1;
+        for (let k = 0; k < count; k++) {
+            const i = order[k] as number;
+            // Одна команда может попасть в кандидаты по нескольким подстрокам.
+            if (i === prev) {
+                continue;
+            }
+            prev = i;
+            if (literalPos !== -1 && i > literalPos) {
+                break;
+            }
             const commandTuple = commandList[i];
             if (commandTuple === undefined) {
                 continue;
             }
             const commandName = commandTuple[0];
             const command = commandTuple[1];
-            // commandName === undefined закрывает дырявый элемент снимка
-            // (кортеж есть, а ключа в нём нет).
-            if (
-                commandName === undefined ||
-                commandName === DEFAULT_FALLBACK_COMMAND ||
-                !command ||
-                contCount !== 0
-            ) {
-                if (contCount) {
-                    contCount--;
-                }
+            if (commandName === DEFAULT_FALLBACK_COMMAND || !command) {
                 continue;
             }
             if (!command.slots || command.slots.length === 0) {
                 continue;
             }
-            if (command.isPattern) {
-                const groups = regexpGroups.get(commandName);
-
-                if (groups) {
-                    contCount = groups.commands.length - 1;
-                    const groupRes = this.#searchCommandsInGroup(groups, userCommand, start);
-                    if (groupRes !== null) {
-                        return groupRes;
-                    }
-                    continue;
+            const groups = command.isPattern ? plan.groups[i] : undefined;
+            if (groups) {
+                const groupRes = this.#searchCommandsInGroup(groups, userCommand, start);
+                if (groupRes !== null) {
+                    return groupRes;
                 }
+                continue;
             }
             if (this.#isCommandMatch(command, userCommand, useDirectRegExp, getCustomRegExp)) {
                 return this.#commandCb(commandName, command, start);
             }
+        }
+        if (literalPos !== -1) {
+            const tuple = commandList[literalPos] as [string, ICommandParam];
+            return this.#commandCb(tuple[0], tuple[1], start);
         }
         if (this.appContext.usedMetric) {
             this.appContext.logMetric(EMetric.GET_COMMAND, performance.now() - start, {
@@ -1503,6 +1530,36 @@ export abstract class BotController<
             });
         }
         return null;
+    }
+
+    /**
+     * Собирает кандидатов префильтра в буфер плана `plan.scratch` по возрастанию
+     * позиции: команды без обязательной подстроки и те, чья подстрока нашлась
+     * в тексте. Буфер переиспользуется — поиск синхронный.
+     * @param plan План поиска (с префильтром)
+     * @param userCommand Текст запроса
+     * @returns Число кандидатов в буфере (возможны повторы одной позиции)
+     */
+    #collectCandidates(plan: ISearchPlan, userCommand: string): number {
+        const prefilter = plan.prefilter as NonNullable<ISearchPlan['prefilter']>;
+        prefilter.scan(userCommand);
+        const scratch = plan.scratch;
+        const always = plan.always;
+        let count = 0;
+        for (let k = 0; k < always.length; k++) {
+            scratch[count++] = always[k] as number;
+        }
+        const matched = prefilter.matched;
+        for (let m = 0; m < prefilter.matchedCount; m++) {
+            const positions = plan.idPositions[matched[m] as number] as Int32Array;
+            for (let k = 0; k < positions.length; k++) {
+                scratch[count++] = positions[k] as number;
+            }
+        }
+        if (count > always.length) {
+            scratch.subarray(0, count).sort();
+        }
+        return count;
     }
 
     /**

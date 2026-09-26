@@ -133,6 +133,24 @@ describe('VkAdapter', () => {
             expect(result).toBe(false);
         });
 
+        it('берёт секрет из уже разобранного тела (parsedQuery), не разбирая JSON повторно', () => {
+            appContext.appConfig.tokens[T_VK]!.secret_key = 'my-secret';
+            const adapter = new VkAdapter();
+            adapter.init(appContext);
+            const parse = jest.spyOn(JSON, 'parse');
+
+            const ok = adapter.isCorrectQuery(
+                '{"secret":"my-secret"}',
+                {},
+                { secret: 'my-secret' },
+            );
+            const bad = adapter.isCorrectQuery('{"secret":"my-secret"}', {}, { secret: 'wrong' });
+
+            expect(ok).toBe(true);
+            expect(bad).toBe(false);
+            expect(parse).not.toHaveBeenCalled();
+        });
+
         it('validates the raw JSON body passed by the HTTP webhook handler', () => {
             appContext.appConfig.tokens[T_VK]!.secret_key = 'my-secret';
             const adapter = new VkAdapter();
@@ -275,12 +293,12 @@ describe('VkAdapter', () => {
             const adapter = new VkAdapter();
             adapter.init(appContext);
 
-            await expect(
-                adapter.setQueryData(
+            expect(
+                await adapter.setQueryData(
                     { type: 'message_new', group_id: '1', object: {} as never },
                     controller,
                 ),
-            ).resolves.toBe(true);
+            ).toBe(true);
             expect(controller.skipAutoReply).toBe(true);
         });
 
@@ -288,9 +306,9 @@ describe('VkAdapter', () => {
             const adapter = new VkAdapter('test-token', { vk_confirmation_token: 'confirm-123' });
             adapter.init(appContext);
 
-            await expect(
-                adapter.setQueryData({ type: 'confirmation', group_id: '1' }, controller),
-            ).resolves.toBe(true);
+            expect(
+                await adapter.setQueryData({ type: 'confirmation', group_id: '1' }, controller),
+            ).toBe(true);
             expect(controller.platformOptions.sendInInit).toBe('confirm-123');
         });
 
@@ -302,9 +320,9 @@ describe('VkAdapter', () => {
             const adapter = new VkAdapter();
             adapter.init(appContext);
 
-            await expect(
-                adapter.setQueryData({ type: 'confirmation', group_id: '1' }, controller),
-            ).resolves.toBe(true);
+            expect(
+                await adapter.setQueryData({ type: 'confirmation', group_id: '1' }, controller),
+            ).toBe(true);
             expect(controller.platformOptions.sendInInit).toBe('env-confirm-456');
         });
 
@@ -315,9 +333,9 @@ describe('VkAdapter', () => {
             const adapter = new VkAdapter();
             adapter.init(appContext);
 
-            await expect(
-                adapter.setQueryData({ type: 'confirmation', group_id: '1' }, controller),
-            ).resolves.toBe(true);
+            expect(
+                await adapter.setQueryData({ type: 'confirmation', group_id: '1' }, controller),
+            ).toBe(true);
             expect(controller.platformOptions.sendInInit).toBe('ok');
             expect(controller.skipAutoReply).toBe(true);
             expect(logError).toHaveBeenCalledWith(expect.stringContaining('confirmation_token'));
@@ -351,6 +369,39 @@ describe('VkAdapter', () => {
             const thisUser = controller.nlu.getUserName();
             expect(thisUser?.first_name).toBe('Иван');
             expect(thisUser?.last_name).toBe('Петров');
+        });
+
+        it('имя из кэша подставляется синхронно: без промиса и без запроса к VK API', async () => {
+            const usersGet = jest
+                .spyOn(VkRequest.prototype, 'usersGet')
+                .mockResolvedValue([
+                    { id: 12345, first_name: 'Иван', last_name: 'Петров' } as never,
+                ]);
+            const adapter = new VkAdapter();
+            adapter.init(appContext);
+            const query = {
+                type: 'message_new',
+                group_id: '1',
+                object: { message: { from_id: 12345, peer_id: 12345, id: 1, text: 'привет' } },
+            };
+            await adapter.setQueryData(query, controller);
+
+            const second = new TestVkController(appContext);
+            const result = adapter.setQueryData(query, second);
+
+            expect(result).toBe(true);
+            expect(usersGet).toHaveBeenCalledTimes(1);
+            expect(second.nlu.getUserName()?.first_name).toBe('Иван');
+        });
+
+        it('getContent без автоответа отвечает синхронно и не обращается к API', () => {
+            const send = jest.spyOn(VkRequest.prototype, 'messagesSend');
+            const adapter = new VkAdapter();
+            adapter.init(appContext);
+            controller.skipAutoReply = true;
+
+            expect(adapter.getContent(controller)).toBe('ok');
+            expect(send).not.toHaveBeenCalled();
         });
 
         it('кнопка клавиатуры с payload {command} срабатывает как действие (addAction)', async () => {

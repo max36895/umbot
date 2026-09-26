@@ -1067,6 +1067,7 @@ function hasTextFromBlocks(blocks) {
  * Генерирует код карточки/галереи (ctrl.card.addImage).
  * @param {Object} card — объект FlowCard с массивом images
  * @param {string} indent — отступ
+ * @param {Object} doc — FlowDocument
  * @returns {string[]} массив строк кода
  */
 function generateCardCode(card, indent, doc = null) {
@@ -1465,14 +1466,18 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     // Проверяем нужны ли setText/setTTS
     const needsTTS =
         doc.nodes.some((n) => {
-            if (n.type === 'command' && n.response?.tts) return true;
-            if (n.type === 'step' && n.prompt?.tts) return true;
-            if (n.type === 'response' && n.response?.tts) return true;
+            if (
+                ((n.type === 'command' || n.type === 'response') && n.response?.tts) ||
+                (n.type === 'step' && n.prompt?.tts)
+            ) {
+                return true;
+            }
             return false;
         }) ||
         connectedBlocks.some((n) => {
-            if (n.response?.tts) return true;
-            if (n.prompt?.tts) return true;
+            if (n.response?.tts || n.prompt?.tts) {
+                return true;
+            }
             return false;
         });
     const utilsImports = ['setText'];
@@ -2061,7 +2066,7 @@ function generateGitIgnore() {
     // Шаблон называется gitignore.text: файлы `.gitignore` npm вырезает из пакета.
     const file = __dirname + '/template/gitignore.text';
     if (utils.isFile(file)) {
-        return utils.fread(file);
+        return utils.read(file);
     }
     // Пустой .gitignore молча отправил бы .env с токенами в git.
     throw new Error(`Не найден шаблон ${file}. Переустановите umbot.`);

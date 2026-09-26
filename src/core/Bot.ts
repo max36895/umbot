@@ -23,8 +23,8 @@ import {
 import { ALL_EVENT_TYPES, isEventType, type TEventType } from './events';
 import { MemorySessionStorage } from './utils/MemorySessionStorage';
 import { IncomingMessage, ServerResponse, createServer, Server } from 'node:http';
-import { createHash } from 'node:crypto';
-import type { BotController, IPlatformData, IUserData } from '../controller';
+import { hash } from 'node:crypto';
+import type { BotController, IControllerApi, IPlatformData, IUserData } from '../controller';
 import { AppContext, T_AUTO } from './AppContext';
 import {
     HELP_INTENT_NAME,
@@ -34,7 +34,11 @@ import {
 } from './constants';
 import { UsersData, DB_TABLES_SCHEMA } from '../models';
 import { ILogger } from './interfaces/ILogger';
-import { Text, isPromise, keysCount } from '../utils';
+// Из листовых модулей, а не из барреля: реэкспорт через баррель в CommonJS —
+// цепочка геттеров на горячем пути (см. BotController).
+import { Text } from '../utils/standard/Text';
+import { isPromise } from '../utils/isPromise';
+import { keysCount } from '../utils/standard/util';
 
 const DEFAULT_HELP_INTENT_NAME = HELP_INTENT_NAME;
 const DEFAULT_HELP_INTENT_SLOTS = HELP_INTENT_SLOTS;
@@ -155,17 +159,73 @@ class BotBadRequestError extends Error {
 }
 
 /**
+ * Состояние очереди запросов одного пользователя (см. `Bot.#runInUserQueue`).
+ * Запись переиспользуется, пока пользователь активен: без удаления и повторной
+ * вставки в Map на каждый запрос.
+ */
+interface IUserQueueEntry {
+    /** Последний запрос пользователя — его ждёт следующий запрос */
+    run: Promise<unknown>;
+    /** Контроллер выполняющегося запроса; `null` — очередь свободна */
+    owner: object | null;
+}
+
+/**
+ * Сколько записей очередей копится до чистки свободных. Свободные записи не
+ * удаляются сразу: удаление и новая вставка на каждый запрос дороже, чем редкая
+ * пакетная чистка.
+ */
+const USER_QUEUE_SWEEP_SIZE = 1024;
+
+/**
+ * Storage-состояние запроса (см. `Bot.#initRequestState`).
+ */
+interface IRequestState {
+    /** Данные хранятся в локальном хранилище платформы */
+    isLocalStorage: boolean;
+    /** Пользователь новый; `null` — БД не ответила, сохранять ответ нельзя */
+    isNewUser: boolean | null;
+    /** Ключ сессии в памяти процесса; `null` — сессия в памяти не используется */
+    memoryKey: string | null;
+}
+
+/** Уже выполненный промис — начальное значение `IUserQueueEntry.run`. */
+const RESOLVED_QUEUE: Promise<unknown> = Promise.resolve();
+
+/**
  * Принятая доставка вебхука (см. `Bot.#acceptDelivery`).
  */
 interface IDelivery {
-    /** Ключ доставки: платформа, ID и хэш тела */
+    /** Платформа доставки */
+    platform: string;
+    /** Ключ доставки внутри платформы: ID (подписанный вебхук) или хэш тела */
     key: string;
     /** Время, после которого запись забывается, мс */
     expiresAt: number;
-    /** Исход обработки: `true` — обработана, `false` — сбой сервера, повтор обрабатывается заново */
-    result: Promise<boolean>;
-    /** Сообщает исход обработки тем, кто ждёт `result` */
-    finish: (processed: boolean) => void;
+    /**
+     * Исход обработки: `true` — обработана, `false` — сбой сервера, повтор
+     * обрабатывается заново; `undefined` — исходный запрос ещё выполняется
+     */
+    outcome: boolean | undefined;
+    /**
+     * Повторы, ждущие исхода. Промис создаётся только для ждущего повтора —
+     * у обычной (единственной) доставки его нет вовсе.
+     */
+    waiters: ((processed: boolean) => void)[] | null;
+}
+
+/**
+ * Промис исхода доставки для повтора, который его ждёт.
+ * @param delivery Принятая доставка
+ * @returns Промис исхода (`true` — обработана, `false` — сбой сервера)
+ */
+function getDeliveryResult(delivery: IDelivery): Promise<boolean> {
+    if (delivery.outcome !== undefined) {
+        return Promise.resolve(delivery.outcome);
+    }
+    return new Promise<boolean>((resolve) => {
+        (delivery.waiters ??= []).push(resolve);
+    });
 }
 
 /**
@@ -189,14 +249,13 @@ function waitWithLimit<T>(promise: Promise<T>, ms: number): Promise<T | undefine
 /**
  * Хэш тела запроса для ключа дедупликации. Повтор доставки платформа шлёт с тем же
  * телом, а атакующий без секрета вебхука не угадает тело будущего апдейта и не
- * сможет заранее «занять» его ID (у Telegram update_id идут подряд).
+ * сможет заранее «занять» его ID (у Telegram update_id идут подряд). ID доставки
+ * адаптеры берут из тела, поэтому хэш тела различает и сами доставки.
  * @param body Тело запроса
  * @returns Хэш тела
  */
 function hashBody(body: string | object): string {
-    return createHash('sha1')
-        .update(typeof body === 'string' ? body : JSON.stringify(body))
-        .digest('base64');
+    return hash('sha1', typeof body === 'string' ? body : JSON.stringify(body), 'base64');
 }
 
 /**
@@ -209,15 +268,18 @@ function getBearerToken(header: unknown): TBotAuth {
 }
 
 /**
- * Ключ очереди запросов пользователя.
- * @param appType Платформа запроса
- * @param userId Идентификатор пользователя
- * @returns `платформа:userId` или `null`, если пользователь неизвестен
+ * Обрезает текст команды до потолка легитимных сообщений до NLU и матчинга
+ * команд: без этого напрямую сконфигурированный вебхук без подписи проталкивал
+ * бы в регулярки строки до 2 МБ, где даже «безобидная» квадратичная регулярка
+ * блокирует event loop на минуты. originalUserCommand не трогаем: бизнес-логика
+ * сохраняет доступ к полному тексту.
+ * @param botController Контроллер запроса
  */
-function getUserQueueKey(appType: string, userId: unknown): string | null {
-    return userId === null || userId === undefined || userId === ''
-        ? null
-        : `${appType}:${String(userId)}`;
+function truncateUserCommand(botController: BotController): void {
+    const command = botController.userCommand;
+    if (command && command.length > MAX_USER_COMMAND_LENGTH) {
+        botController.userCommand = command.slice(0, MAX_USER_COMMAND_LENGTH);
+    }
 }
 
 function defaultSend(res: ServerResponse, state: IBotResponse): void {
@@ -472,9 +534,9 @@ export interface IAddFormOptions<TBotController extends BotController = BotContr
  * const bot = new Bot<MyUserData, MyPlatformState>();
  * bot.addCommand('view', [], (_, ctx) => {
  *     ctx.userData.name = 'Bob';        // ✅ типизировано
- *     ctx.state!.cartCount = 5;          // ✅ типизировано
+ *     ctx.state!.cartCount = 5;         // ✅ типизировано
  *     ctx.userData.foo = 1;             // ✅ допустимо: у IUserData есть индексная сигнатура [key: string]: unknown
- *     ctx.userData.count += 1;           // ❌ TS error: unknown нельзя использовать в арифметике без приведения типа
+ *     ctx.userData.count += 1;          // ❌ TS error: unknown нельзя использовать в арифметике без приведения типа
  * });
  * ```
  *
@@ -562,17 +624,48 @@ export class Bot<
     #plugins: (IPlugin | ((bot: Bot) => void))[] = [];
 
     /**
-     * Последний запрос в очереди каждого пользователя (`платформа:userId`).
+     * Очереди запросов пользователей: платформа → userId → состояние очереди.
      * Запросы одного пользователя выполняются по очереди: иначе параллельные
      * апдейты читают один и тот же userData, и сохраняется только последний.
+     *
+     * Две карты вместо ключа `платформа:userId`: поиск по свежесклеенной строке
+     * длиннее 12 символов в V8 в разы дороже (строка сначала «сплющивается»).
      */
-    readonly #userQueues = new Map<string, Promise<unknown>>();
+    readonly #userQueues = new Map<string, Map<string, IUserQueueEntry>>();
+
+    /** Число записей во всех очередях (для чистки свободных записей). */
+    #userQueueSize = 0;
 
     /**
-     * Принятые доставки вебхуков по ключу. Повтор той же доставки (платформа не
-     * дождалась ответа) подтверждается без повторного выполнения логики.
+     * Размер, при котором запустится следующая чистка. После чистки — не меньше
+     * удвоенного числа оставшихся записей: при тысячах одновременных запросов
+     * освобождать нечего, и чистка на каждого нового пользователя дала бы O(n²).
      */
-    readonly #deliveries = new Map<string, IDelivery>();
+    #userQueueSweepAt = USER_QUEUE_SWEEP_SIZE;
+
+    /**
+     * Фабрики API-фасада по адаптеру: одна на адаптер, а не новое замыкание
+     * на каждый запрос.
+     */
+    readonly #apiFactories = new Map<
+        IPlatformAdapter,
+        (controller: BotController) => IControllerApi | null
+    >();
+
+    /**
+     * Принятые доставки вебхуков: платформа → ключ доставки. Повтор той же доставки
+     * (платформа не дождалась ответа) подтверждается без повторного выполнения логики.
+     */
+    readonly #deliveries = new Map<string, Map<string, IDelivery>>();
+
+    /**
+     * Доставки в порядке поступления (кольцевой буфер на DELIVERY_CACHE_SIZE):
+     * старейшая вытесняется за O(1). Обход Map с начала после удалений проходит
+     * «дыры» хэш-таблицы V8 и стоил O(ёмкости) на каждый запрос.
+     */
+    readonly #deliveryRing: (IDelivery | undefined)[] = [];
+    #deliveryHead = 0;
+    #deliveryCount = 0;
 
     /**
      * Получение корректного контроллера
@@ -606,9 +699,15 @@ export class Bot<
         platformClass: IPlatformAdapter,
     ): void {
         if (platformClass.createApi) {
-            // Обёртка нужна, чтобы не потерять this адаптера при передаче
-            // метода как фабрики в контроллер.
-            botController.setApiFactory((controller) => platformClass.createApi!(controller));
+            let factory = this.#apiFactories.get(platformClass);
+            if (factory === undefined) {
+                // Обёртка нужна, чтобы не потерять this адаптера при передаче
+                // метода как фабрики в контроллер.
+                factory = (controller): IControllerApi | null =>
+                    platformClass.createApi!(controller);
+                this.#apiFactories.set(platformClass, factory);
+            }
+            botController.setApiFactory(factory);
         }
     }
 
@@ -1264,7 +1363,7 @@ export class Bot<
                     // Дожидаемся onComplete: async-колбек иначе не успеет выставить
                     // ctx.text до формирования ответа, а его reject станет
                     // unhandled promise rejection.
-                    await Promise.resolve(options.onComplete(userCtx, formAnswers));
+                    await options.onComplete(userCtx, formAnswers);
                     return;
                 }
 
@@ -1791,7 +1890,7 @@ export class Bot<
         if (connected && dbAdapter.ensureSchema) {
             try {
                 const prepared = dbAdapter.ensureSchema(DB_TABLES_SCHEMA);
-                if ((isPromise(prepared) ? await prepared : prepared) === false) {
+                if (!(isPromise(prepared) ? await prepared : prepared)) {
                     this.#appContext.logError(
                         'Bot:#getDbAdapter(): DB-адаптер не смог подготовить схему (ensureSchema вернул false). ' +
                             'Проверьте права пользователя БД на создание таблиц и индексов.',
@@ -1809,51 +1908,63 @@ export class Bot<
 
     /* eslint-disable require-atomic-updates*/
     /**
-     * Загружает userData из БД.
+     * Загружает userData из БД. Без DB-адаптера отвечает синхронно: промис
+     * создаётся только там, где есть что ждать.
      * @param botController Контроллер запроса
      * @param userData Модель пользователя (если подключён DB-адаптер)
      * @param localStateData Состояние из локального хранилища платформы
      * @returns `true` — пользователь новый, `false` — найден, `null` — БД не ответила
      *   (данные пользователя неизвестны, сохранять ответ этого запроса нельзя)
      */
-    async #initUserData(
+    #initUserData(
         botController: BotController<TUserData, TPlatformState>,
         userData?: UsersData,
         localStateData?: unknown,
-    ): Promise<boolean | null> {
+    ): boolean | null | Promise<boolean | null> {
         if (botController.platformOptions.usedLocalStorage) {
             botController.state = localStateData as TPlatformState;
         }
         // Метод вызывается только когда localStorage платформы не используется
         // (выключен в конфиге ИЛИ платформа его не поддерживает — чат-платформы),
         // поэтому источник userData — БД, независимо от appConfig.isLocalStorage.
-        if (userData) {
-            // userId уникален только в пределах платформы.
-            const query = {
-                userId: botController.userId,
-                platform: userData.platform,
-            };
-            // where(), а не whereOne(): только так «не найдено» отличается от ошибки БД.
-            const res = await userData.where(query, true);
-            if (res?.status) {
-                userData.init(this.#appContext.database.adapter?.getValue(res) ?? null);
-                botController.userData = userData.data as TUserData;
-                return false;
-            }
-            if (!botController.userData) {
-                botController.userData = {} as TUserData;
-            }
-            if (res?.error) {
-                this.#appContext.logError(
-                    `Bot:run(): Не удалось загрузить данные пользователя "${String(botController.userId)}": ` +
-                        'запрос обработан с пустыми userData, изменения не сохранены.',
-                    { error: res.error },
-                );
-                return null;
-            }
-            userData.userId = botController.userId;
-            userData.meta = botController.userMeta as Record<string, unknown>;
+        return userData ? this.#loadUserData(botController, userData) : true;
+    }
+
+    /**
+     * Читает запись пользователя из БД (часть {@link #initUserData}).
+     * @param botController Контроллер запроса
+     * @param userData Модель пользователя
+     * @returns `true` — пользователь новый, `false` — найден, `null` — БД не ответила
+     */
+    async #loadUserData(
+        botController: BotController<TUserData, TPlatformState>,
+        userData: UsersData,
+    ): Promise<boolean | null> {
+        // userId уникален только в пределах платформы.
+        const query = {
+            userId: botController.userId,
+            platform: userData.platform,
+        };
+        // where(), а не whereOne(): только так «не найдено» отличается от ошибки БД.
+        const res = await userData.where(query, true);
+        if (res?.status) {
+            userData.init(this.#appContext.database.adapter?.getValue(res) ?? null);
+            botController.userData = userData.data as TUserData;
+            return false;
         }
+        if (!botController.userData) {
+            botController.userData = {} as TUserData;
+        }
+        if (res?.error) {
+            this.#appContext.logError(
+                `Bot:run(): Не удалось загрузить данные пользователя "${String(botController.userId)}": ` +
+                    'запрос обработан с пустыми userData, изменения не сохранены.',
+                { error: res.error },
+            );
+            return null;
+        }
+        userData.userId = botController.userId;
+        userData.meta = botController.userMeta as Record<string, unknown>;
         return true;
     }
 
@@ -1870,14 +1981,15 @@ export class Bot<
      * @param userData Модель пользователя (если подключён DB-адаптер)
      * @param appType Тип платформы (для дедупликации предупреждений)
      * @returns Флаг локального хранилища, признак нового пользователя (`null` — БД не ответила) и ключ
-     * сессии в памяти (`null`, если сессия в памяти не используется)
+     * сессии в памяти (`null`, если сессия в памяти не используется). Промис — только
+     * если localStorage платформы или БД ответили асинхронно.
      */
-    async #initRequestState(
+    #initRequestState(
         botController: BotController<TUserData, TPlatformState>,
         platformClass: IPlatformAdapter,
         userData: UsersData | undefined,
         appType: TAppType,
-    ): Promise<{ isLocalStorage: boolean; isNewUser: boolean | null; memoryKey: string | null }> {
+    ): IRequestState | Promise<IRequestState> {
         botController.platformOptions.usedLocalStorage =
             platformClass.isLocalStorage(botController);
         const isLocalStorage: boolean =
@@ -1898,18 +2010,23 @@ export class Bot<
             }
         }
 
-        let isNewUser: boolean | null = true;
-        let localStateData: unknown = botController.state;
         if (isLocalStorage) {
-            localStateData = platformClass.getLocalStorage(botController);
+            const localStateData: unknown = platformClass.getLocalStorage(botController);
             if (isPromise(localStateData)) {
-                localStateData = await localStateData;
+                return localStateData.then((data) => {
+                    botController.userData = data as TUserData;
+                    return { isLocalStorage, isNewUser: true, memoryKey };
+                });
             }
             botController.userData = localStateData as TUserData;
         } else if (!memoryKey) {
-            isNewUser = await this.#initUserData(botController, userData, localStateData);
+            const isNewUser = this.#initUserData(botController, userData, botController.state);
+            if (isPromise(isNewUser)) {
+                return isNewUser.then((res) => ({ isLocalStorage, isNewUser: res, memoryKey }));
+            }
+            return { isLocalStorage, isNewUser, memoryKey };
         }
-        return { isLocalStorage, isNewUser, memoryKey };
+        return { isLocalStorage, isNewUser: true, memoryKey };
     }
 
     /**
@@ -1975,83 +2092,103 @@ export class Bot<
     }
 
     /**
-     * Запуск логики приложения
+     * Запуск логики приложения.
+     *
+     * Единственный async-уровень конвейера запроса: вложенные шаги отдают
+     * промис только там, где действительно есть что ждать (БД, асинхронный
+     * адаптер или обработчик), — каждый лишний async-кадр стоит аллокаций
+     * на каждом запросе.
      * @param botController - Контроллер с бизнес-логикой приложения
      * @param platformClass - Экземпляр адаптера платформы, который будет подготавливать корректный ответ в зависимости от платформы
      * @param appType - Тип приложения
+     * @param queueEntry - Запись очереди пользователя: освобождается по завершении запроса
      */
     async #runApp(
         botController: BotController<TUserData, TPlatformState>,
         platformClass: IPlatformAdapter,
         appType: TAppType,
+        queueEntry: IUserQueueEntry | null,
     ): Promise<TRunResult> {
-        const dbAdapter = this.#appContext.database.adapter
-            ? await this.#getDbAdapter(this.#appContext.database.adapter)
-            : undefined;
-        let userData: UsersData | undefined;
-        if (dbAdapter) {
-            userData = new UsersData(this.#appContext);
-            botController.userId = userData.escapeString(botController.userId as string | number);
-            userData.platform = platformClass.platformName;
-        }
-        const { isLocalStorage, isNewUser, memoryKey } = await this.#initRequestState(
-            botController,
-            platformClass,
-            userData,
-            appType,
-        );
-
-        // Обрезаем текст команды до потолка легитимных сообщений до NLU и
-        // матчинга команд: без этого напрямую сконфигурированный вебхук без
-        // подписи проталкивал бы в регулярки строки до 2 МБ, где даже
-        // «безобидная» квадратичная регулярка блокирует event loop на минуты.
-        // originalUserCommand не трогаем: бизнес-логика сохраняет доступ
-        // к полному тексту.
-        if (
-            botController.userCommand &&
-            botController.userCommand.length > MAX_USER_COMMAND_LENGTH
-        ) {
-            botController.userCommand = botController.userCommand.slice(0, MAX_USER_COMMAND_LENGTH);
-        }
-        this.#initNLU(botController);
-        const shouldProceed =
-            this.#globalMiddlewares.length || this.#platformMiddlewares[appType]?.length
-                ? await this.#runMiddlewares(botController, appType)
-                : true;
-        let content: string | object | null;
         try {
-            if (shouldProceed) {
-                this.#setOldIntentName(botController);
+            const dbAdapter = this.#appContext.database.adapter
+                ? await this.#getDbAdapter(this.#appContext.database.adapter)
+                : undefined;
+            let userData: UsersData | undefined;
+            if (dbAdapter) {
+                userData = new UsersData(this.#appContext);
+                botController.userId = userData.escapeString(
+                    botController.userId as string | number,
+                );
+                userData.platform = platformClass.platformName;
+            }
+            const stateRes = this.#initRequestState(
+                botController,
+                platformClass,
+                userData,
+                appType,
+            );
+            const { isLocalStorage, isNewUser, memoryKey } = isPromise(stateRes)
+                ? await stateRes
+                : stateRes;
 
-                const res = botController.run();
-                if (res) {
-                    await res;
+            truncateUserCommand(botController);
+            this.#initNLU(botController);
+            const shouldProceed =
+                this.#globalMiddlewares.length || this.#platformMiddlewares[appType]?.length
+                    ? await this.#runMiddlewares(botController, appType)
+                    : true;
+            let content: string | object;
+            try {
+                if (shouldProceed) {
+                    this.#setOldIntentName(botController);
+
+                    const res = botController.run();
+                    if (res) {
+                        await res;
+                    }
+
+                    // isVoice читаем с уже полученного адаптера, а не через
+                    // platforms[appType] — так нет лишнего lookup'а.
+                    if (botController.tts === null && platformClass.isVoice) {
+                        botController.tts = botController.text;
+                    }
                 }
-
-                // isVoice читаем с уже полученного адаптера, а не через
-                // platforms[appType] — так нет лишнего lookup'а.
-                if (botController.tts === null && platformClass.isVoice) {
-                    botController.tts = botController.text;
+                // Ответ собирается всегда, даже если middleware прервал обработку:
+                // getContent() адаптера оформит выставленный middleware текст
+                // в валидный для платформы ответ.
+                const contentRes = this.#getPlatformContent(botController, platformClass);
+                content = isPromise(contentRes)
+                    ? await (contentRes as Promise<string | object>)
+                    : contentRes;
+            } finally {
+                if (memoryKey) {
+                    this.#saveMemorySession(memoryKey, botController.userData);
+                } else {
+                    const saved = this.#saveUserData(
+                        botController,
+                        userData,
+                        isNewUser,
+                        isLocalStorage,
+                    );
+                    if (saved) {
+                        await saved;
+                    }
                 }
             }
-            // Ответ собирается всегда, даже если middleware прервал обработку:
-            // getContent() адаптера оформит выставленный middleware текст
-            // в валидный для платформы ответ.
-            content = await this.#getPlatformContent(botController, platformClass);
+            if (botController.platformOptions.error) {
+                this.#appContext.logError(botController.platformOptions.error);
+            }
+            if (this.#$botController) {
+                this._clearState(botController);
+            }
+            return content;
         } finally {
-            if (memoryKey) {
-                this.#saveMemorySession(memoryKey, botController.userData);
-            } else {
-                await this.#saveUserData(botController, userData, isNewUser, isLocalStorage);
+            // Очередь освобождается до того, как вызывающий код получит ответ:
+            // следующий запрос пользователя пойдёт без ожидания.
+            if (queueEntry !== null && queueEntry.owner === botController) {
+                queueEntry.owner = null;
             }
         }
-        if (botController.platformOptions.error) {
-            this.#appContext.logError(botController.platformOptions.error);
-        }
-        if (this.#$botController) {
-            this._clearState(botController);
-        }
-        return content;
     }
 
     /**
@@ -2083,13 +2220,14 @@ export class Bot<
      * @param isNewUser true, если пользователь новый (ещё не записан в БД); null — данные
      *   не загрузились, и сохранение пустых userData затёрло бы или задублировало запись
      * @param isLocalStorage true, если данные хранятся в локальном хранилище платформы
+     * @returns Промис записи в БД; `undefined`, если сохранять нечего
      */
-    async #saveUserData(
+    #saveUserData(
         botController: BotController<TUserData, TPlatformState>,
         userData: UsersData | undefined,
         isNewUser: boolean | null,
         isLocalStorage: boolean,
-    ): Promise<void> {
+    ): Promise<void> | undefined {
         if (
             !userData ||
             isNewUser === null ||
@@ -2098,8 +2236,23 @@ export class Bot<
                     (botController.state as unknown as object) ===
                         (botController.userData as unknown as object)))
         ) {
-            return;
+            return undefined;
         }
+        return this.#storeUserData(botController, userData, isNewUser);
+    }
+
+    /**
+     * Записывает userData в БД (часть {@link #saveUserData}): insert для нового
+     * пользователя, update — для существующего. Ошибка БД пишется в лог.
+     * @param botController Контроллер с данными текущего запроса
+     * @param userData Модель пользователя
+     * @param isNewUser true, если пользователь новый
+     */
+    async #storeUserData(
+        botController: BotController<TUserData, TPlatformState>,
+        userData: UsersData,
+        isNewUser: boolean,
+    ): Promise<void> {
         userData.userId = botController.userId;
         userData.data = botController.userData;
         const userId = botController.userId;
@@ -2218,35 +2371,74 @@ export class Bot<
         return undefined;
     }
 
-    async #getPlatformContent(
+    /**
+     * Формирует ответ платформы и сохраняет состояние в её локальное хранилище.
+     * Синхронный адаптер отвечает без промиса.
+     * @param botController Контроллер текущего запроса
+     * @param platformClass Адаптер платформы
+     * @returns Ответ платформы (или промис, если адаптер асинхронный)
+     */
+    #getPlatformContent(
         botController: BotController<TUserData, TPlatformState>,
         platformClass: IPlatformAdapter,
-    ): Promise<string | object> {
+    ): string | object | Promise<string | object> {
         const userDataLength = this.#applyOldIntentName(botController);
         const stateData = this.#getStateData(botController, userDataLength);
-        let content: string | object;
         if (botController.isSendRating) {
-            content = await platformClass.getRatingContext(botController);
-        } else {
-            if (botController.state && userDataLength === 0) {
-                // При isLocalStorage=true state и userData могут совпадать.
-                // Безопасное приведение через unknown, т.к. в этом режиме типы эквивалентны.
-                botController.userData = botController.state as unknown as TUserData;
-            }
-            // Ответ адаптера дожидаемся до валидации: почти все адаптеры асинхронные,
-            // и без await проверка на null применялась бы к промису, то есть никогда
-            // не срабатывала. Заодно состояние сохраняется уже после готового ответа.
-            content = this.#validateAdapterResult(
-                await platformClass.getContent(botController, stateData),
-                botController,
+            const rating = platformClass.getRatingContext(botController);
+            return isPromise(rating)
+                ? (rating as Promise<string | object>).then((r) =>
+                      this.#finishPlatformContent(botController, platformClass, r, stateData),
+                  )
+                : this.#finishPlatformContent(botController, platformClass, rating, stateData);
+        }
+        if (botController.state && userDataLength === 0) {
+            // При isLocalStorage=true state и userData могут совпадать.
+            // Безопасное приведение через unknown, т.к. в этом режиме типы эквивалентны.
+            botController.userData = botController.state as unknown as TUserData;
+        }
+        // Ответ адаптера дожидаемся до валидации: проверка на null должна
+        // применяться к ответу, а не к промису. Заодно состояние сохраняется уже
+        // после готового ответа.
+        const raw = platformClass.getContent(botController, stateData);
+        if (isPromise(raw)) {
+            return (raw as Promise<string | object>).then((r) =>
+                this.#finishPlatformContent(
+                    botController,
+                    platformClass,
+                    this.#validateAdapterResult(r, botController),
+                    stateData,
+                ),
             );
         }
+        return this.#finishPlatformContent(
+            botController,
+            platformClass,
+            this.#validateAdapterResult(raw, botController),
+            stateData,
+        );
+    }
+
+    /**
+     * Сохраняет состояние в локальное хранилище платформы после готового ответа.
+     * @param botController Контроллер текущего запроса
+     * @param platformClass Адаптер платформы
+     * @param content Готовый ответ платформы
+     * @param stateData Состояние для сохранения
+     * @returns Ответ платформы (промис — если хранилище асинхронное)
+     */
+    #finishPlatformContent(
+        botController: BotController<TUserData, TPlatformState>,
+        platformClass: IPlatformAdapter,
+        content: string | object,
+        stateData: Record<string, unknown> | undefined,
+    ): string | object | Promise<string | object> {
         // Пустое состояние сохранять нечего: у платформ с внешним хранилищем
         // (SmartApp) такой вызов уходил лишним HTTP-запросом на каждый ответ.
         if (botController.platformOptions.usedLocalStorage && stateData) {
             const res = platformClass.setLocalStorage(stateData, botController);
             if (res) {
-                await res;
+                return res.then(() => content);
             }
         }
         return content;
@@ -2446,11 +2638,35 @@ export class Bot<
      * console.log(result);
      * ```
      */
-    public async run(
+    public run(
         appType: TAppType | null = null,
         content: string | object | null = null,
         auth: TBotAuth = null,
         clientIp?: string,
+    ): Promise<TRunResult> {
+        // Не async: собственный async-кадр run() стоил аллокаций на каждом запросе.
+        // Контракт прежний — ошибка всегда приходит отклонённым промисом.
+        try {
+            return this.#runRequest(appType, content, auth, clientIp);
+        } catch (e) {
+            return Promise.reject(e);
+        }
+    }
+
+    /**
+     * Синхронная часть {@link run}: разбор запроса адаптером и постановка в очередь
+     * пользователя. Ошибки бросает синхронно — run() превращает их в отказ промиса.
+     * @param appType Тип приложения
+     * @param content Входные данные запроса
+     * @param auth Авторизационный токен
+     * @param clientIp IP-адрес клиента
+     * @returns Промис ответа платформы
+     */
+    #runRequest(
+        appType: TAppType | null,
+        content: string | object | null,
+        auth: TBotAuth,
+        clientIp: string | undefined,
     ): Promise<TRunResult> {
         if (!this.#botControllerClass) {
             const errMsg =
@@ -2484,64 +2700,129 @@ export class Bot<
             this.#initApiFacade(botController, platformClass);
 
             platformClass.updateTimeStart(botController);
-            let res = platformClass.setQueryData(correctContent, botController);
+            const res = platformClass.setQueryData(correctContent, botController);
             if (isPromise(res)) {
-                res = await res;
-            }
-            if (res) {
-                if (botController.platformOptions.sendInInit) {
-                    return botController.platformOptions.sendInInit as TRunResult;
-                }
-                const appType = botController.appType as string;
-                return this.#runInUserQueue(
-                    getUserQueueKey(appType, botController.userId),
-                    this.#getUserQueueWait(platformClass, botController),
-                    () => this.#runApp(botController, platformClass, appType),
+                return (res as Promise<boolean>).then((parsed) =>
+                    this.#afterQueryData(parsed, botController, platformClass),
                 );
-            } else {
-                const msg =
-                    (botController.platformOptions.error as string) ||
-                    `Адаптер платформы "${botController.appType}" не смог разобрать запрос.`;
-                this.#appContext.logError(msg);
-                throw new BotBadRequestError(msg);
             }
-        } else {
-            const msg =
-                'Не удалось определить платформу, от которой пришел запрос. Дальнейшая обработка невозможна.';
-            this.#appContext.logError(msg);
-            throw new BotBadRequestError(msg);
+            return this.#afterQueryData(res, botController, platformClass);
         }
+        const msg =
+            'Не удалось определить платформу, от которой пришел запрос. Дальнейшая обработка невозможна.';
+        this.#appContext.logError(msg);
+        throw new BotBadRequestError(msg);
     }
 
     /**
-     * Выполняет задачу после завершения предыдущего запроса того же пользователя.
+     * Продолжение {@link run} после разбора запроса адаптером.
+     * @param parsed Результат `setQueryData`: `false` — адаптер не смог разобрать запрос
+     * @param botController Контроллер запроса
+     * @param platformClass Адаптер платформы
+     * @returns Промис ответа платформы
+     */
+    #afterQueryData(
+        parsed: boolean,
+        botController: BotController<TUserData, TPlatformState>,
+        platformClass: IPlatformAdapter,
+    ): Promise<TRunResult> {
+        if (!parsed) {
+            const msg =
+                (botController.platformOptions.error as string) ||
+                `Адаптер платформы "${botController.appType}" не смог разобрать запрос.`;
+            this.#appContext.logError(msg);
+            throw new BotBadRequestError(msg);
+        }
+        if (botController.platformOptions.sendInInit) {
+            return Promise.resolve(botController.platformOptions.sendInInit as TRunResult);
+        }
+        return this.#runInUserQueue(botController, platformClass, botController.appType as string);
+    }
+
+    /**
+     * Выполняет запрос после завершения предыдущего запроса того же пользователя.
      *
      * Без очереди два параллельных апдейта одного пользователя (двойное нажатие
      * кнопки, повторная доставка, несколько соединений вебхука) читают один и тот же
      * userData, и изменения первого теряются. Очередь живёт в памяти процесса:
      * при нескольких репликах нужна маршрутизация пользователя на одну реплику.
      *
-     * @param key Ключ `платформа:userId`; `null` — пользователь неизвестен, очередь не нужна
-     * @param maxWait Сколько ждать предыдущий запрос, мс (см. {@link #getUserQueueWait})
-     * @param task Обработка запроса
-     * @returns Результат задачи
+     * Запись очереди освобождает сам {@link #runApp} в своём finally (без `.finally`
+     * у промиса и без удаления из Map на каждый запрос); свободные записи
+     * удаляются пакетно — {@link #sweepUserQueues}.
+     *
+     * @param botController Контроллер запроса
+     * @param platformClass Адаптер платформы
+     * @param appType Тип платформы
+     * @returns Промис ответа платформы
      */
-    #runInUserQueue<T>(key: string | null, maxWait: number, task: () => Promise<T>): Promise<T> {
-        if (key === null) {
-            return task();
+    #runInUserQueue(
+        botController: BotController<TUserData, TPlatformState>,
+        platformClass: IPlatformAdapter,
+        appType: string,
+    ): Promise<TRunResult> {
+        const userId = botController.userId;
+        if (userId === null || userId === undefined || userId === '') {
+            return this.#runApp(botController, platformClass, appType, null);
         }
-        const previous = this.#userQueues.get(key);
-        // Ожидающий получает отказ предыдущего запроса как обычное завершение
-        // (waitWithLimit): ошибка одного запроса не роняет следующие.
-        const run = previous && maxWait > 0 ? waitWithLimit(previous, maxWait).then(task) : task();
-        this.#userQueues.set(key, run);
-        // Ключ снимается до продолжения вызывающего кода: следующий последовательный
-        // запрос того же пользователя идёт быстрым путём, без ожидания.
-        return run.finally(() => {
-            if (this.#userQueues.get(key) === run) {
-                this.#userQueues.delete(key);
+        let queues = this.#userQueues.get(appType);
+        if (queues === undefined) {
+            queues = new Map();
+            this.#userQueues.set(appType, queues);
+        }
+        const key = String(userId);
+        let entry = queues.get(key);
+        let previous: Promise<unknown> | null = null;
+        if (entry === undefined) {
+            if (this.#userQueueSize >= this.#userQueueSweepAt) {
+                this.#sweepUserQueues();
             }
-        });
+            entry = { run: RESOLVED_QUEUE, owner: botController };
+            queues.set(key, entry);
+            this.#userQueueSize++;
+        } else if (entry.owner === null) {
+            entry.owner = botController;
+        } else {
+            // Предыдущий запрос ещё выполняется: ждём его через его же запись,
+            // а для себя заводим новую — её освободит уже наш #runApp.
+            previous = entry.run;
+            entry = { run: RESOLVED_QUEUE, owner: botController };
+            queues.set(key, entry);
+        }
+        const ownEntry = entry;
+        let run: Promise<TRunResult>;
+        const maxWait =
+            previous === null ? 0 : this.#getUserQueueWait(platformClass, botController);
+        if (previous !== null && maxWait > 0) {
+            // Ожидающий получает отказ предыдущего запроса как обычное завершение
+            // (waitWithLimit): ошибка одного запроса не роняет следующие.
+            run = waitWithLimit(previous, maxWait).then(() =>
+                this.#runApp(botController, platformClass, appType, ownEntry),
+            );
+        } else {
+            run = this.#runApp(botController, platformClass, appType, ownEntry);
+        }
+        ownEntry.run = run;
+        return run;
+    }
+
+    /**
+     * Удаляет свободные записи очередей пользователей. Вызывается, когда записей
+     * накопилось {@link #userQueueSweepAt}: память ограничена, а удаление идёт
+     * пакетом, а не на каждом запросе.
+     */
+    #sweepUserQueues(): void {
+        let size = 0;
+        for (const queues of this.#userQueues.values()) {
+            for (const [key, entry] of queues) {
+                if (entry.owner === null) {
+                    queues.delete(key);
+                }
+            }
+            size += queues.size;
+        }
+        this.#userQueueSize = size;
+        this.#userQueueSweepAt = Math.max(USER_QUEUE_SWEEP_SIZE, size * 2);
     }
 
     /**
@@ -2598,32 +2879,58 @@ export class Bot<
      * после сбоя сервера обрабатывается заново — иначе апдейт потерялся бы, ведь
      * платформа уже получила бы 2xx на повтор.
      *
+     * Ключ доставки — ID от адаптера, если подпись вебхука проверена
+     * (`isSignatureCheckEnabled()`): подделать запрос нельзя, и хэш тела не нужен.
+     * Без подписи ключ — хэш тела (см. {@link hashBody}). Первая доставка
+     * регистрируется синхронно; промис — только когда нужно ждать исходный запрос.
+     *
      * @param adapter Адаптер платформы запроса
      * @param query Разобранное тело запроса
      * @param body Тело запроса в исходном виде (для хэша)
      * @returns Доставка, исход которой нужно сообщить через {@link #finishDelivery};
      *   `null` — адаптер не даёт ID; `false` — повтор, отвечать `200 ok` без обработки
      */
-    async #acceptDelivery(
+    #acceptDelivery(
         adapter: IPlatformAdapter,
         query: unknown,
         body: string | object,
-    ): Promise<IDelivery | null | false> {
+    ): IDelivery | null | false | Promise<IDelivery | null | false> {
         let key: string;
         try {
             const id = adapter.getDeliveryId?.(query);
             if (id === null || id === undefined || id === '') {
                 return null;
             }
-            key = `${adapter.platformName}:${id}:${hashBody(body)}`;
+            key = adapter.isSignatureCheckEnabled?.() === true ? String(id) : hashBody(body);
         } catch {
             // Ошибка в адаптере не должна мешать обработке запроса.
             return null;
         }
+        const platform = adapter.platformName;
+        const existing = this.#deliveries.get(platform)?.get(key);
+        if (existing && existing.expiresAt > Date.now()) {
+            return this.#waitDelivery(adapter, platform, key, existing);
+        }
+        return this.#registerDelivery(platform, key);
+    }
 
-        let existing = this.#deliveries.get(key);
-        while (existing && existing.expiresAt > Date.now()) {
-            const processed = await waitWithLimit(existing.result, DELIVERY_WAIT_LIMIT);
+    /**
+     * Повтор доставки, исходный запрос которой уже принят: ждёт его исхода.
+     * @param adapter Адаптер платформы
+     * @param platform Платформа
+     * @param key Ключ доставки
+     * @param existing Принятая ранее доставка
+     * @returns Доставка для обработки заново или `false` — подтвердить без обработки
+     */
+    async #waitDelivery(
+        adapter: IPlatformAdapter,
+        platform: string,
+        key: string,
+        existing: IDelivery,
+    ): Promise<IDelivery | false> {
+        let current: IDelivery | undefined = existing;
+        while (current && current.expiresAt > Date.now()) {
+            const processed = await waitWithLimit(getDeliveryResult(current), DELIVERY_WAIT_LIMIT);
             if (processed !== false) {
                 this.#appContext.logWarn(
                     `Bot: повторная доставка "${adapter.platformName}" подтверждена без обработки` +
@@ -2634,24 +2941,52 @@ export class Bot<
             }
             // Исходный запрос упал. Повторов могло прийти несколько: обработку берёт
             // первый, остальные снова ждут — уже его.
-            existing = this.#deliveries.get(key);
+            current = this.#deliveries.get(platform)?.get(key);
         }
+        return this.#registerDelivery(platform, key);
+    }
 
+    /**
+     * Запоминает новую доставку и вытесняет истёкшие и лишние (сверх
+     * DELIVERY_CACHE_SIZE) — старейшие по кольцевому буферу, за O(1).
+     * @param platform Платформа
+     * @param key Ключ доставки
+     * @returns Новая доставка
+     */
+    #registerDelivery(platform: string, key: string): IDelivery {
         const now = Date.now();
-        this.#deliveries.delete(key);
+        let byPlatform = this.#deliveries.get(platform);
+        if (byPlatform === undefined) {
+            byPlatform = new Map();
+            this.#deliveries.set(platform, byPlatform);
+        } else {
+            byPlatform.delete(key);
+        }
         // TTL одинаков для всех записей, поэтому порядок вставки совпадает с порядком истечения.
-        for (const [oldKey, old] of this.#deliveries) {
-            if (old.expiresAt > now && this.#deliveries.size < DELIVERY_CACHE_SIZE) {
+        const ring = this.#deliveryRing;
+        while (this.#deliveryCount > 0) {
+            const old = ring[this.#deliveryHead] as IDelivery;
+            if (old.expiresAt > now && this.#deliveryCount < DELIVERY_CACHE_SIZE) {
                 break;
             }
-            this.#deliveries.delete(oldKey);
+            const oldMap = this.#deliveries.get(old.platform);
+            if (oldMap?.get(old.key) === old) {
+                oldMap.delete(old.key);
+            }
+            ring[this.#deliveryHead] = undefined;
+            this.#deliveryHead = (this.#deliveryHead + 1) % DELIVERY_CACHE_SIZE;
+            this.#deliveryCount--;
         }
-        let finish: (processed: boolean) => void = () => {};
-        const result = new Promise<boolean>((resolve) => {
-            finish = resolve;
-        });
-        const delivery: IDelivery = { key, expiresAt: now + DELIVERY_CACHE_TTL, result, finish };
-        this.#deliveries.set(key, delivery);
+        const delivery: IDelivery = {
+            platform,
+            key,
+            expiresAt: now + DELIVERY_CACHE_TTL,
+            outcome: undefined,
+            waiters: null,
+        };
+        byPlatform.set(key, delivery);
+        ring[(this.#deliveryHead + this.#deliveryCount) % DELIVERY_CACHE_SIZE] = delivery;
+        this.#deliveryCount++;
         return delivery;
     }
 
@@ -2665,10 +3000,20 @@ export class Bot<
         if (!delivery) {
             return;
         }
-        if (!processed && this.#deliveries.get(delivery.key) === delivery) {
-            this.#deliveries.delete(delivery.key);
+        if (!processed) {
+            const byPlatform = this.#deliveries.get(delivery.platform);
+            if (byPlatform?.get(delivery.key) === delivery) {
+                byPlatform.delete(delivery.key);
+            }
         }
-        delivery.finish(processed);
+        delivery.outcome = processed;
+        const waiters = delivery.waiters;
+        if (waiters !== null) {
+            delivery.waiters = null;
+            for (const resolve of waiters) {
+                resolve(processed);
+            }
+        }
     }
 
     #isWebhookError(
@@ -2818,7 +3163,7 @@ export class Bot<
             appType = this.#getAppType(query, req.headers);
             const platformAdapter = appType ? this.#appContext.platforms[appType] : undefined;
             if (appType && platformAdapter) {
-                if (!platformAdapter.isCorrectQuery(data, req.headers)) {
+                if (!platformAdapter.isCorrectQuery(data, req.headers, query)) {
                     // В лог уходит только мета-информация: сериализация всего
                     // req/res тащила бы в логи сырые sockets и заголовки с cookies.
                     this.#appContext.logError(
@@ -2968,7 +3313,7 @@ export class Bot<
         const platformAdapter = appType ? this.#appContext.platforms[appType] : undefined;
         let delivery: IDelivery | null = null;
         if (platformAdapter) {
-            if (!platformAdapter.isCorrectQuery(data, normalizedHeaders)) {
+            if (!platformAdapter.isCorrectQuery(data, normalizedHeaders, query)) {
                 // Логируем только мета-информацию, не всё тело запроса.
                 this.#appContext.logError(
                     `Bot:webhookEvent(): Для платформы "${appType}" пришёл запрос с неверным токеном. Дальнейшая обработка остановлена.`,
@@ -3242,7 +3587,12 @@ export class Bot<
 
             const onEnd = (): void => {
                 cleanup();
-                resolve(Buffer.concat(chunks).toString());
+                // Тело из одного чанка (типичный вебхук) — без копирования в Buffer.concat.
+                resolve(
+                    chunks.length === 1
+                        ? (chunks[0] as Buffer).toString()
+                        : Buffer.concat(chunks).toString(),
+                );
             };
 
             const onError = (err: Error): void => {
