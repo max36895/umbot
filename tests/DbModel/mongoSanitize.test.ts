@@ -173,7 +173,7 @@ describe('MongoAdapter: санитизация NoSQL-инъекций', () => {
                 { age: { $gt: 18 } } as never,
                 true,
             );
-            expect(res).toEqual({ userId: 'user-1', age: 25 });
+            expect(res).toEqual({ status: true, data: { userId: 'user-1', age: 25 } });
             expect(collectionCalls).toEqual(['UsersData']);
         });
 

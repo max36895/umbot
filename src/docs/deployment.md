@@ -8,7 +8,7 @@ SSL-сертификата до настройки CI/CD.
 
 - Сервер с публичным IP-адресом
 - Доменное имя
-- SSL-сертификат (обязателен для Алисы, Маруси, Сбер SmartApp, Viber и других платформ)
+- SSL-сертификат (обязателен для Алисы, Сбер SmartApp, Telegram, MAX, Viber и других платформ)
 
 ## Получение SSL-сертификата через acme.sh
 
@@ -122,6 +122,12 @@ docker build -t my-bot .
 docker run -p 3000:3000 -e ALISA_TOKEN=... -e TELEGRAM_TOKEN=... my-bot
 ```
 
+Процесс в контейнере работает от непривилегированного пользователя `umbot`; каталоги `/app/json` (данные
+`FileAdapter`) и `/app/logs` (файловые логи) создаются в образе заранее и доступны ему на запись. Данные контейнера
+теряются при его пересоздании: для `FileAdapter` подключите том (`docker run -v umbot-data:/app/json ...`), а для
+продакшена используйте `MongoAdapter`. Ошибки без своего логгера дублируются в stderr (`[umbot] ...`) и видны в
+`docker logs`.
+
 Если `env` в конфиге не настроен, фреймворк тихо подтянет известные переменные (`TELEGRAM_TOKEN`,
 `ALISA_TOKEN`, `VK_TOKEN`, ...) из окружения контейнера и дозаполнит ими токены — явно писать
 `env: 'local'` для этого не нужно. Если же `env: 'local'` указан, значения из окружения
@@ -139,7 +145,7 @@ docker run -p 3000:3000 -e ALISA_TOKEN=... -e TELEGRAM_TOKEN=... my-bot
 
 ## Serverless
 
-Для платформ без постоянного сервера (Алиса, Маруся, SmartApp) можно использовать serverless-функции.
+Для платформ без постоянного сервера (Алиса, SmartApp, Маруся) можно использовать serverless-функции.
 
 ### Яндекс Cloud Functions
 
@@ -154,6 +160,13 @@ npx umbot create from-flow flow.json --usecloud
 - Экспорт `handler` в `src/index.ts` для обработки запросов Cloud Functions
 - `scripts/deploy.js` — деплой через yc CLI (запускается `npm run deploy`)
 - Справочный `serverless.yml` с конфигурацией функции (деплой его не читает — аргументы для yc собирает `scripts/deploy.js`)
+
+`scripts/deploy.js` читает `.env` по тем же правилам, что и фреймворк (инлайн-комментарий — только « #», внешние
+кавычки снимаются, пустые значения пропускаются) и передаёт значения в `--environment`. Такие переменные хранятся
+в версии функции открытым текстом и видны всем, у кого есть доступ к функции в консоли облака. Для продакшена храните
+токены в Yandex Lockbox и подключите секрет к функции (`yc serverless function version create ... --secret ...`),
+убрав их из `.env`.
+
 - Скрипты `deploy` и `build` в `package.json`
 
 Ручная настройка Cloud Function:
@@ -168,9 +181,18 @@ bot.setAppConfig({ isLocalStorage: true });
 
 // Экспорт функции для Яндекс Cloud Functions
 export const handler = async (event: Record<string, unknown>) => {
-    const content = typeof event.body === 'string' ? event.body : JSON.stringify(event.body ?? '');
+    const rawBody = typeof event.body === 'string' ? event.body : '';
+    // Тело с не-JSON Content-Type приходит в base64 (isBase64Encoded: true)
+    const content =
+        typeof event.body !== 'string'
+            ? JSON.stringify(event.body ?? '')
+            : event.isBase64Encoded === true
+              ? Buffer.from(rawBody, 'base64').toString('utf8')
+              : rawBody;
     const headers = (event.headers ?? {}) as Record<string, unknown>;
-    const result = await bot.webhookEvent(content, headers);
+    // IP клиента — для middleware ipFilter
+    const requestContext = event.requestContext as { identity?: { sourceIp?: string } } | undefined;
+    const result = await bot.webhookEvent(content, headers, requestContext?.identity?.sourceIp);
     return {
         statusCode: result.statusCode,
         headers: { 'Content-Type': 'application/json' },
@@ -182,8 +204,10 @@ export const handler = async (event: Record<string, unknown>) => {
 `webhookEvent()` — специальный метод для serverless-окружений: в отличие от `run()`, он сам
 определяет платформу по содержимому, проверяет подпись webhook (`isCorrectQuery`) и возвращает
 готовый HTTP-ответ `{ statusCode, body }`. Именно этот код использует генератор `from-flow --usecloud`.
+Регистр имён заголовков не важен: Cloud Functions передаёт их как прислал клиент
+(`X-Telegram-Bot-Api-Secret-Token`), а `webhookEvent()` приводит их к нижнему регистру перед проверкой подписи.
 
-> В serverless `isLocalStorage: true` надёжно хранит данные только на Алисе, Марусе и SmartApp (состояние приходит в
+> В serverless `isLocalStorage: true` надёжно хранит данные только на Алисе, SmartApp и Марусе (состояние приходит в
 > запросе). На Telegram/VK/MAX/Viber без DB-адаптера `userData` живёт в памяти экземпляра функции и теряется, когда
 > вызов попадает в новый экземпляр, — для шагов диалога на чат-платформах подключите БД (например, `MongoAdapter`).
 
@@ -195,7 +219,7 @@ export const handler = async (event: Record<string, unknown>) => {
 
 - [ ] **Сборка завершена успешно** — `npm run build` без ошибок
 - [ ] **Тесты пройдены** — `npm run test` зелёный
-- [ ] **Режим `strict_prod`** — `bot.setAppMode('strict_prod')`
+- [ ] **Режим `strict_prod`** — `bot.setAppMode('strict_prod')` или `NODE_ENV=production` (без явного `setAppMode`)
 - [ ] **Токены в переменных окружения** — не в коде, не в .env в контейнере
 - [ ] **MongoAdapter** — вместо FileAdapter (FileAdapter хранит данные в памяти)
 - [ ] **HTTPS настроен** — обязателен для Алисы, Сбера, Viber

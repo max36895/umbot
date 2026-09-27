@@ -8,6 +8,12 @@ import { AppContext, TButtonProcessing } from '../../core';
 export type TButtonPayload = Record<string, unknown> | string;
 
 /**
+ * Префикс группы, которую {@link Buttons.row} назначает кнопкам одного ряда
+ * (`options._group`). Адаптеры чат-платформ выводят кнопки одной группы в одну строку.
+ */
+const BUTTON_ROW_GROUP_PREFIX = '__umbot_row_';
+
+/**
  * @class Buttons
  * Класс для управления коллекцией кнопок и их отображением на различных платформах.
  *
@@ -43,6 +49,12 @@ export class Buttons {
     #isRemove: boolean = false;
 
     /**
+     * Номер текущего ряда для {@link row}; -1 — row() не вызывался, раскладка прежняя
+     * (каждая кнопка — отдельной строкой).
+     */
+    #rowIndex: number = -1;
+
+    /**
      * Создает новый экземпляр коллекции кнопок: инициализирует пустой массив
      * кнопок и сохраняет контекст приложения.
      * @param appContext Контекст приложения. Обычно не создаётся вручную —
@@ -74,6 +86,7 @@ export class Buttons {
     public clear(): void {
         this.buttons = [];
         this.#isRemove = false;
+        this.#rowIndex = -1;
     }
 
     /**
@@ -97,7 +110,59 @@ export class Buttons {
     public remove(): this {
         this.buttons = [];
         this.#isRemove = true;
+        this.#rowIndex = -1;
         return this;
+    }
+
+    /**
+     * Завершает текущий ряд кнопок: следующие кнопки пойдут в новую строку.
+     *
+     * Кнопки, добавленные до первого вызова, образуют первый ряд. Без вызова row()
+     * раскладка прежняя — каждая кнопка отдельной строкой. Ряд учитывают чат-платформы
+     * (Telegram, VK, MAX, Viber); если в ряду больше кнопок, чем разрешает платформа,
+     * лишние переносятся на следующую строку с предупреждением в лог. Голосовые
+     * платформы (Алиса, Маруся, SmartApp) раскладку кнопок не поддерживают — у них
+     * ряд ни на что не влияет.
+     *
+     * Технически ряд — это общая группа `options._group`: кнопки, у которых группа
+     * задана явно, её сохраняют.
+     *
+     * @returns {Buttons}
+     *
+     * @example
+     * ```ts
+     * ctx.buttons
+     *     .addBtn('Да')
+     *     .addBtn('Нет')
+     *     .row()
+     *     .addBtn('Помощь');
+     * // Telegram/VK/MAX/Viber: [Да] [Нет]
+     * //                        [Помощь]
+     * ```
+     */
+    public row(): this {
+        if (this.#rowIndex < 0) {
+            this.#rowIndex = 0;
+            for (let i = 0; i < this.buttons.length; i++) {
+                this.#assignRow(this.buttons[i] as IButtonType);
+            }
+        }
+        this.#rowIndex++;
+        return this;
+    }
+
+    /**
+     * Назначает кнопке текущий ряд, если группа не задана явно.
+     * Опции копируются: один объект options может быть общим у нескольких кнопок.
+     * @param button Кнопка
+     */
+    #assignRow(button: IButtonType): void {
+        if (button.options?._group === undefined) {
+            button.options = {
+                ...button.options,
+                _group: `${BUTTON_ROW_GROUP_PREFIX}${this.#rowIndex}`,
+            };
+        }
     }
 
     /**
@@ -131,6 +196,9 @@ export class Buttons {
                 ? getLinkButton(this.#appContext, title, url, payload, options)
                 : getButton(this.#appContext, title, url, payload, options);
         if (button) {
+            if (this.#rowIndex >= 0) {
+                this.#assignRow(button);
+            }
             this.buttons.push(button);
         }
         return this;

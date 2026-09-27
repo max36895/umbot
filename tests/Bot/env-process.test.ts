@@ -19,6 +19,8 @@ describe('AppContext: токены из process.env без настроенно�
         'ALISA_TOKEN',
         'YANDEX_TOKEN',
         'SPEECH_KIT_TOKEN',
+        'TELEGRAM_WEBHOOK_SECRET',
+        'MAX_WEBHOOK_SECRET',
         'DB_HOST',
         'DB_USER',
         'DB_PASSWORD',

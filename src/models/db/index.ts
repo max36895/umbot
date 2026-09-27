@@ -29,3 +29,4 @@
  */
 export * from './Model';
 export * from './QueryData';
+export * from './schema';

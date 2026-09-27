@@ -185,6 +185,11 @@ export abstract class Model<TState extends IModelState> {
             primaryKeyName: this.getId(),
             rules: this.rules(),
         };
+        const uniqueKeys = this.getUniqueKeys();
+        // exactOptionalPropertyTypes: поле задаём только у моделей с составным ключом.
+        if (uniqueKeys.length) {
+            this.queryData.uniqueKeys = uniqueKeys;
+        }
     }
 
     /**
@@ -263,6 +268,42 @@ export abstract class Model<TState extends IModelState> {
     }
 
     /**
+     * Возвращает поля, которые вместе с первичным ключом однозначно определяют запись.
+     * Переопределите, если значение первичного ключа уникально только в паре
+     * с другим полем (как `userId` у `UsersData` — в пределах платформы).
+     * Эти поля попадают в условие selectOne/update/remove и в `IQuery.uniqueKeys`.
+     *
+     * @returns Имена дополнительных ключевых полей (по умолчанию — пусто)
+     *
+     * @example
+     * ```ts
+     * protected getUniqueKeys(): string[] {
+     *     return ['platform'];
+     * }
+     * ```
+     */
+    protected getUniqueKeys(): string[] {
+        return [];
+    }
+
+    /**
+     * Условие поиска записи по ключу: первичный ключ плюс поля из getUniqueKeys().
+     * Одно место сборки условия для selectOne/update/remove — иначе составной
+     * ключ учитывался бы при поиске, но не при обновлении.
+     */
+    #getKeyQuery(): IQueryData | null {
+        const idName = this.queryData.primaryKeyName;
+        if (!idName) {
+            return this.queryData.query;
+        }
+        const query: IQueryData = { [idName]: this.state[idName] };
+        for (const key of this.queryData.uniqueKeys ?? []) {
+            query[key] = this.state[key];
+        }
+        return query;
+    }
+
+    /**
      * Инициализирует модель данными
      *
      * @example
@@ -316,12 +357,7 @@ export abstract class Model<TState extends IModelState> {
      * @returns Promise с результатом запроса
      */
     public async selectOne(): Promise<ISelectOneModelRes> {
-        const idName = this.queryData.primaryKeyName;
-        if (idName) {
-            this.queryData.query = {
-                [idName]: this.state[idName],
-            };
-        }
+        this.queryData.query = this.#getKeyQuery();
         this.queryData.data = null;
         if (this._appContext.database.adapter) {
             return (await this._appContext.database.adapter.select(
@@ -344,11 +380,7 @@ export abstract class Model<TState extends IModelState> {
         // Приватный метод подготовки queryData: вызывается из save() и update().
         this.validate();
         const idName = this.queryData.primaryKeyName;
-        if (idName) {
-            this.queryData.query = {
-                [idName]: this.state[idName],
-            };
-        }
+        this.queryData.query = this.#getKeyQuery();
         const data: IQueryData = {};
         for (const index in this.attributeLabels()) {
             if (index !== idName) {
@@ -436,12 +468,7 @@ export abstract class Model<TState extends IModelState> {
      */
     public async remove(): Promise<boolean> {
         this.validate();
-        const idName = this.queryData.primaryKeyName;
-        if (idName) {
-            this.queryData.query = {
-                [idName]: this.state[idName],
-            };
-        }
+        this.queryData.query = this.#getKeyQuery();
         this.queryData.data = null;
         if (this._appContext.database.adapter) {
             return await this._appContext.database.adapter.remove(this.queryData);

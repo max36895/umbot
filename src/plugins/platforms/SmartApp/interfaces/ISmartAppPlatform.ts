@@ -658,12 +658,19 @@ export interface ISberSmartAppSuggestionAction {
     message_name?: 'SERVER_ACTION' | 'RUN_APP';
 
     /**
+     * Ссылка для открытия
+     * Для type='deep_link'
+     */
+    deep_link?: string;
+
+    /**
      * Тип действия
      * @enum {string}
      * - text - отображение текста
      * - server_action - отправка данных на сервер
+     * - deep_link - открытие ссылки
      */
-    type: 'text' | 'server_action';
+    type: 'text' | 'server_action' | 'deep_link';
 }
 
 /**

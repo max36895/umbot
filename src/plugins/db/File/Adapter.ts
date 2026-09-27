@@ -202,6 +202,74 @@ export class FileAdapter extends Base<IFileDbInfo> {
     }
 
     /**
+     * Поля составного ключа запроса (без самого первичного ключа).
+     */
+    #getUniqueKeys(query: IQuery): string[] {
+        return (query.uniqueKeys ?? []).filter((key) => key !== query.primaryKeyName);
+    }
+
+    /**
+     * Ключ строки в JSON-файле. Без uniqueKeys — значение первичного ключа
+     * (формат прежних версий). С uniqueKeys — значения полей составного ключа
+     * и первичного ключа через «:», например `telegram:42` для UsersData.
+     * @returns Ключ строки или null, если значения первичного ключа нет
+     */
+    #getStorageKey(query: IQuery, values: IQueryData | null): string | null {
+        const idVal = values?.[query.primaryKeyName as string];
+        if (idVal === undefined || idVal === null || idVal === '') {
+            return null;
+        }
+        const uniqueKeys = this.#getUniqueKeys(query);
+        if (!uniqueKeys.length) {
+            return String(idVal);
+        }
+        const parts: string[] = [];
+        for (const key of uniqueKeys) {
+            const value = values?.[key];
+            if (value === undefined || value === null) {
+                // Без значения составного поля ключ однозначно не построить —
+                // работаем по первичному ключу, как в прежних версиях.
+                return String(idVal);
+            }
+            parts.push(String(value));
+        }
+        parts.push(String(idVal));
+        return parts.join(':');
+    }
+
+    /**
+     * Находит ключ существующей строки. Строки, записанные до появления
+     * составного ключа, лежат под значением первичного ключа (`42`): если такая
+     * строка принадлежит той же записи (совпадают поля составного ключа), она
+     * переносится под новый ключ (`telegram:42`) — данные пользователей
+     * сохраняются при обновлении без ручной миграции.
+     * @returns Ключ строки или null, если запись не найдена
+     */
+    #resolveRowKey(query: IQuery, values: IQueryData | null, data: TFileData): string | null {
+        const key = this.#getStorageKey(query, values);
+        if (key === null || this.#isForbiddenKey(key)) {
+            return null;
+        }
+        if (Object.hasOwn(data, key)) {
+            return key;
+        }
+        const uniqueKeys = this.#getUniqueKeys(query);
+        const legacyKey = String(values?.[query.primaryKeyName as string]);
+        if (!uniqueKeys.length || legacyKey === key || !Object.hasOwn(data, legacyKey)) {
+            return null;
+        }
+        const legacyRow = data[legacyKey];
+        if (!legacyRow || uniqueKeys.some((field) => legacyRow[field] !== values?.[field])) {
+            // Строка принадлежит другой записи (другой платформе) — это не наша запись.
+            return null;
+        }
+        data[key] = legacyRow;
+        delete data[legacyKey];
+        this.#update(query.tableName);
+        return key;
+    }
+
+    /**
      * Сохраняет данные
      * @param tableName Название таблицы
      * @param force Флаг принудительного сохранения
@@ -340,8 +408,9 @@ export class FileAdapter extends Base<IFileDbInfo> {
                     this._appContext?.logError(`Попытка использовать запрещённый ключ: ${idVal}`);
                     return false;
                 }
-                if (data[idVal] !== undefined) {
-                    data[idVal] = { ...data[idVal], ...update };
+                const rowKey = this.#resolveRowKey(updateData, select, data);
+                if (rowKey !== null && data[rowKey] !== undefined) {
+                    data[rowKey] = { ...data[rowKey], ...update };
                     this.#update(updateData.tableName);
                 }
                 return true;
@@ -365,7 +434,7 @@ export class FileAdapter extends Base<IFileDbInfo> {
                     this._appContext?.logError(`Попытка использовать запрещённый ключ: ${idVal}`);
                     return false;
                 }
-                data[idVal] = insert;
+                data[this.#getStorageKey(insertData, insert) ?? idVal] = insert;
                 this.#update(insertData.tableName);
                 return true;
             }
@@ -388,8 +457,9 @@ export class FileAdapter extends Base<IFileDbInfo> {
                     this._appContext?.logError(`Попытка использовать запрещённый ключ: ${idVal}`);
                     return false;
                 }
-                if (data[idVal] !== undefined) {
-                    delete data[idVal];
+                const rowKey = this.#resolveRowKey(removeData, remove, data);
+                if (rowKey !== null && data[rowKey] !== undefined) {
+                    delete data[rowKey];
                     this.#update(removeData.tableName);
                 }
                 return true;
@@ -421,32 +491,29 @@ export class FileAdapter extends Base<IFileDbInfo> {
             this._appContext?.logError(`Попытка использовать запрещённый ключ: ${whereKey}`);
             return { status: false };
         }
-        if ((typeof whereKey === 'string' || typeof whereKey === 'number') && content[whereKey]) {
-            if (keysCount(where) === 1) {
-                return {
-                    status: true,
-                    data: isOne ? content[whereKey] : [content[whereKey]],
-                };
-            }
+        const rowKey =
+            typeof whereKey === 'string' || typeof whereKey === 'number'
+                ? this.#resolveRowKey(selectData, where, content)
+                : null;
+        const row = rowKey === null ? undefined : content[rowKey];
+        if (!row) {
+            return {
+                status: false,
+            };
+        }
+        if (keysCount(where) > 1) {
             for (const data in where) {
-                if (
-                    !Object.hasOwn(content[whereKey], data) ||
-                    content[whereKey][data] !== where[data]
-                ) {
+                if (!Object.hasOwn(row, data) || row[data] !== where[data]) {
                     return {
                         status: false,
                     };
                 }
             }
-            return {
-                status: true,
-                data: isOne ? content[whereKey] : [content[whereKey]],
-            };
-        } else {
-            return {
-                status: false,
-            };
         }
+        return {
+            status: true,
+            data: isOne ? row : [row],
+        };
     }
 
     /**
@@ -478,7 +545,15 @@ export class FileAdapter extends Base<IFileDbInfo> {
                 }
             }
             const whereKey = where[selectData.primaryKeyName as string];
-            if (whereKey) {
+            // Поиск по ключу строки возможен, только если в условии есть все поля
+            // составного ключа. Иначе (например, UsersData.whereOne({userId}))
+            // запись ищется перебором по значениям полей.
+            if (
+                whereKey &&
+                this.#getUniqueKeys(selectData).every(
+                    (key) => where[key] !== undefined && where[key] !== null,
+                )
+            ) {
                 return this.#selectInPrimaryKey(selectData, where, isOne, content);
             }
             for (const key in content) {
@@ -528,7 +603,7 @@ export class FileAdapter extends Base<IFileDbInfo> {
      *
      * - При первом обращении читает файл `${tableName}.json` из директории `appConfig.json`.
      * - После первого чтения данные берутся только из кэша: mtime проверяется лишь
-     *   при первом чтении, повторно файл не перечитывается (извне данные менять не должен никто).
+     *   при первом чтении, повторно файл не перечитывается (извне данные менять нельзя).
      * - Отсутствие файла тоже кэшируется: если файла не было при первом обращении,
      *   повторно он искаться не будет.
      * - В случае ошибки парсинга делается повторная попытка (защита от гонок записи/чтения).

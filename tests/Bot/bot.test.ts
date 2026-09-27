@@ -128,6 +128,8 @@ describe('Bot', () => {
         'ALISA_TOKEN',
         'YANDEX_TOKEN',
         'SPEECH_KIT_TOKEN',
+        'TELEGRAM_WEBHOOK_SECRET',
+        'MAX_WEBHOOK_SECRET',
         'DB_HOST',
         'DB_USER',
         'DB_PASSWORD',
@@ -700,6 +702,27 @@ describe('Bot', () => {
             callSpy.mockRestore();
         });
 
+        it('принимает заголовок подписи в любом регистре (Yandex Cloud Functions)', async () => {
+            // Регресс: serverless-платформы передают заголовки как прислал клиент
+            // (X-Telegram-Bot-Api-Secret-Token), а адаптер искал их в нижнем регистре —
+            // при заданном секрете каждый настоящий запрос получал 401.
+            bot.initBotController(TestBotController);
+            bot.setAppConfig({ tokens: { telegram: { token: 'tok', webhookSecret: 'secret' } } });
+            bot.use(new TelegramAdapter());
+            const callSpy = jest
+                .spyOn(TelegramRequest.prototype, 'call')
+                .mockResolvedValue(undefined);
+            const ok = await bot.webhookEvent(tgBody, {
+                'X-Telegram-Bot-Api-Secret-Token': 'secret',
+            });
+            expect(ok.statusCode).toBe(200);
+            const bad = await bot.webhookEvent(tgBody, {
+                'X-Telegram-Bot-Api-Secret-Token': 'wrong',
+            });
+            expect(bad.statusCode).toBe(401);
+            callSpy.mockRestore();
+        });
+
         it('возвращает 400, а не 500, если платформа не определилась', async () => {
             bot.initBotController(TestBotController);
             const res = await bot.webhookEvent(JSON.stringify({ unknown_platform: true }));
@@ -1082,6 +1105,8 @@ describe('Bot', () => {
             const noSignWarn = warnings.find((w) => w.includes('БЕЗ проверки подписи'));
             expect(noSignWarn).toBeDefined();
             expect(noSignWarn).toContain('telegram');
+            // У Алисы подписи нет — советовать задать секрет бессмысленно
+            expect(noSignWarn).not.toContain('alisa');
 
             const ifaceWarn = warnings.find((w) => w.includes('0.0.0.0'));
             expect(ifaceWarn).toBeDefined();
@@ -1893,24 +1918,79 @@ describe('Bot', () => {
             expect(tokens.vk?.speech_kit_token).toBe('speechkit-test-token');
             expect(tokens.max_app?.speech_kit_token).toBe('speechkit-test-token');
         });
+
+        it('TELEGRAM_WEBHOOK_SECRET и MAX_WEBHOOK_SECRET включают проверку подписи вебхука', () => {
+            const envBot = new TestBot();
+            envBot.setLogger({ error: () => {}, warn: () => {} });
+            envBot.setAppConfig({
+                env: __dirname + '/env-webhook-secret',
+            });
+            const tokens = envBot.getAppContext().appConfig.tokens;
+            expect(tokens.telegram?.webhookSecret).toBe('tg-webhook-secret');
+            expect(tokens.max_app?.webhookSecret).toBe('max-webhook-secret');
+        });
     });
 
     describe('async action()', () => {
-        it('пишет предупреждение в лог, если контроллер объявил action() как async', async () => {
+        // Раньше промис async action() не дожидался: всё после первого await
+        // молча не попадало в ответ, в лог писалось только предупреждение.
+        it('дожидается async action() и отдаёт текст, заданный после await', async () => {
             class AsyncActionController extends BotController {
                 public async action(_intentName: string | null): Promise<void> {
-                    await Promise.resolve();
-                    this.text = 'test';
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                    this.text = 'после await';
                 }
             }
             bot.initBotController(AsyncActionController);
             bot.use(new AlisaAdapter());
-            const warnSpy = jest.spyOn(bot.getAppContext(), 'logWarn').mockImplementation(() => {});
 
-            await bot.run(T_ALISA, getContent('привет', 1));
+            const res = (await bot.run(T_ALISA, getContent('привет', 1))) as IAlisaWebhookResponse;
 
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('action()'));
-            warnSpy.mockRestore();
+            expect(res.response?.text).toBe('после await');
+        });
+
+        it('ошибка async action() логируется, а пользователь получает текст ошибки', async () => {
+            class FailingActionController extends BotController {
+                public async action(): Promise<void> {
+                    await Promise.resolve();
+                    throw new Error('сбой');
+                }
+            }
+            bot.initBotController(FailingActionController);
+            bot.use(new AlisaAdapter());
+            const errorSpy = jest
+                .spyOn(bot.getAppContext(), 'logError')
+                .mockImplementation(() => {});
+
+            const res = (await bot.run(
+                T_ALISA,
+                getContent('абракадабра', 1),
+            )) as IAlisaWebhookResponse;
+
+            expect(res.response?.text).toBe('Не удалось выполнить команду. Попробуйте ещё раз.');
+            expect(errorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('сбой'),
+                expect.any(Object),
+            );
+            errorSpy.mockRestore();
+        });
+
+        it('дожидается async action() после команды', async () => {
+            class AsyncAfterCommand extends BotController {
+                public async action(intentName: string | null): Promise<void> {
+                    await Promise.resolve();
+                    this.text += ` + action(${intentName})`;
+                }
+            }
+            bot.initBotController(AsyncAfterCommand);
+            bot.use(new AlisaAdapter());
+            bot.addCommand('order', ['заказ'], (_, ctx) => {
+                ctx.text = 'команда';
+            });
+
+            const res = (await bot.run(T_ALISA, getContent('заказ', 2))) as IAlisaWebhookResponse;
+
+            expect(res.response?.text).toBe('команда + action(order)');
         });
     });
 });

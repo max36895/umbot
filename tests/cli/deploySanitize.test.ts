@@ -12,6 +12,7 @@
  *  2. проверка генерата — сами определения и их вызовы присутствуют в
  *     сгенерированном deploy.js дословно.
  */
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { generateFromFlow } from '../../cli/flowGenerator';
@@ -115,7 +116,7 @@ describe('deploy.js: санитизация значений .env для spawnSy
         it('определения sanitizeEnvValue/quoteArg/useShell присутствуют', () => {
             expect(deployScript).toContain('const sanitizeEnvValue = (value) =>');
             expect(deployScript).toContain("const useShell = process.platform === 'win32'");
-            expect(deployScript).toContain("spawnSync('yc', args.map(quoteArg)");
+            expect(deployScript).toContain("spawnSync(['yc', ...args.map(quoteArg)].join(' ')");
         });
 
         it('зеркало синхронно с генератом: цепочка replace совпадает дословно', () => {
@@ -123,24 +124,79 @@ describe('deploy.js: санитизация значений .env для spawnSy
             // При изменении генератора тест падает здесь: перенеси правку
             // и в контракт-зеркало выше.
             //
-            // Внимание: flowGenerator.js собирает deployScript как template
-            // literal, поэтому \u0000-эскейпы превращаются в литеральные
-            // управляющие символы (NUL/US/DEL) — в генерате нет текста "\u0000".
-            // Ожидание собирается из fromCharCode, чтобы исходник теста не
-            // содержал невидимых control-символов.
-            const CR = String.fromCharCode(13);
-            const LF = String.fromCharCode(10);
-            const NUL = String.fromCharCode(0);
-            const US = String.fromCharCode(0x1f);
-            const DEL = String.fromCharCode(0x7f);
+            // Регресс: раньше генерат содержал литеральные CR/LF внутри регулярки
+            // (template literal превращал одинарный обратный слеш в перевод строки),
+            // и deploy.js падал с SyntaxError. Теперь в генерате — escape-последовательности.
             const chain = [
                 'const sanitizeEnvValue = (value) => String(value)',
-                `.replace(/[${CR}${LF}${NUL}]/g, '')`,
-                `.replace(/[${NUL}-${US}${DEL}]/g, '')`,
+                String.raw`.replace(/[\r\n\0]/g, '')`,
+                String.raw`.replace(/[\u0000-\u001f\u007f]/g, '')`,
                 `.replace(/"/g, '')`,
                 `.replace(/%/g, '');`,
             ].join('\n    ');
             expect(deployScript).toContain(chain);
         });
+    });
+});
+
+describe('deploy.js: разбор .env как у фреймворка', () => {
+    // Регресс: deploy.js не отрезал инлайн-комментарий « #» и не снимал кавычки,
+    // в отличие от loadEnvFile фреймворка: TELEGRAM_TOKEN=abc # prod локально
+    // давал abc, а в облако уходил как «abc # prod».
+    // Скрипт исполняется по-настоящему, вместо yc — заглушка, пишущая аргументы в файл.
+    it('передаёт в --environment значения без комментариев и кавычек', () => {
+        const deployScript = generateDeployScript('placeholder');
+        const projectDir = path.join(TEST_DIR, 'sanitize');
+        fs.mkdirSync(path.join(projectDir, 'dist'), { recursive: true });
+        fs.writeFileSync(path.join(projectDir, 'dist', 'index.js'), '');
+        fs.writeFileSync(
+            path.join(projectDir, '.env'),
+            [
+                'TELEGRAM_TOKEN=abc # prod',
+                "VK_TOKEN='quoted value'",
+                'DB_PASSWORD=pass#word',
+                'EMPTY_VALUE=',
+            ].join('\n'),
+        );
+        expect(deployScript).toContain('const parseEnvValue');
+
+        const binDir = path.join(TEST_DIR, 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        const argsFile = path.join(TEST_DIR, 'yc-args.json');
+        fs.writeFileSync(
+            path.join(binDir, 'yc.js'),
+            `require('fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));`,
+        );
+        fs.writeFileSync(path.join(binDir, 'yc.cmd'), '@node "%~dp0yc.js" %*\r\n');
+        fs.writeFileSync(
+            path.join(binDir, 'yc'),
+            '#!/bin/sh\nnode "$(dirname "$0")/yc.js" "$@"\n',
+            {
+                mode: 0o755,
+            },
+        );
+
+        const result = spawnSync(
+            process.execPath,
+            [path.join(projectDir, 'scripts', 'deploy.js')],
+            {
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+                },
+                encoding: 'utf8',
+            },
+        );
+        expect(result.stderr).toBe('');
+        expect(result.status).toBe(0);
+
+        const args = JSON.parse(fs.readFileSync(argsFile, 'utf8')) as string[];
+        const environment = args[args.indexOf('--environment') + 1];
+        const pairs = environment.split(',');
+        expect(pairs).toContain('TELEGRAM_TOKEN=abc');
+        expect(pairs).toContain('VK_TOKEN=quoted value');
+        // Решётка без пробела перед ней — часть значения (как в loadEnvFile)
+        expect(pairs).toContain('DB_PASSWORD=pass#word');
+        expect(pairs.some((pair) => pair.startsWith('EMPTY_VALUE'))).toBe(false);
     });
 });

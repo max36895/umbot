@@ -3,12 +3,33 @@
  */
 import { Buttons, IButtonType, Text } from '../../../index';
 import { IVkButton, IVkButtonObject } from './interfaces/IVkPlatform';
-import { getCorrectButtons, serializePlatformPayload } from '../Base/utils';
+import {
+    getCorrectButtons,
+    IButtonRowItem,
+    layoutButtonRows,
+    serializePlatformPayload,
+} from '../Base/utils';
 
 /**
  * Поле для группировки
  */
 export const GROUP_NAME = '_group';
+
+/** Кнопок в ряду клавиатуры VK. */
+const VK_BUTTONS_PER_ROW = 5;
+/** Типы кнопок, которые по документации VK занимают всю ширину клавиатуры. */
+const VK_FULL_WIDTH_TYPES = new Set(['location', 'vkpay', 'open_app']);
+
+/**
+ * Лимит кнопок в ряду VK: 5, а кнопка location/vkpay/open_app занимает ряд целиком.
+ * @param row Кнопки ряда
+ * @returns Максимум кнопок в ряду
+ */
+function getVkRowLimit(row: readonly IVkButton[]): number {
+    return row.some((button) => VK_FULL_WIDTH_TYPES.has(button.action.type ?? ''))
+        ? 1
+        : VK_BUTTONS_PER_ROW;
+}
 
 /**
  * Цвет кнопки primary в ВК.
@@ -178,37 +199,21 @@ export function buttonProcessing<TPayload>(
     buttons: IButtonType<TPayload>[],
     appContext?: TVkButtonLogger,
 ): IVkButtonObject | null {
-    const groups: number[] = [];
-    const finalButtons: IVkButton[] | IVkButton[][] = [];
-    let index = 0;
+    const items: IButtonRowItem<IVkButton>[] = [];
     getCorrectButtons(buttons, 10, appContext).forEach((button) => {
         const object = _getVkButton(button, appContext);
         if (!object) {
             return;
         }
-        // Опциональная цепочка на случай кнопок, собранных вне компонента Buttons:
-        // интерфейс требует options, но TypeError на кривом вводе не нужен.
-        const groupOptions = button.options?.[GROUP_NAME];
-        if (groupOptions === undefined) {
-            finalButtons[index] = [object];
-            index++;
-        } else {
-            if (object[GROUP_NAME] !== undefined) {
-                // exactOptionalPropertyTypes: поле группы убираем целиком,
-                // а не присваиваем undefined.
-                delete object[GROUP_NAME];
-            }
-            const groupIndex = groups[+groupOptions];
-            if (groupIndex === undefined) {
-                groups[+groupOptions] = index;
-                finalButtons[index] = [object];
-                index++;
-            } else {
-                const groupButtons = finalButtons[groupIndex] as IVkButton[];
-                groupButtons.push(object);
-            }
+        if (object[GROUP_NAME] !== undefined) {
+            // exactOptionalPropertyTypes: поле группы убираем целиком,
+            // а не присваиваем undefined.
+            delete object[GROUP_NAME];
         }
+        // Опциональная цепочка на случай кнопок, собранных вне компонента Buttons.
+        items.push({ group: button.options?.[GROUP_NAME], item: object });
     });
+    const finalButtons = layoutButtonRows(items, getVkRowLimit, 'VK', appContext);
 
     return finalButtons.length
         ? {

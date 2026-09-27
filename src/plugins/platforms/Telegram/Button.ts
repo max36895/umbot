@@ -8,8 +8,15 @@ import {
     ITelegramInlineKeyboard,
     ITelegramReplyButton,
 } from './interfaces/ITelegramPlatform';
-import { getCorrectButtons, serializePlatformPayload } from '../Base/utils';
+import { getCorrectButtons, layoutButtonRows, serializePlatformPayload } from '../Base/utils';
 import { TG_BUTTON_STYLES, TG_CALLBACK_DATA_MAX_LENGTH } from './constants';
+
+/**
+ * Сколько кнопок выводится в одном ряду. Bot API явного лимита на ряд не
+ * документирует; клиенты Telegram показывают до 8 inline-кнопок в строке —
+ * более длинный ряд переносится на следующую строку.
+ */
+const TG_MAX_BUTTONS_PER_ROW = 8;
 
 /**
  * Возвращает валидный стиль кнопки из `options.style` либо `undefined`.
@@ -284,8 +291,19 @@ export function buttonProcessing(
     // Telegram не совмещает inline- и обычную клавиатуру в одном сообщении. Если есть хоть
     // одна inline-кнопка, текстовые кнопки тоже показываем inline — иначе они бы пропали.
     const preferInline = correctButtons.some(isInlineButton);
+    // Группы рядов (options._group / buttons.row()) — параллельно готовым кнопкам.
+    const inlineGroups: unknown[] = [];
+    const replyGroups: unknown[] = [];
     correctButtons.forEach((button) => {
+        const inlineCount = inlines.length;
+        const replyCount = reply.length;
         pushButton(button, inlines, reply, preferInline, appContext);
+        if (inlines.length > inlineCount) {
+            inlineGroups.push(button.options?._group);
+        }
+        if (reply.length > replyCount) {
+            replyGroups.push(button.options?._group);
+        }
     });
     const rCount = reply.length;
     const rInline = inlines.length;
@@ -301,9 +319,19 @@ export function buttonProcessing(
                         'кнопки запроса будут пропущены. Отправьте их отдельным сообщением.',
                 );
             }
-            object.inline_keyboard = inlines.map((btn) => [btn]);
+            object.inline_keyboard = layoutButtonRows(
+                inlines.map((item, i) => ({ group: inlineGroups[i], item })),
+                () => TG_MAX_BUTTONS_PER_ROW,
+                'Telegram',
+                appContext,
+            );
         } else if (rCount) {
-            object.keyboard = reply.map((btn) => [btn]);
+            object.keyboard = layoutButtonRows(
+                reply.map((item, i) => ({ group: replyGroups[i], item })),
+                () => TG_MAX_BUTTONS_PER_ROW,
+                'Telegram',
+                appContext,
+            );
             object.resize_keyboard = true;
         }
     } else {

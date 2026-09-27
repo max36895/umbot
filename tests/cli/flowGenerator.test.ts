@@ -1514,6 +1514,41 @@ describe('flowGenerator', () => {
         });
     });
 
+    describe('Шаблоны в npm-пакете', () => {
+        // npm никогда не публикует эти имена (даже при явном "files"),
+        // и генератор получил бы пустой файл вместо шаблона.
+        const NPM_STRIPPED_NAMES = ['.gitignore', '.npmignore', '.npmrc', 'package-lock.json'];
+
+        function collectFiles(dir: string): string[] {
+            return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+                const full = path.join(dir, entry.name);
+                return entry.isDirectory() ? collectFiles(full) : [full];
+            });
+        }
+
+        it('в cli/template нет файлов, которые npm вырезает из пакета', () => {
+            const stripped = collectFiles(path.join(__dirname, '../../cli/template')).filter(
+                (file) => NPM_STRIPPED_NAMES.includes(path.basename(file)),
+            );
+            expect(stripped).toEqual([]);
+        });
+
+        it('from-flow генерирует .gitignore, закрывающий .env и данные бота', () => {
+            writeJsonAndGenerate('gitignore-check', {
+                name: 'gitignore-check',
+                nodes: [],
+                edges: [],
+            });
+            const gitignore = fs.readFileSync(
+                path.join(TEST_DIR, 'gitignore-check', '.gitignore'),
+                'utf8',
+            );
+            expect(gitignore).toContain('.env');
+            expect(gitignore).toContain('/json/*');
+            expect(gitignore).toContain('/logs/*');
+        });
+    });
+
     describe('Production templates', () => {
         it('keeps TypeScript dev dependency available in Docker builder stage', () => {
             const dockerFile = fs.readFileSync(
@@ -1558,7 +1593,7 @@ describe('flowGenerator', () => {
             expect(packageTemplate.devDependencies['@types/node']).toBe('24.13.4');
             expect(workflow).not.toContain("cache: 'npm'");
             expect(
-                fs.readFileSync(path.join(__dirname, '../../cli/template/.gitignore'), 'utf8'),
+                fs.readFileSync(path.join(__dirname, '../../cli/template/gitignore.text'), 'utf8'),
             ).not.toContain('package-lock.json');
         });
 
@@ -2401,7 +2436,10 @@ describe('flowGenerator', () => {
 
             expect(code).not.toContain("bot.start('localhost', 3000)");
             // Cloud-handler должен идти через авторизованный webhook-путь, а не прямой run()
-            expect(code).toContain('bot.webhookEvent(content, headers)');
+            expect(code).toContain('bot.webhookEvent(content, headers, clientIp)');
+            // IP клиента для ipFilter и декодирование base64-тела Cloud Functions
+            expect(code).toContain('requestContext?.identity?.sourceIp');
+            expect(code).toContain("Buffer.from(rawBody, 'base64')");
             expect(code).toContain('event.headers');
             expect(code).not.toContain('bot.setContent(');
             expect(code).not.toContain('await bot.run()');

@@ -3,7 +3,46 @@
  */
 import { AppContext, IButtonType } from '../../../index';
 import { IViberButton, IViberButtonObject } from './interfaces/IViberPlatform';
-import { getCorrectButtons, serializePlatformPayload } from '../Base/utils';
+import {
+    getCorrectButtons,
+    IButtonRowItem,
+    layoutButtonRows,
+    serializePlatformPayload,
+} from '../Base/utils';
+
+/** Ширина клавиатуры Viber в колонках (ButtonsGroupColumns по умолчанию). */
+const VIBER_KEYBOARD_COLUMNS = 6;
+
+/**
+ * Раскладывает кнопки по рядам: Viber выводит кнопки подряд, заполняя строки по
+ * ширине (Columns, по умолчанию 6 — вся строка). Кнопкам ряда делится ширина
+ * строки (3 кнопки — по 2 колонки); явно заданный в опциях Columns не меняется.
+ * @param items Кнопки с группами рядов
+ * @param appContext Контекст для предупреждений
+ * @returns Кнопки в порядке вывода
+ */
+function layoutViberRows(
+    items: IButtonRowItem<IViberButton>[],
+    appContext?: AppContext,
+): IViberButton[] {
+    const rows = layoutButtonRows(items, () => VIBER_KEYBOARD_COLUMNS, 'Viber', appContext);
+    const result: IViberButton[] = [];
+    for (const row of rows) {
+        if (row.length > 1) {
+            const base = Math.floor(VIBER_KEYBOARD_COLUMNS / row.length);
+            const extra = VIBER_KEYBOARD_COLUMNS % row.length;
+            row.forEach((button, index) => {
+                if (button.Columns === undefined) {
+                    // Остаток колонок отдаём первым кнопкам, чтобы ряд занял всю строку
+                    // и следующая кнопка не «подтянулась» в него.
+                    button.Columns = base + (index < extra ? 1 : 0);
+                }
+            });
+        }
+        result.push(...row);
+    }
+    return result;
+}
 
 /**
  * Тип кнопки для отправки ответа.
@@ -150,7 +189,7 @@ export function buttonProcessing(
     appContext?: AppContext,
 ): IViberButtonObject | null {
     let object: IViberButtonObject | null = null;
-    const buttonsResult: IViberButton[] = [];
+    const items: IButtonRowItem<IViberButton>[] = [];
     getCorrectButtons(buttons, 6, appContext).forEach((button) => {
         // Кнопка без подписи в Viber выглядит как пустой прямоугольник и ничего
         // не сообщает пользователю — такие кнопки не отправляем.
@@ -187,8 +226,9 @@ export function buttonProcessing(
         }
         btn = <IViberButton>{ ...btn, ...getViberButtonOptions(button.options ?? {}) };
 
-        buttonsResult.push(btn);
+        items.push({ group: button.options?._group, item: btn });
     });
+    const buttonsResult = layoutViberRows(items, appContext);
 
     if (buttonsResult.length) {
         object = {

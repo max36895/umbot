@@ -78,6 +78,7 @@ import {
 } from './constants';
 import * as process from 'node:process';
 import { join } from 'node:path';
+import { rename, stat } from 'node:fs/promises';
 
 /**
  * Тип платформы: Автоопределение
@@ -154,10 +155,24 @@ const LOG_STORAGE_MAX_FAILURES = 3;
  */
 const LOG_STORAGE_PAUSE_MS = 60_000;
 
+/**
+ * Размер файла лога (error.log / warn.log), после которого он переименовывается в `<имя>.1`.
+ * Итого на диске не больше двух файлов на каждый лог.
+ */
+const LOG_FILE_MAX_SIZE = 10 * 1024 * 1024;
+
 interface IErrWarnData {
     errors: string[];
     warnings: string[];
     timeout: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * Режим приложения по умолчанию: `strict_prod` при `NODE_ENV=production`, иначе `dev`.
+ * @returns Режим, который действует, пока не вызван `setAppMode()`
+ */
+function getDefaultAppMode(): TAppMode {
+    return process.env.NODE_ENV === 'production' ? 'strict_prod' : 'dev';
 }
 
 /**
@@ -220,8 +235,13 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
     };
 
     /**
+     * Последняя запущенная запись файловых логов: следующая запись ждёт её (см. #saveErrorData).
+     */
+    #logWrite: Promise<void> = Promise.resolve();
+
+    /**
      * Счётчик подряд идущих неудачных попыток записи файловых логов.
-     * Часть защиты от недоступного хранилища (см. #saveErrorData).
+     * Часть защиты от недоступного хранилища (см. #writeErrorData).
      */
     #logStorageFailCount = 0;
 
@@ -360,9 +380,29 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
     public httpClient: THttpClient = global.fetch;
 
     /**
-     * Определяет режим работы приложения
+     * Определяет режим работы приложения.
+     *
+     * По умолчанию — `dev`, а при `NODE_ENV=production` — `strict_prod` (как Express и
+     * сборщики фронтенда переключаются на прод по `NODE_ENV`). Явный `bot.setAppMode()`
+     * всегда главнее. Режим по умолчанию определяется при создании контекста, до
+     * регистрации команд: strict_prod проверяет регулярные выражения при регистрации.
      */
-    public appMode: TAppMode = 'dev';
+    public appMode: TAppMode = getDefaultAppMode();
+
+    /**
+     * Создаёт контекст приложения. При `NODE_ENV=production` сразу включает строгую
+     * проверку регулярных выражений (режим `strict_prod`).
+     *
+     * @example
+     * ```ts
+     * // NODE_ENV=production node dist/index.js
+     * const ctx = new AppContext();
+     * ctx.appMode; // 'strict_prod'
+     * ```
+     */
+    public constructor() {
+        this.command.strictMode = this.appMode === 'strict_prod';
+    }
 
     /**
      * Закрывает все подключения, для корректного завершения работы приложения
@@ -407,6 +447,8 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
             applyEnvValue('vk', 'confirmation_token', envVars.VK_CONFIRMATION_TOKEN);
             applyEnvValue('vk', 'secret_key', envVars.VK_SECRET_KEY);
             applyEnvValue('max_app', 'token', envVars.MAX_TOKEN);
+            applyEnvValue('telegram', 'webhookSecret', envVars.TELEGRAM_WEBHOOK_SECRET);
+            applyEnvValue('max_app', 'webhookSecret', envVars.MAX_WEBHOOK_SECRET);
             applyEnvValue('marusia', 'token', envVars.MARUSIA_TOKEN);
             applyEnvValue('alisa', 'token', envVars.ALISA_TOKEN || envVars.YANDEX_TOKEN);
             // Токен SmartApp адаптеру не нужен (подписи у Сбера нет), но CLI
@@ -439,6 +481,9 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
             VK_TOKEN,
             // Получаем токен для max
             MAX_TOKEN,
+            // Секреты вебхуков Telegram и MAX (включают проверку подписи)
+            TELEGRAM_WEBHOOK_SECRET,
+            MAX_WEBHOOK_SECRET,
             // Получаем токен для подтверждения vk
             VK_CONFIRMATION_TOKEN,
             // Получаем секретный ключ VK Callback API
@@ -470,6 +515,8 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
             TELEGRAM_TOKEN,
             VK_TOKEN,
             MAX_TOKEN,
+            TELEGRAM_WEBHOOK_SECRET,
+            MAX_WEBHOOK_SECRET,
             VK_CONFIRMATION_TOKEN,
             VK_SECRET_KEY,
             MARUSIA_TOKEN,
@@ -731,6 +778,13 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
                 : { trace: new Error().stack };
             const serialized = safeStringify(data, null, '\t');
             this.#errWarnLog(`${maskedText}\n${serialized}`, true);
+            // Файл logs/error.log в контейнере и serverless никто не читает (а на
+            // read-only ФС он и не пишется), поэтому вне dev дублируем короткую строку
+            // в stderr — она попадёт в `docker logs` и журнал функции.
+            // В dev #errWarnLog и так печатает ошибку в консоль.
+            if (this.appMode !== 'dev') {
+                process.stderr.write(`[umbot] ${maskedText}\n`);
+            }
         }
     }
 
@@ -775,7 +829,19 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
         }
     }
 
-    async #saveErrorData(): Promise<void> {
+    /**
+     * Записывает накопленные логи в файлы. Записи идут строго по очереди: две параллельные
+     * записи могли бы одновременно ротировать файл и затереть архив `.1` новым файлом.
+     * @returns Промис завершения записи
+     */
+    #saveErrorData(): Promise<void> {
+        const write = this.#logWrite.then(() => this.#writeErrorData());
+        // Сбой одной записи не должен останавливать следующие.
+        this.#logWrite = write.catch(() => undefined);
+        return write;
+    }
+
+    async #writeErrorData(): Promise<void> {
         if (this.#errWarnData.timeout) {
             clearTimeout(this.#errWarnData.timeout);
         }
@@ -841,7 +907,7 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
             this.#errWarnData.timeout = setTimeout(() => {
                 this.#errWarnData.timeout = null;
                 this.#saveErrorData().catch(() => {
-                    // Сбои записи обрабатываются внутри #saveErrorData;
+                    // Сбои записи обрабатываются внутри #writeErrorData;
                     // логировать их здесь нельзя — новый цикл ошибок.
                 });
             }, 200).unref();
@@ -852,22 +918,39 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
      * Логирование предупреждения
      * @param {string} str - Текст предупреждения
      * @param {Record<string, unknown>} [meta] - Дополнительные метаданные
+     * @param {object} [options] - Параметры вывода
+     * @param {boolean} [options.stderr=false] - Вне режима `dev` и без своего логгера дублировать
+     *   текст в stderr, как это делает {@link logError}. Для предупреждений, которые нельзя
+     *   пропустить (безопасность конфигурации): файл `warn.log` в контейнере никто не читает.
      *
      * @example
      * ```ts
      * ctx.logWarn('Текст обрезан до 1024 символов', { original: longText, truncated: shortText });
+     * ctx.logWarn('Вебхук принимает запросы без проверки подписи', undefined, { stderr: true });
      * ```
      */
-    public logWarn(str: string, meta?: Record<string, unknown>): void {
+    public logWarn(
+        str: string,
+        meta?: Record<string, unknown>,
+        options?: { stderr?: boolean },
+    ): void {
         const [maskedText, maskedMeta] = this.#maskLogData(str, meta);
         if (this.#logger?.warn) {
             this.#logger.warn(maskedText, maskedMeta);
         } else {
             if (this.appMode === 'dev') {
-                console.warn(maskedText, maskedMeta);
+                if (maskedMeta) {
+                    console.warn(maskedText, maskedMeta);
+                } else {
+                    console.warn(maskedText);
+                }
+            } else if (options?.stderr) {
+                process.stderr.write(`[umbot] ${maskedText}\n`);
             }
-            const serialized = safeStringify(maskedMeta, null, '\t');
-            this.#errWarnLog(`${maskedText}\n${serialized}`, false);
+            this.#errWarnLog(
+                maskedMeta ? `${maskedText}\n${safeStringify(maskedMeta, null, '\t')}` : maskedText,
+                false,
+            );
         }
     }
 
@@ -990,7 +1073,7 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
      * @param {boolean} usedDate - Флаг, говорящий о том, нужно ли добавлять время или нет.
      * @returns {Promise<boolean>} true в случае успешного сохранения
      */
-    #saveLog(
+    async #saveLog(
         fileName: string,
         errorText: string | null = '',
         usedDate: boolean = true,
@@ -1003,8 +1086,27 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
         if (this.appMode === 'dev') {
             console.error(msg);
         }
+        await this.#rotateLogIfNeeded(join(dir.path, fileName));
         // errorLogger не передаётся: сбой записи лога через logError породил бы
-        // новую запись — цикл ошибок. Обработкой сбоев занимается #saveErrorData.
+        // новую запись — цикл ошибок. Обработкой сбоев занимается #writeErrorData.
         return saveData(dir, this.#maskSecrets(msg), 'a');
+    }
+
+    /**
+     * Переименовывает файл лога в `<имя>.1` (предыдущая копия заменяется), когда он
+     * достиг `LOG_FILE_MAX_SIZE`. Логи пишет и анонимный трафик (мусорные запросы
+     * на вебхук), поэтому без предела файл растёт, пока не займёт весь диск.
+     *
+     * @param filePath Полный путь к файлу лога
+     */
+    async #rotateLogIfNeeded(filePath: string): Promise<void> {
+        try {
+            const info = await stat(filePath);
+            if (info.size >= LOG_FILE_MAX_SIZE) {
+                await rename(filePath, `${filePath}.1`);
+            }
+        } catch {
+            // Файла ещё нет или ротация не удалась — запись продолжится в текущий файл.
+        }
     }
 }

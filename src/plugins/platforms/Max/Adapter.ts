@@ -21,6 +21,8 @@ import {
 type IMaxRequestData = Record<string, unknown> & {
     callbackId?: string;
     chatId?: number;
+    /** Callback уже подтверждён через controller.api.answerCallback(). */
+    callbackAnswered?: boolean;
 };
 
 const MAX_UPDATE_TYPES = new Set<IMaxRequestContent['update_type']>([
@@ -191,6 +193,26 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
     }
 
     /**
+     * ID доставки для дедупликации повторов вебхука. Отдельного ID у обновления MAX нет,
+     * поэтому ключ собирается из типа, времени и объекта события: одно сообщение (`mid`)
+     * приходит и как `message_created`, и как `message_edited`.
+     * @param query Входящее обновление
+     * @returns Ключ доставки или `null`, если в обновлении нет времени
+     */
+    getDeliveryId(query: IMaxRequestContent): string | null {
+        if (!query?.update_type || query.timestamp === undefined) {
+            return null;
+        }
+        const target =
+            query.callback?.callback_id ??
+            query.message?.body?.mid ??
+            query.chat_id ??
+            query.user?.user_id ??
+            '';
+        return `${query.update_type}:${query.timestamp}:${target}`;
+    }
+
+    /**
      * Заполняет контроллер данными callback-кнопки MAX.
      */
     #setCallbackData(query: IMaxRequestContent, controller: BotController): boolean {
@@ -283,7 +305,7 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
      * @param controller Контроллер приложения
      * @returns `true`, если запрос успешно разобран
      */
-    async setQueryData(query: IMaxRequestContent, controller: BotController): Promise<boolean> {
+    setQueryData(query: IMaxRequestContent, controller: BotController): boolean {
         if (!this.appContext) {
             return false;
         }
@@ -303,16 +325,11 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
     }
 
     /**
-     * Формирует и отправляет ответ MAX: текст, клавиатуру, карточки и звуки;
-     * для callback-кнопок отвечает через answerCallback (с учётом лимитов MAX
-     * на частоту сообщений в диалоге).
+     * Собирает клавиатуру и вложения (карточки, звуки) ответа.
      * @param controller Контроллер приложения
-     * @returns Тело ответа для webhook ('ok')
+     * @returns Параметры сообщения MAX
      */
-    async getContent(controller: BotController): Promise<string> {
-        if (controller.skipAutoReply) {
-            return 'ok';
-        }
+    async #buildParams(controller: BotController): Promise<IMaxParams> {
         const keyboard = controller.isButtonsInit()
             ? controller.buttons.getButtons<IMaxButtonObject>((buttons) =>
                   buttonProcessing(buttons, this.appContext as AppContext),
@@ -336,6 +353,29 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
             );
             params.attachments = [...(attach || []), ...(params.attachments || [])];
         }
+        return params;
+    }
+
+    /**
+     * Формирует и отправляет ответ MAX: текст, клавиатуру, карточки и звуки
+     * (с учётом лимитов MAX на частоту сообщений в диалоге). Нажатие callback-кнопки
+     * подтверждается POST /answers, а ответ уходит новым сообщением; с опцией
+     * `max_callback_edit_message: true` ответ заменяет сообщение с кнопкой.
+     * @param controller Контроллер приложения
+     * @returns Тело ответа для webhook ('ok')
+     */
+    getContent(controller: BotController): string | Promise<string> {
+        // Без автоответа отвечать нечем — без промиса и без async-кадра.
+        return controller.skipAutoReply ? 'ok' : this.#sendContent(controller);
+    }
+
+    /**
+     * Отправляет ответ в API платформы (часть {@link getContent}).
+     * @param controller Контроллер приложения
+     * @returns Тело ответа для webhook ('ok')
+     */
+    async #sendContent(controller: BotController): Promise<string> {
+        const params = await this.#buildParams(controller);
         const maxApi = new MaxRequest(controller.appContext);
         const requestData = getPlatformRequestData<IMaxRequestData>(controller, this.platformName);
         // MAX Bot API ограничивает текст сообщения 4000 символами
@@ -350,22 +390,20 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
             );
             return 'ok';
         }
+        const text = Text.resize(getChatText(controller.text, controller.tts), 4000);
         const callbackId = requestData.callbackId;
-        if (callbackId) {
-            await maxApi.answerCallback(
-                callbackId,
-                Text.resize(getChatText(controller.text, controller.tts), 4000),
-                params,
-                peerId,
-            );
-        } else {
-            await maxApi.messagesSend(
-                peerId,
-                Text.resize(getChatText(controller.text, controller.tts), 4000),
-                params,
-                chatId ? 'chat' : 'user',
-            );
+        if (callbackId && this._platformOptions?.max_callback_edit_message === true) {
+            // Opt-in: ответ заменяет сообщение с нажатой кнопкой (POST /answers с message).
+            await maxApi.answerCallback(callbackId, text, params, peerId);
+            return 'ok';
         }
+        if (callbackId && !requestData.callbackAnswered) {
+            // POST /answers с message ЗАМЕНЯЕТ сообщение с кнопкой. Чтобы поведение
+            // совпадало с Telegram и VK (ответ — новым сообщением), нажатие только
+            // подтверждаем пустым телом, а ответ отправляем через POST /messages.
+            await maxApi.answerCallback(callbackId, '', null, peerId);
+        }
+        await maxApi.messagesSend(peerId, text, params, chatId ? 'chat' : 'user');
         return 'ok';
     }
 

@@ -31,6 +31,23 @@ export interface IIpFilterOptions {
      * @defaultValue '' (пустой ответ — молчим)
      */
     deniedText?: string;
+
+    /**
+     * Отклонять запросы, у которых IP клиента неизвестен.
+     *
+     * IP неизвестен, если бот вызван через `bot.run()` или через `bot.webhookEvent()`
+     * без аргумента `clientIp` (serverless-обработчик, не передавший IP из события).
+     * По умолчанию такие запросы пропускаются без фильтрации — чтобы не ломать
+     * локальную разработку. Включите опцию в продакшене с `whitelist`: иначе
+     * забытый `clientIp` молча отключает фильтр.
+     * @defaultValue false
+     *
+     * @example
+     * ```ts
+     * bot.use(ipFilter({ whitelist: ['10.0.0.0/8'], rejectWithoutIp: true }));
+     * ```
+     */
+    rejectWithoutIp?: boolean;
 }
 
 /**
@@ -198,9 +215,11 @@ function ipInCidr(ip: string, cidr: string): boolean {
 /**
  * Middleware для фильтрации входящих запросов по IP-адресу клиента.
  *
- * Работает только при запуске через webhook (`bot.start()` / `bot.webhookHandle()`) —
- * IP клиента доступен только из HTTP-запроса. Если IP определить нельзя
- * (например, `bot.run(...)` напрямую), запрос пропускается.
+ * IP клиента фреймворк берёт из сокета в `bot.start()` / `bot.webhookHandle()`.
+ * В serverless его нужно передать явно: `bot.webhookEvent(body, headers, clientIp)`
+ * (обработчик, сгенерированный CLI для Yandex Cloud Functions, берёт IP из
+ * `event.requestContext.identity.sourceIp`). Если IP неизвестен (например,
+ * `bot.run(...)` напрямую), запрос пропускается — либо отклоняется при `rejectWithoutIp: true`.
  *
  * За reverse proxy (nginx и т.п.) все запросы будут иметь IP самого прокси:
  * IP берётся из сокета, а не из `X-Forwarded-For` (его подделывает клиент).
@@ -210,10 +229,12 @@ function ipInCidr(ip: string, cidr: string): boolean {
  * ```ts
  * import { ipFilter } from 'umbot/middleware';
  *
- * // Только IP от Yandex Cloud Functions (примерный диапазон)
+ * // Только адреса из доверенных сетей (например, диапазоны IP платформы);
+ * // запрос без известного IP клиента тоже отклоняется
  * bot.use(ipFilter({
- *   whitelist: ['91.207.66.0/24', '91.207.74.0/24'],
- *   deniedText: 'Forbidden'
+ *   whitelist: ['203.0.113.0/24', '198.51.100.0/24'],
+ *   deniedText: 'Forbidden',
+ *   rejectWithoutIp: true,
  * }));
  *
  * // Запретить спам-IP
@@ -229,6 +250,7 @@ export function ipFilter(
     const whitelist = options.whitelist ?? null;
     const blacklist = options.blacklist ?? null;
     const deniedText = options.deniedText ?? '';
+    const rejectWithoutIp = options.rejectWithoutIp === true;
     // Предупреждение о пропуске запросов без IP достаточно вывести один раз
     // на инстанс middleware — иначе консольные приложения замусорят лог.
     let warnedNoIp = false;
@@ -238,15 +260,22 @@ export function ipFilter(
         // requestObject здесь не подходит — это распарсенное JSON-тело платформы.
         const remoteIp = ctx.platformOptions.clientIp;
 
-        // Нет IP (bot.run() без HTTP-контекста) — не блокируем, чтобы не ломать
-        // локальную разработку. Warn выводим один раз на инстанс middleware.
+        // Нет IP (bot.run() или webhookEvent() без clientIp). По умолчанию не
+        // блокируем, чтобы не ломать локальную разработку; с rejectWithoutIp —
+        // отклоняем: иначе забытый clientIp в serverless молча отключал whitelist.
         if (!remoteIp) {
+            if (rejectWithoutIp) {
+                ctx.appContext.logWarn('ipFilter: блокирован запрос без IP клиента.');
+                ctx.text = deniedText;
+                return;
+            }
             if (!warnedNoIp) {
                 warnedNoIp = true;
                 ctx.appContext.logWarn(
                     'ipFilter: запрос без IP клиента пропущен без фильтрации ' +
-                        '(bot.run() без HTTP-контекста). Через webhook (webhookHandle) ' +
-                        'фильтрация работает штатно.',
+                        '(bot.run() или webhookEvent() без аргумента clientIp). В serverless ' +
+                        'передайте IP из события в webhookEvent(body, headers, clientIp); ' +
+                        'чтобы отклонять такие запросы, включите rejectWithoutIp.',
                 );
             }
             await next();

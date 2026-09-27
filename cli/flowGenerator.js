@@ -1067,6 +1067,7 @@ function hasTextFromBlocks(blocks) {
  * Генерирует код карточки/галереи (ctrl.card.addImage).
  * @param {Object} card — объект FlowCard с массивом images
  * @param {string} indent — отступ
+ * @param {Object} doc — FlowDocument
  * @returns {string[]} массив строк кода
  */
 function generateCardCode(card, indent, doc = null) {
@@ -1465,14 +1466,18 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     // Проверяем нужны ли setText/setTTS
     const needsTTS =
         doc.nodes.some((n) => {
-            if (n.type === 'command' && n.response?.tts) return true;
-            if (n.type === 'step' && n.prompt?.tts) return true;
-            if (n.type === 'response' && n.response?.tts) return true;
+            if (
+                ((n.type === 'command' || n.type === 'response') && n.response?.tts) ||
+                (n.type === 'step' && n.prompt?.tts)
+            ) {
+                return true;
+            }
             return false;
         }) ||
         connectedBlocks.some((n) => {
-            if (n.response?.tts) return true;
-            if (n.prompt?.tts) return true;
+            if (n.response?.tts || n.prompt?.tts) {
+                return true;
+            }
             return false;
         });
     const utilsImports = ['setText'];
@@ -1527,11 +1532,12 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
 
     lines.push(``);
     lines.push(`const bot = new Bot();`);
-    // Режим из настроек бота: без вызова приложение работает в dev
-    // (подробные логи и отладочная информация доступны по URL вебхука)
-    if (APP_MODES.has(doc.mode)) {
-        lines.push(`bot.setAppMode('${doc.mode}');`);
-    }
+    // Режим из настроек бота. Без поля (или с неизвестным значением) —
+    // strict_prod: сгенерированный проект — это прод-код, и опасные регулярные
+    // выражения в нём должны отклоняться. Режим задаётся до регистрации команд:
+    // strict_prod проверяет выражения в момент регистрации.
+    const appMode = APP_MODES.has(doc.mode) ? doc.mode : 'strict_prod';
+    lines.push(`bot.setAppMode('${appMode}');`);
     lines.push(``);
 
     // Регистрация платформ
@@ -1976,11 +1982,23 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
         lines.push(``);
         lines.push(`// --- Yandex Cloud Function handler ---`);
         lines.push(`export const handler = async (event: Record<string, unknown>) => {`);
-        lines.push(
-            `    const content = typeof event.body === 'string' ? event.body : JSON.stringify(event.body ?? '');`,
-        );
+        // Тело с не-JSON Content-Type Cloud Functions присылает в base64
+        // (isBase64Encoded: true) — декодируем, иначе JSON.parse получит мусор.
+        lines.push(`    const rawBody = typeof event.body === 'string' ? event.body : '';`);
+        lines.push(`    const content =`);
+        lines.push(`        typeof event.body !== 'string'`);
+        lines.push(`            ? JSON.stringify(event.body ?? '')`);
+        lines.push(`            : event.isBase64Encoded === true`);
+        lines.push(`              ? Buffer.from(rawBody, 'base64').toString('utf8')`);
+        lines.push(`              : rawBody;`);
         lines.push(`    const headers = (event.headers ?? {}) as Record<string, unknown>;`);
-        lines.push(`    const result = await bot.webhookEvent(content, headers);`);
+        // IP клиента нужен middleware ipFilter: без него фильтр пропускает
+        // все запросы (IP неизвестен → fail-open).
+        lines.push(
+            `    const requestContext = event.requestContext as { identity?: { sourceIp?: string } } | undefined;`,
+        );
+        lines.push(`    const clientIp = requestContext?.identity?.sourceIp;`);
+        lines.push(`    const result = await bot.webhookEvent(content, headers, clientIp);`);
         lines.push(`    return {`);
         lines.push(`        statusCode: result.statusCode,`);
         lines.push(`        headers: { 'Content-Type': 'application/json' },`);
@@ -2045,11 +2063,13 @@ function generateTsConfig() {
 }
 
 function generateGitIgnore() {
-    const file = __dirname + '/template/.gitignore';
+    // Шаблон называется gitignore.text: файлы `.gitignore` npm вырезает из пакета.
+    const file = __dirname + '/template/gitignore.text';
     if (utils.isFile(file)) {
-        return utils.fread(file);
+        return utils.read(file);
     }
-    return '';
+    // Пустой .gitignore молча отправил бы .env с токенами в git.
+    throw new Error(`Не найден шаблон ${file}. Переустановите umbot.`);
 }
 
 /** Документация по подключению платформ (webhook, токены, проверка подписи). */
@@ -2253,8 +2273,13 @@ export function setTTS(ctrl: BotController, text: string): void {
     }
 }
 
+/** Статусы, у которых ответ не может иметь тела (конструктор Response их отклонил бы). */
+const NULL_BODY_STATUSES = [204, 205, 304];
+
 /**
  * Выполнить HTTP-запрос с ограничением по времени, чтобы обработчик бота не зависал на внешнем API.
+ * Таймаут покрывает и заголовки, и чтение тела: сервер, который сразу отдал заголовки
+ * и медленно отдаёт тело, не задержит ответ бота дольше timeoutMs.
  */
 export async function fetchWithTimeout(
     url: string,
@@ -2267,7 +2292,17 @@ export async function fetchWithTimeout(
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs).unref();
 
     try {
-        return await fetch(url, { ...init, signal: controller.signal });
+        const response = await fetch(url, { ...init, signal: controller.signal });
+        // Тело читаем здесь, пока таймер активен: после выхода из функции
+        // чтение тела уже ничем не ограничено.
+        const body = NULL_BODY_STATUSES.includes(response.status)
+            ? null
+            : await response.arrayBuffer();
+        return new Response(body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+        });
     } finally {
         clearTimeout(timeoutId);
     }
@@ -2473,9 +2508,10 @@ ${
               .join('\n')
         : '      # Добавьте переменные окружения здесь'
 }
-    secrets:
-      - id: ${cloudFunctionName}-secrets
-        version: latest
+# scripts/deploy.js передаёт значения из .env в --environment: они хранятся в версии
+# функции открытым текстом и видны всем с доступом к функции в консоли облака.
+# Для продакшена храните токены в Yandex Lockbox и подключите секрет к функции
+# (yc serverless function version create ... --secret ...), убрав их из .env.
 `;
         fs.writeFileSync(path.join(outputPath, 'serverless.yml'), serverlessYml, 'utf8');
         console.log('  serverless.yml');
@@ -2489,6 +2525,9 @@ ${
         );
         const scriptsDir = path.join(outputPath, 'scripts');
         fs.mkdirSync(scriptsDir, { recursive: true });
+        // deployScript — template literal: escape-последовательности в регулярках
+        // генерата пишутся с двойным обратным слешем, иначе `\n` станет настоящим
+        // переводом строки внутри регулярки и deploy.js упадёт с SyntaxError.
         const deployScript = `'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -2515,17 +2554,36 @@ const envPath = path.join(root, '.env');
 // Вырезание закрывает утечку; затронутые переменные помечаем warn'ом, чтобы
 // вырезание не было молчаливым — легитимное значение с % заметят сразу.
 const sanitizeEnvValue = (value) => String(value)
-    .replace(/[\r\n\0]/g, '')
-    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[\\r\\n\\0]/g, '')
+    .replace(/[\\u0000-\\u001f\\u007f]/g, '')
     .replace(/"/g, '')
     .replace(/%/g, '');
+// Значение разбирается так же, как его читает фреймворк (loadEnvFile в umbot):
+// инлайн-комментарий — только « #» (решётка после пробела и вне кавычек),
+// внешние кавычки снимаются. Иначе строка TELEGRAM_TOKEN=abc # prod локально
+// давала токен abc, а в облако уходила как «abc # prod».
+const parseEnvValue = (rawValue) => {
+    let value = rawValue.trim();
+    const comment = value.match(/(?:^|\\s)#/);
+    if (comment && comment.index !== undefined) {
+        const before = value.substring(0, comment.index);
+        const singleQuotes = (before.match(/'/g) || []).length;
+        const doubleQuotes = (before.match(/"/g) || []).length;
+        if (singleQuotes % 2 === 0 && doubleQuotes % 2 === 0) {
+            value = before.trim();
+        }
+    }
+    return value.replace(/^["']|["']$/g, '');
+};
 const environment = fs.existsSync(envPath)
     ? fs.readFileSync(envPath, 'utf8').split(/\\r?\\n/).map((line) => line.trim())
           .filter((line) => line && !line.startsWith('#')).map((line) => {
               const eq = line.indexOf('=');
               if (eq === -1) return line;
-              const name = line.slice(0, eq);
-              const raw = line.slice(eq + 1);
+              const name = line.slice(0, eq).trim();
+              const raw = parseEnvValue(line.slice(eq + 1));
+              // Пустое значение фреймворк при чтении .env тоже пропускает.
+              if (!raw) return null;
               const sanitized = sanitizeEnvValue(raw);
               if (sanitized !== raw) {
                   console.warn('[deploy] ' + name + ': вырезаны символы, ' +
@@ -2555,7 +2613,11 @@ if (environment) args.push('--environment', environment);
 // передаёт аргументы как есть.
 const useShell = process.platform === 'win32';
 const quoteArg = (arg) => (useShell ? '"' + String(arg).replace(/"/g, '') + '"' : String(arg));
-const result = spawnSync('yc', args.map(quoteArg), { stdio: 'inherit', shell: useShell });
+// С shell:true команда передаётся одной строкой: массив аргументов вместе с
+// shell Node 24 помечает устаревшим (DEP0190) — он всё равно склеивал их без экранирования.
+const result = useShell
+    ? spawnSync(['yc', ...args.map(quoteArg)].join(' '), { stdio: 'inherit', shell: true })
+    : spawnSync('yc', args, { stdio: 'inherit' });
 fs.rmSync(stage, { recursive: true, force: true });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

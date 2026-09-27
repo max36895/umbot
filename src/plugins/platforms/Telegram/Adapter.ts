@@ -198,6 +198,20 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         );
     }
 
+    /**
+     * ID доставки для дедупликации повторов вебхука — `update_id`.
+     * В режиме `telegram_webhook_reply` ответ передаётся телом вебхука, и повтор,
+     * подтверждённый пустым `ok`, потерял бы его — там дедупликация выключена.
+     * @param query Входящий update
+     * @returns `update_id` строкой или `null`
+     */
+    getDeliveryId(query: ITelegramContent): string | null {
+        if (this._platformOptions?.telegram_webhook_reply === true) {
+            return null;
+        }
+        return typeof query?.update_id === 'number' ? String(query.update_id) : null;
+    }
+
     #setCallbackQuery(query: ITelegramContent, controller: BotController): boolean {
         const cb = query.callback_query;
         if (cb) {
@@ -329,7 +343,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
      * @param controller Контроллер приложения
      * @returns `true`, если запрос успешно разобран
      */
-    async setQueryData(query: ITelegramContent, controller: BotController): Promise<boolean> {
+    setQueryData(query: ITelegramContent, controller: BotController): boolean {
         if (!this.appContext) {
             return false;
         }
@@ -490,7 +504,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         params: ITelegramParams,
         hasOtherContent: { buttons: boolean; cards: boolean; sounds: boolean },
     ): Promise<void> {
-        // Если заполнен только tts (общая логика писалась под голосовую платформой),
+        // Если заполнен только tts (общая логика писалась под голосовую платформу),
         // используем его как текст: иначе Telegram не получал вообще ничего.
         const text = getChatText(controller.text, controller.tts);
         if (text) {
@@ -588,10 +602,19 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
      * @param controller Контроллер приложения
      * @returns Тело ответа для webhook ('ok' либо конверт webhook-reply)
      */
-    async getContent(controller: BotController): Promise<string | Record<string, unknown>> {
-        if (controller.skipAutoReply) {
-            return 'ok';
-        }
+    getContent(
+        controller: BotController,
+    ): string | Record<string, unknown> | Promise<string | Record<string, unknown>> {
+        // Без автоответа отвечать нечем — без промиса и без async-кадра.
+        return controller.skipAutoReply ? 'ok' : this.#sendContent(controller);
+    }
+
+    /**
+     * Отправляет ответ в API платформы (часть {@link getContent}).
+     * @param controller Контроллер приложения
+     * @returns Тело ответа для webhook ('ok' либо конверт webhook-reply)
+     */
+    async #sendContent(controller: BotController): Promise<string | Record<string, unknown>> {
         const telegramApi = new TelegramRequest(controller.appContext);
         const requestData = getPlatformRequestData<ITelegramRequestData>(
             controller,

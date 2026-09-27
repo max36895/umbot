@@ -4,7 +4,7 @@ import {
     ITelegramResult,
     TTelegramChatId,
 } from '../Telegram/interfaces/ITelegramPlatform';
-import { AppContext, isFile, Request, Text, stripTags } from '../../../index';
+import { AppContext, IRequestSend, isFile, Request, Text, stripTags } from '../../../index';
 import { T_TELEGRAM } from '../Telegram/constants';
 import { getErrorMsg, getErrorToken } from './constants';
 
@@ -19,6 +19,30 @@ const TELEGRAM_POLL_QUESTION_MAX_LENGTH = 300;
 const TELEGRAM_POLL_OPTION_MAX_LENGTH = 100;
 const TELEGRAM_POLL_OPTIONS_MAX_COUNT = 12;
 const TELEGRAM_UPLOAD_TIMEOUT = 30_000;
+/**
+ * Максимальная пауза после 429, при которой запрос повторяется, с. Лимит в группах —
+ * 20 сообщений в минуту, и Telegram может попросить ждать до минуты: столько держать
+ * ответ на вебхук нельзя.
+ */
+const TELEGRAM_MAX_RETRY_AFTER = 5;
+
+/**
+ * Достаёт `parameters.retry_after` из тела ответа 429.
+ * @param errorBody Тело ответа Telegram
+ * @returns Пауза в секундах или `null`, если её нет
+ */
+function getRetryAfter(errorBody: string | undefined): number | null {
+    if (!errorBody) {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(errorBody) as { parameters?: { retry_after?: unknown } };
+        const retryAfter = parsed.parameters?.retry_after;
+        return typeof retryAfter === 'number' && retryAfter >= 0 ? retryAfter : null;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Экранирует спецсимволы MarkdownV2 для безопасной вставки пользовательского ввода.
@@ -271,6 +295,30 @@ export class TelegramRequest {
     }
 
     /**
+     * Отправляет запрос и один раз повторяет его после ответа 429, если Telegram
+     * просит подождать не дольше {@link TELEGRAM_MAX_RETRY_AFTER} секунд. Более долгое
+     * ожидание задержало бы ответ на вебхук — такое сообщение не отправляется (с логом).
+     * @param url Полный URL метода
+     * @returns Результат запроса (повторного, если он был)
+     */
+    async #sendWithRetryAfter(url: string): Promise<IRequestSend<ITelegramResult>> {
+        // send() сбрасывает тело запроса — сохраняем его для повтора.
+        const { post, attach, attachName } = this.#request;
+        const data = await this.#request.send<ITelegramResult>(url);
+        const retryAfter = data.httpStatus === 429 ? getRetryAfter(data.errorBody) : null;
+        if (retryAfter === null || retryAfter > TELEGRAM_MAX_RETRY_AFTER) {
+            return data;
+        }
+        await new Promise<void>((resolve) => {
+            setTimeout(resolve, retryAfter * 1000).unref();
+        });
+        this.#request.post = post;
+        this.#request.attach = attach;
+        this.#request.attachName = attachName;
+        return this.#request.send<ITelegramResult>(url);
+    }
+
+    /**
      * Отправляет запрос к Telegram API
      * @param method Название метода API
      * @param userId ID пользователя или чата
@@ -294,7 +342,7 @@ export class TelegramRequest {
         }
         if (this.token) {
             if (method) {
-                const data = await this.#request.send<ITelegramResult>(this._getUrl() + method);
+                const data = await this.#sendWithRetryAfter(this._getUrl() + method);
                 if (data.status && data.data) {
                     if (!data.data.ok) {
                         this.#error = data;

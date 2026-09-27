@@ -5,9 +5,9 @@
 
 import { AppContext } from '../AppContext';
 import { BotController, IControllerApi } from '../../controller';
-import { IncomingMessage, ServerResponse } from 'node:http';
+import { IncomingMessage, type ServerResponse } from 'node:http';
 import { IButtonType, Buttons, IImageType, ISound } from '../../components';
-import { IModelRes, TQueryCb, IQuery, IQueryData } from '../../models';
+import { IModelRes, TQueryCb, IQuery, IQueryData, IDbTableSchema } from '../../models';
 import { Bot } from '../Bot';
 import type { TEventType } from '../events';
 
@@ -179,6 +179,74 @@ export interface IPlatformAdapter<TQuery = unknown> extends IPlugin {
      */
     isSignatureCheckEnabled?: () => boolean;
     /**
+     * Умеет ли платформа подписывать вебхук (секрет в заголовке или в теле).
+     *
+     * Ядро предупреждает при старте о вебхуке без проверки подписи только для
+     * таких платформ: у Алисы, Маруси и SmartApp подписи нет, и советовать задать
+     * секрет бессмысленно. `BasePlatform` отвечает `true`, если задан `signatureName`
+     * или переопределён `isSignatureCheckEnabled`. Без метода (прямая реализация
+     * интерфейса) ядро судит по тем же признакам.
+     *
+     * @returns `true`, если у платформы есть механизм подписи вебхука
+     *
+     * @example
+     * ```ts
+     * class MyAdapter extends BasePlatform {
+     *     // Подписи у платформы нет — предупреждение при старте не нужно
+     *     isSignatureSupported(): boolean {
+     *         return false;
+     *     }
+     * }
+     * ```
+     */
+    isSignatureSupported?: () => boolean;
+    /**
+     * Уникальный ID доставки вебхука — для дедупликации повторов.
+     *
+     * Мессенджеры повторяют доставку, если не получили 2xx вовремя. Ядро помнит ID
+     * принятых доставок (в памяти процесса, 1 час) и на повтор отвечает `200 ok`,
+     * не запуская логику повторно. Повтор, пришедший во время обработки исходного
+     * запроса, ждёт его исхода и обрабатывается заново, если исходный упал с 500.
+     * Ключ дополняется хэшем тела запроса, поэтому поддельный запрос с угаданным ID
+     * не заблокирует настоящий апдейт.
+     *
+     * Реализуйте, только если ответ платформе не несёт содержимого (ответ уходит
+     * через API): повтор получит тело `ok`. Голосовым платформам метод не нужен.
+     *
+     * @param query - разобранное тело запроса
+     * @returns ID доставки или `null`, если в запросе его нет
+     *
+     * @example
+     * ```ts
+     * getDeliveryId(query: IMyUpdate): string | null {
+     *     return query.update_id === undefined ? null : String(query.update_id);
+     * }
+     * ```
+     */
+    getDeliveryId?: (query: TQuery) => string | null;
+    /**
+     * Сколько платформа ждёт ответа на запрос, мс.
+     *
+     * Ядро выполняет запросы одного пользователя по очереди. Если платформа ждёт ответ
+     * ограниченное время (Алиса, Маруся, SmartApp), запрос ждёт предыдущий не дольше
+     * половины оставшегося времени и затем выполняется параллельно — иначе ответ опоздал бы.
+     * `BasePlatform` отвечает `null`: мессенджеры получают ответ через API, и жёсткого
+     * срока у них нет.
+     *
+     * @returns Срок ответа в мс или `null`, если срока нет
+     *
+     * @example
+     * ```ts
+     * class MyVoiceAdapter extends BasePlatform {
+     *     // Платформа обрывает запрос через 3 секунды
+     *     getResponseTimeout(): number | null {
+     *         return 2900;
+     *     }
+     * }
+     * ```
+     */
+    getResponseTimeout?: () => number | null;
+    /**
      * Определяет, принадлежит ли входящий запрос данной платформе.
      *
      * Метод проверяет заголовки или структуру тела запроса.
@@ -199,11 +267,29 @@ export interface IPlatformAdapter<TQuery = unknown> extends IPlugin {
     isPlatformOnQuery: (query: TQuery, headers?: Record<string, unknown>) => boolean;
     /**
      * Проверяет полученный запрос от платформы на корректность.
-     * Реализация зависит от адаптера, как правило, в чувствительных платформах есть токен, который приходит с запросом, и желательно проверять, что пришедший токен соответствует тому, который сохранён в настройках.
-     * @param {TQuery} query - Объект запроса от платформы
+     * Реализация зависит от адаптера, как правило, в чувствительных платформах есть токен,
+     * который приходит с запросом, и желательно проверять, что пришедший токен соответствует тому, который сохранён в настройках.
+     * @param {TQuery} query - Запрос от платформы. В `webhookHandle` — сырое тело строкой
+     *   (от него считается HMAC-подпись)
      * @param {Record<string, unknown>} [headers] - HTTP-заголовки запроса
+     * @param {unknown} [parsedQuery] - То же тело, уже разобранное из JSON фреймворком.
+     *   Передаётся в `webhookHandle`/`webhookEvent`: адаптеру, которому для проверки нужен
+     *   объект (секрет в теле, как у VK), не нужно разбирать JSON второй раз.
+     * @returns `true`, если запрос прошёл проверку
+     *
+     * @example
+     * ```ts
+     * isCorrectQuery(query, headers, parsedQuery) {
+     *   const body = (parsedQuery ?? (typeof query === 'string' ? JSON.parse(query) : query)) as { secret?: string };
+     *   return body.secret === this.secret;
+     * }
+     * ```
      */
-    isCorrectQuery: (query: TQuery, headers?: Record<string, unknown>) => boolean;
+    isCorrectQuery: (
+        query: TQuery,
+        headers?: Record<string, unknown>,
+        parsedQuery?: unknown,
+    ) => boolean;
     /**
      * Инициализирует данные запроса в контроллере приложения.
      *
@@ -482,6 +568,37 @@ export interface IDatabaseAdapter extends IPlugin {
      * В случае успешного подключения возвращается true
      */
     connect: () => Promise<boolean> | boolean;
+
+    /**
+     * Подготавливает хранилище под встроенные таблицы umbot: создаёт недостающие
+     * таблицы, колонки или индексы. Фреймворк вызывает метод один раз после каждого
+     * успешного подключения (connect), до первого запроса к базе. Метод обязан быть
+     * идемпотентным: таблицы и индексы, которые уже есть, не пересоздаются.
+     *
+     * Необязательный: адаптер без метода (или базовый адаптер) ничего не готовит —
+     * так работают хранилища без схемы (FileAdapter). SQL-адаптер должен создать
+     * таблицы, иначе первый же запрос упадёт с «таблица не существует».
+     *
+     * @param tables Описание встроенных таблиц (`DB_TABLES_SCHEMA`)
+     * @returns false (или Promise<false>), если подготовить схему не удалось —
+     *   фреймворк запишет ошибку в лог и продолжит работу с базой
+     *
+     * @example
+     * ```ts
+     * async ensureSchema(tables: readonly IDbTableSchema[]): Promise<boolean> {
+     *     for (const table of tables) {
+     *         const columns = Object.entries(table.fields).map(([name, field]) =>
+     *             `"${name}" ${field.type === 'text' ? 'TEXT' : 'VARCHAR(255)'}`,
+     *         );
+     *         await this.#pool.query(
+     *             `CREATE TABLE IF NOT EXISTS "${table.tableName}" (${columns.join(', ')})`,
+     *         );
+     *     }
+     *     return true;
+     * }
+     * ```
+     */
+    ensureSchema?: (tables: readonly IDbTableSchema[]) => boolean | Promise<boolean>;
 }
 
 /**

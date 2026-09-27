@@ -35,7 +35,7 @@ class CreateController {
     _getFileContent(file) {
         let content = '';
         if (file && utils.isFile(file)) {
-            content = utils.fread(file);
+            content = utils.read(file);
         }
         return content;
     }
@@ -92,9 +92,9 @@ class CreateController {
         } else {
             config = defaultConfig;
         }
-        if (this.params && this.params.isEnv) {
-            config.env = `./.env`;
-        }
+        // .env читается всегда: туда пишут токены пользователь и `npx umbot webhook` (секрет вебхука).
+        // Без файла (Docker, serverless) фреймворк берёт переменные из окружения процесса.
+        config.env = './.env';
         let content = this._getHeaderContent();
         content += "import { IAppConfig } from 'umbot';\n\n";
         content += 'export default function (): IAppConfig {\n';
@@ -168,7 +168,7 @@ class CreateController {
         const replace = [date, time, rawName, name, name, imageName, '', hostname, port];
         fileName = this._replace(find, replace, fileName);
         const content = this._replace(find, replace, templateContent);
-        utils.fwrite(fileName, content);
+        utils.write(fileName, content);
         return fileName;
     }
 
@@ -178,7 +178,6 @@ class CreateController {
      * @private
      */
     _getConfigFile(dirPath) {
-        console.log('Создается файл с конфигурацией приложения: ...');
         const configFile = `${this.#path}/src/config/{{name}}Config.ts`;
         let configContent;
         if (utils.isFile(`${dirPath}/config/defaultConfig.js`)) {
@@ -188,7 +187,7 @@ class CreateController {
             configContent = '';
         }
         this._generateFile(configContent, configFile);
-        console.log('Файл с конфигурацией успешно создан');
+        console.log('Создан файл с конфигурацией');
     }
 
     /**
@@ -198,7 +197,6 @@ class CreateController {
      * @private
      */
     _getParamsFile(dirPath, type) {
-        console.log('Создается файл с параметрами приложения: ...');
         const paramsFile = `${this.#path}/src/config/{{name}}Params.ts`;
         let paramsContent;
         if (utils.isFile(`${dirPath}/config/${type}Params.js`)) {
@@ -208,7 +206,7 @@ class CreateController {
             paramsContent = '';
         }
         this._generateFile(paramsContent, paramsFile);
-        console.log('Файл с параметрами успешно создан');
+        console.log('Создан файл с параметрами');
     }
 
     createDockerFile(dirPath) {
@@ -217,7 +215,7 @@ class CreateController {
         this.#assertFileCanBeWritten(dockerFile);
         const dockerContent = this._getFileContent(`${standardPath}/docker/DockerFile.text`);
         this._generateFile(dockerContent, dockerFile);
-        console.log('Dockerfile успешно создан');
+        console.log('Создан файл Dockerfile');
 
         // .dockerignore не даёт секретам (.env), логам и node_modules попасть
         // в слои образа при COPY . . на этапе сборки.
@@ -227,7 +225,7 @@ class CreateController {
             `${standardPath}/docker/.dockerignore.text`,
         );
         this._generateFile(dockerIgnoreContent, dockerIgnoreFile);
-        console.log('.dockerignore успешно создан');
+        console.log('Создан файл .dockerignore');
     }
 
     createDeployFile(dirPath) {
@@ -238,7 +236,7 @@ class CreateController {
         fs.mkdirSync(`${dirPath}/.github/workflows`, { recursive: true });
         const deployContent = this._getFileContent(`${standardPath}/github/deploy.yml`);
         this._generateFile(deployContent, deployFile);
-        console.log('deploy.yml успешно создан');
+        console.log('Создан файл deploy.yml');
     }
 
     /**
@@ -248,9 +246,7 @@ class CreateController {
      */
     _create(type = CreateController.T_DEFAULT) {
         if (![CreateController.T_DEFAULT, CreateController.T_QUIZ].includes(type)) {
-            console.warn(
-                'Не удалось создать проект, так как не удалось определить тип создаваемого приложения',
-            );
+            console.warn('Не удалось создать проект: неизвестный тип приложения');
         } else {
             const standardPath = path.join(__dirname, '..', 'template');
             const srcPath = `${this.#path}/src`;
@@ -271,16 +267,14 @@ class CreateController {
                 if (!utils.isDir(controllerFile)) {
                     fs.mkdirSync(controllerFile);
                 }
-                console.log('Создается класс с логикой приложения: ...');
                 controllerFile += '/{{className}}Controller.ts';
                 const controllerContent = this._getFileContent(
                     `${standardPath}/controller/${type}Controller.ts.text`,
                 );
                 this._generateFile(controllerContent, controllerFile);
-                console.log('Класс с логикой приложения успешно создан');
+                console.log('Создан класс с логикой приложения');
             }
 
-            console.log('Создается index файл: ...');
             let indexTemplate = 'index';
             const mode = this.params?.mode;
             if (mode === 'dev') {
@@ -296,29 +290,36 @@ class CreateController {
             const indexFile = `${srcPath}/index.ts`;
             const indexContent = this._getFileContent(`${standardPath}/${indexTemplate}.ts.text`);
             this._generateFile(indexContent, indexFile);
-            console.log('index.ts успешно создан');
+            console.log('Создан файл index.ts');
 
             const packageFile = `${this.#path}/package.json`;
             const packageContent = this._getFileContent(`${standardPath}/package.json.text`);
             this._generateFile(packageContent, packageFile);
-            console.log('package.json успешно создан');
+            console.log('Создан файл package.json');
 
             const tsconfigFile = `${this.#path}/tsconfig.json`;
             const tsconfigContent = this._getFileContent(`${standardPath}/tsconfig.json`);
             this._generateFile(tsconfigContent, tsconfigFile);
-            console.log('tsconfig.json успешно создан');
+            console.log('Создан файл tsconfig.json');
 
             const gitignoreFile = `${this.#path}/.gitignore`;
-            const gitignoreContent = this._getFileContent(`${standardPath}/.gitignore`);
+            // Шаблон называется gitignore.text: файлы `.gitignore` npm вырезает из пакета.
+            const gitignoreContent = this._getFileContent(`${standardPath}/gitignore.text`);
+            if (!gitignoreContent) {
+                // Пустой .gitignore молча отправил бы .env с токенами в git.
+                throw new Error(
+                    `Не найден шаблон ${standardPath}/gitignore.text. Переустановите umbot.`,
+                );
+            }
             this._generateFile(gitignoreContent, gitignoreFile);
-            console.log('.gitignore успешно создан');
+            console.log('Создан файл .gitignore');
 
             if (this.flags.includes('--prod')) {
                 this.createDeployFile(this.#path);
                 this.createDockerFile(this.#path);
             }
 
-            console.log(`Проект успешно создан, и находится в директории: ${this.#path}`);
+            console.log(`Проект создан в директории: ${this.#path}`);
         }
     }
 
@@ -328,8 +329,8 @@ class CreateController {
      * @param content
      */
     generateFile(fileName, content) {
-        utils.fwrite(`${this.#path}/${fileName}`, content);
-        console.log(`Файл ${fileName} успешно создан`);
+        utils.write(`${this.#path}/${fileName}`, content);
+        console.log(`Создан файл ${fileName}`);
     }
 
     /**
@@ -367,7 +368,7 @@ class CreateController {
                 timeout: 30000,
             });
         } catch {
-            console.warn('Предупреждение: не удалось отформатировать код');
+            console.warn('Не удалось отформатировать код');
         }
     }
 

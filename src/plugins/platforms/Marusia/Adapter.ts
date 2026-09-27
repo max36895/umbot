@@ -191,6 +191,14 @@ export class MarusiaAdapter extends BasePlatform<string | IMarusiaWebhookRequest
     }
 
     /**
+     * Срок ответа Марусе: после него навык считается не ответившим.
+     * @returns `MAX_TIME_REQUEST`, мс
+     */
+    getResponseTimeout(): number {
+        return this.MAX_TIME_REQUEST;
+    }
+
+    /**
      * Разбирает запрос Маруси и наполняет контроллер данными: команда, NLU,
      * идентификатор пользователя, состояние, метаданные, health-check ping.
      * @param query Входящий webhook-запрос Маруси

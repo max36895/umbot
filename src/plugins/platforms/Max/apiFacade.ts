@@ -18,6 +18,7 @@ import { getPlatformRequestData } from '../Base/utils';
 type IMaxApiData = Record<string, unknown> & {
     callbackId?: string;
     chatId?: number;
+    callbackAnswered?: boolean;
 };
 
 const MAX_SUPPORTED: readonly TApiMethod[] = [
@@ -102,6 +103,9 @@ export function makeMaxApi(controller: BotController): IControllerApi {
             // повторные нажатия (контракт платформы, см. AGENTS.md §9).
             // Ключ диалога — как в адаптере (chatId ?? userId): в личке chatId
             // не заполняется, и без userId очередь не включалась вовсе.
+            // Адаптер после обработки подтверждает нажатие сам; повторный ответ
+            // на тот же callback MAX отклонил бы — помечаем, что он уже дан.
+            data.callbackAnswered = true;
             return request().answerCallback(
                 data.callbackId,
                 text,

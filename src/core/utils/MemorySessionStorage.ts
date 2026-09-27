@@ -29,9 +29,15 @@ export const MEMORY_SESSION_MAX_SIZE = 10_000;
 /** Время жизни данных пользователя по умолчанию — 24 часа. */
 export const MEMORY_SESSION_TTL = 24 * 60 * 60 * 1000;
 
+/** Запись сессии — одновременно узел списка «по давности обновления». */
 interface IMemorySessionEntry<T> {
+    key: string;
     value: T;
     expiresAt: number;
+    /** Предыдущая (обновлялась раньше) запись списка */
+    prev: IMemorySessionEntry<T> | null;
+    /** Следующая (обновлялась позже) запись списка */
+    next: IMemorySessionEntry<T> | null;
 }
 
 /**
@@ -46,8 +52,10 @@ interface IMemorySessionEntry<T> {
  *
  * Объём ограничен `maxSize` (вытесняется запись, дольше всех не обновлявшаяся)
  * и `ttl`. Таймеров нет: устаревшие записи удаляются при чтении и при записи.
- * Порядок вставки в `Map` совпадает с порядком истечения (ttl один на всё
- * хранилище, запись перемещается в конец), поэтому очистка — O(1) амортизированно.
+ * Записи связаны в список по давности обновления (ttl один на всё хранилище,
+ * поэтому это и порядок истечения): обновление и очистка — O(1). Список, а не
+ * порядок вставки `Map`: удаление с повторной вставкой на каждый запрос копит
+ * «дыры» в хэш-таблице V8, и обход с начала стоил O(ёмкости).
  *
  * @example
  * ```ts
@@ -58,6 +66,10 @@ interface IMemorySessionEntry<T> {
  */
 export class MemorySessionStorage<T> {
     readonly #entries = new Map<string, IMemorySessionEntry<T>>();
+    /** Самая давно обновлённая запись (кандидат на вытеснение). */
+    #head: IMemorySessionEntry<T> | null = null;
+    /** Последняя обновлённая запись. */
+    #tail: IMemorySessionEntry<T> | null = null;
     readonly #maxSize: number;
     readonly #ttl: number;
 
@@ -111,7 +123,7 @@ export class MemorySessionStorage<T> {
             return undefined;
         }
         if (this.#ttl && entry.expiresAt <= Date.now()) {
-            this.#entries.delete(key);
+            this.#remove(entry);
             return undefined;
         }
         return entry.value;
@@ -128,10 +140,25 @@ export class MemorySessionStorage<T> {
      */
     public set(key: string, value: T): void {
         const now = Date.now();
-        // Удаление перед вставкой переносит запись в конец — порядок Map
-        // остаётся порядком «последнего обновления».
-        this.#entries.delete(key);
-        this.#entries.set(key, { value, expiresAt: this.#ttl ? now + this.#ttl : Infinity });
+        const expiresAt = this.#ttl ? now + this.#ttl : Infinity;
+        const entry = this.#entries.get(key);
+        if (entry) {
+            // Обновлённая запись переносится в конец списка — без удаления из Map.
+            entry.value = value;
+            entry.expiresAt = expiresAt;
+            this.#unlink(entry);
+            this.#append(entry);
+        } else {
+            const created: IMemorySessionEntry<T> = {
+                key,
+                value,
+                expiresAt,
+                prev: null,
+                next: null,
+            };
+            this.#entries.set(key, created);
+            this.#append(created);
+        }
         this.#prune(now);
     }
 
@@ -141,7 +168,12 @@ export class MemorySessionStorage<T> {
      * @returns `true`, если запись существовала
      */
     public delete(key: string): boolean {
-        return this.#entries.delete(key);
+        const entry = this.#entries.get(key);
+        if (!entry) {
+            return false;
+        }
+        this.#remove(entry);
+        return true;
     }
 
     /**
@@ -149,6 +181,7 @@ export class MemorySessionStorage<T> {
      */
     public clear(): void {
         this.#entries.clear();
+        this.#head = this.#tail = null;
     }
 
     /**
@@ -156,12 +189,54 @@ export class MemorySessionStorage<T> {
      * @param now Текущее время
      */
     #prune(now: number): void {
-        for (const [key, entry] of this.#entries) {
-            if (this.#entries.size > this.#maxSize || entry.expiresAt <= now) {
-                this.#entries.delete(key);
-            } else {
-                break;
-            }
+        let entry = this.#head;
+        while (entry && (this.#entries.size > this.#maxSize || entry.expiresAt <= now)) {
+            const next = entry.next;
+            this.#remove(entry);
+            entry = next;
         }
+    }
+
+    /**
+     * Исключает запись из списка давности (из Map не удаляет).
+     * @param entry Запись
+     */
+    #unlink(entry: IMemorySessionEntry<T>): void {
+        if (entry.prev) {
+            entry.prev.next = entry.next;
+        } else {
+            this.#head = entry.next;
+        }
+        if (entry.next) {
+            entry.next.prev = entry.prev;
+        } else {
+            this.#tail = entry.prev;
+        }
+        entry.prev = null;
+        entry.next = null;
+    }
+
+    /**
+     * Добавляет запись в конец списка давности (самая свежая).
+     * @param entry Запись
+     */
+    #append(entry: IMemorySessionEntry<T>): void {
+        entry.prev = this.#tail;
+        entry.next = null;
+        if (this.#tail) {
+            this.#tail.next = entry;
+        } else {
+            this.#head = entry;
+        }
+        this.#tail = entry;
+    }
+
+    /**
+     * Удаляет запись из списка и из Map.
+     * @param entry Запись
+     */
+    #remove(entry: IMemorySessionEntry<T>): void {
+        this.#unlink(entry);
+        this.#entries.delete(entry.key);
     }
 }

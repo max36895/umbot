@@ -15,6 +15,10 @@ RUN npm run build
 # Stage 2: runtime
 FROM node:24-alpine
 
+# Продакшен-окружение: npm не ставит devDependencies, а umbot без явного
+# setAppMode() работает в strict_prod.
+ENV NODE_ENV=production
+
 # Создаём непривилегированного пользователя
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S umbot -u 1001
@@ -30,6 +34,13 @@ COPY --from=builder --chown=umbot:nodejs /app/dist ./dist
 # Ставим runtime-зависимости тем же способом, что и на этапе сборки,
 # чтобы версии совпадали между build и runtime стадиями.
 RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+
+# Каталоги данных FileAdapter (json/) и файловых логов (logs/) создаются заранее
+# и отдаются пользователю umbot: /app принадлежит root, и без этого процесс
+# не смог бы в них писать. Данные контейнера теряются при его пересоздании —
+# для продакшена подключите том: docker run -v umbot-data:/app/json ...
+# либо используйте MongoAdapter.
+RUN mkdir -p /app/json /app/logs && chown umbot:nodejs /app/json /app/logs
 
 USER umbot
 

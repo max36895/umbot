@@ -49,7 +49,7 @@ description: Аудит платформенных адаптеров umbot (src
 
 Затем документация и CHANGELOG (AGENTS.md раздел 6):
 
-- Изменились лимиты, форматы, события или поведение адаптера → поправь `src/docs/platform-integration.md`, `src/docs/platform-contract-comparison.md` и матрицу платформ в AGENTS.md (раздел 9). Правка контракта без правки документации оставляет в доке заведомо неверные цифры.
+- Изменились лимиты, форматы, события или поведение адаптера → поправь `src/docs/platform-integration.md`, `src/docs/platform-contract-comparison.md` матрицу платформ в AGENTS.md (раздел 9) и `.agents/platform-contracts.md`. Правка контракта без правки документации оставляет в доке заведомо неверные цифры.
 - Запись в CHANGELOG (`Исправлено` / `Добавлено`) — в секцию по правилам AGENTS.md раздела 6: `[Unreleased]` не использовать; верхняя невыпущенная секция (без даты / с будущей датой / равная версии из `package.json`) — целевая; нет такой секции — спроси у пользователя версию и срок релиза.
 
 Если фикс требует изменения публичного API адаптера (breaking) — STOP и вопрос пользователю.
@@ -71,16 +71,16 @@ description: Аудит платформенных адаптеров umbot (src
 - **Пустые значения**: пустой `title` кнопки; `response.text` без `tts` (Алиса допускает пустой text только при заполненном tts).
 - **URL**: платформа требует `https://`, а адаптер пропускает `http://` — баг контракта.
 
-Сверяйся с матрицей платформ в AGENTS.md (раздел 9) и разделом «Verified» — там подтверждённые факты по лимитам.
+Сверяйся с матрицей платформ в AGENTS.md (раздел 9) и с `.agents/platform-contracts.md` — там подтверждённые факты по лимитам, форматам и прод-нюансы адаптеров. Прочитай его целиком до начала аудита.
 
 ### 2. Целостность адаптеров
 
 - Кнопка-ссылка (`hide`, `url`): Telegram — `InlineKeyboardButton` с `url`, Алиса — свой формат. Как деградирует адаптер, не поддерживающий ссылки?
-- `Card.getCards(cardProcessing, controller)`: у Telegram/VK/Алисы/Маруси/MAX процессоры **асинхронные** — вызов обязан быть с `await`; у Viber/SmartApp — синхронные, лишний `await` не нужен. Не копируй вызов из чужого адаптера вслепую (AGENTS.md 9.1).
+- `Card.getCards(cardProcessing, controller)`: у Telegram/VK/Алисы/Маруси/MAX процессоры **асинхронные** — вызов обязан быть с `await`; у Viber/SmartApp — синхронные, лишний `await` не нужен. Не копируй вызов из чужого адаптера вслепую (`.agents/platform-contracts.md`).
 - `button.options` — доступ только через `?.` / `?? {}`: кнопка может быть собрана вручную вне компонента `Buttons` (JS-потребители, тесты). Образцы: Telegram/VK/Max/Viber.
 - Сериализация payload: `serializePlatformPayload` + `tryParse` из `platforms/Base/utils.ts`, не ручной `JSON.stringify`.
 - `Request._getOptions()` возвращает `undefined` при ошибке attach — проверяй перед `fetch`, иначе уйдёт паразитный GET.
-- Служебные события платформы → `skipAutoReply`, НЕ `setQueryData() === false` — иначе платформы включают ретраи и отключают вебхук (AGENTS.md 9.1).
+- Служебные события платформы → `skipAutoReply`, НЕ `setQueryData() === false` — иначе платформы включают ретраи и отключают вебхук (AGENTS.md, раздел 9).
 - Проверка подписи: `isCorrectQuery` / `signatureName` — реальные заголовки (`x-telegram-bot-api-secret-token`, VK `secret_key` в теле, Viber `x-viber-content-signature`, MAX `x-max-bot-api-secret` — заголовок входящего вебхука; `Authorization: <token>` у MAX — auth исходящих API-запросов, не подпись вебхука). Алиса/Маруся/SmartApp подписи не шлют — их payload полностью атакующий-контролируем, включая `user_id`.
 
 ### 3. Соответствие продуктовым приоритетам (не критерий бага!)

@@ -4,7 +4,34 @@
 import { AppContext, IButtonType } from '../../../index';
 
 import { IMaxButtonObject, IMaxButton } from './interfaces/IMaxPlatform';
-import { getCorrectButtons, serializePlatformPayload } from '../Base/utils';
+import {
+    getCorrectButtons,
+    IButtonRowItem,
+    layoutButtonRows,
+    serializePlatformPayload,
+} from '../Base/utils';
+
+/** Кнопок в ряду клавиатуры MAX. */
+const MAX_BUTTONS_PER_ROW = 7;
+/** Кнопок в ряду, если в нём есть link / open_app / request_geo_location / request_contact. */
+const MAX_WIDE_BUTTONS_PER_ROW = 3;
+const MAX_WIDE_BUTTON_TYPES = new Set([
+    'link',
+    'open_app',
+    'request_geo_location',
+    'request_contact',
+]);
+
+/**
+ * Лимит кнопок в ряду MAX: 7, но 3 — если в ряду есть «широкие» типы кнопок.
+ * @param row Кнопки ряда
+ * @returns Максимум кнопок в ряду
+ */
+function getMaxRowLimit(row: readonly IMaxButton[]): number {
+    return row.some((button) => MAX_WIDE_BUTTON_TYPES.has(button.type))
+        ? MAX_WIDE_BUTTONS_PER_ROW
+        : MAX_BUTTONS_PER_ROW;
+}
 
 /**
  * Выставляет поля, специфичные для типа кнопки, только своему типу
@@ -44,7 +71,7 @@ export function buttonProcessing(
     buttons: IButtonType[],
     appContext?: AppContext,
 ): IMaxButtonObject {
-    const finalButtons: IMaxButton[][] = [];
+    const items: IButtonRowItem<IMaxButton>[] = [];
     if (buttons.length > 30) {
         appContext?.logWarn(
             '[MAX] клавиатура превышает лимит 30 рядов. Лишние кнопки не будут отправлены.',
@@ -105,12 +132,12 @@ export function buttonProcessing(
             delete object.url;
         }
         applyTypeSpecificOptions(object, options);
-        // Универсальный API не задаёт раскладку, поэтому каждая кнопка получает
-        // отдельную строку — это всегда валидная форма MAX API.
-        finalButtons.push([object]);
+        // Раскладка по рядам — из options._group (buttons.row()); кнопка без
+        // группы получает отдельную строку, как раньше.
+        items.push({ group: button.options?._group, item: object });
     });
 
     return {
-        buttons: finalButtons,
+        buttons: layoutButtonRows(items, getMaxRowLimit, 'MAX', appContext),
     };
 }

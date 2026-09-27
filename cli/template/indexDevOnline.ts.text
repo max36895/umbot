@@ -10,10 +10,10 @@ import {{name}}Params from './config/{{name}}Params';
 import {__className__Controller} from './controller/__className__Controller';
 
 const bot = new Bot();
+bot.setAppMode('dev');
 bot.use(fullPlatforms);
 bot.use(new FileAdapter());
 bot.setAppConfig({{name}}Config());
 bot.setPlatformParams({{name}}Params());
 bot.initBotController(__className__Controller);
-bot.setAppMode('dev');
 bot.start({{hostname}}, {{port}});

@@ -329,27 +329,66 @@ describe('Контракты платформ', () => {
         );
     });
 
-    it('подтверждает callback-кнопку MAX методом answers', async () => {
-        const context = createContext();
-        context.appConfig.tokens[T_MAX_APP] = { token: 'max-token' };
-        const adapter = new MaxAdapter();
-        adapter.init(context);
-        const controller = new TestController(context);
-        controller.text = 'Подтверждено';
-        const answerCallback = jest
-            .spyOn(MaxRequest.prototype, 'answerCallback')
-            .mockResolvedValue({});
+    describe('callback-кнопка MAX', () => {
+        const callbackQuery = {
+            update_type: 'message_callback',
+            callback: { callback_id: 'callback-id', payload: 'confirm', user: { user_id: 42 } },
+        } as never;
 
-        await adapter.setQueryData(
-            {
-                update_type: 'message_callback',
-                callback: { callback_id: 'callback-id', payload: 'confirm', user: { user_id: 42 } },
-            } as never,
-            controller,
-        );
-        await adapter.getContent(controller);
+        function setup(options?: Record<string, unknown>): {
+            adapter: MaxAdapter;
+            controller: TestController;
+            answerCallback: jest.SpyInstance;
+            messagesSend: jest.SpyInstance;
+        } {
+            const context = createContext();
+            context.appConfig.tokens[T_MAX_APP] = { token: 'max-token' };
+            const adapter = new MaxAdapter(undefined, options);
+            adapter.init(context);
+            const controller = new TestController(context);
+            controller.text = 'Подтверждено';
+            const answerCallback = jest
+                .spyOn(MaxRequest.prototype, 'answerCallback')
+                .mockResolvedValue({});
+            const messagesSend = jest
+                .spyOn(MaxRequest.prototype, 'messagesSend')
+                .mockResolvedValue({} as never);
+            return { adapter, controller, answerCallback, messagesSend };
+        }
 
-        expect(answerCallback).toHaveBeenCalledWith('callback-id', 'Подтверждено', {}, 42);
+        it('подтверждает нажатие пустым ответом и отправляет ответ новым сообщением', async () => {
+            // Регресс: ответ уходил в POST /answers с message, а MAX этим заменяет
+            // сообщение с кнопкой — меню затиралось (в Telegram/VK — новое сообщение).
+            const { adapter, controller, answerCallback, messagesSend } = setup();
+            await adapter.setQueryData(callbackQuery, controller);
+            await adapter.getContent(controller);
+
+            expect(answerCallback).toHaveBeenCalledWith('callback-id', '', null, 42);
+            expect(messagesSend).toHaveBeenCalledWith(42, 'Подтверждено', {}, 'user');
+        });
+
+        it('max_callback_edit_message: ответ заменяет сообщение с кнопкой', async () => {
+            const { adapter, controller, answerCallback, messagesSend } = setup({
+                max_callback_edit_message: true,
+            });
+            await adapter.setQueryData(callbackQuery, controller);
+            await adapter.getContent(controller);
+
+            expect(answerCallback).toHaveBeenCalledWith('callback-id', 'Подтверждено', {}, 42);
+            expect(messagesSend).not.toHaveBeenCalled();
+        });
+
+        it('не подтверждает повторно, если обработчик уже вызвал api.answerCallback()', async () => {
+            const { adapter, controller, answerCallback, messagesSend } = setup();
+            await adapter.setQueryData(callbackQuery, controller);
+            controller.setApiFactory((ctrl) => adapter.createApi(ctrl));
+            await controller.api?.answerCallback?.('Принято');
+            await adapter.getContent(controller);
+
+            expect(answerCallback).toHaveBeenCalledTimes(1);
+            expect(answerCallback).toHaveBeenCalledWith('callback-id', 'Принято', null, 42);
+            expect(messagesSend).toHaveBeenCalledTimes(1);
+        });
     });
 
     it('распознаёт и безопасно подтверждает служебные MAX webhook-события', async () => {
@@ -362,7 +401,7 @@ describe('Контракты платформ', () => {
         const sendMessage = jest.spyOn(MaxRequest.prototype, 'messagesSend');
 
         expect(adapter.isPlatformOnQuery(event)).toBe(true);
-        await expect(adapter.setQueryData(event, controller)).resolves.toBe(true);
+        expect(await adapter.setQueryData(event, controller)).toBe(true);
         await adapter.getContent(controller);
 
         expect(controller.skipAutoReply).toBe(true);
@@ -376,15 +415,15 @@ describe('Контракты платформ', () => {
         adapter.init(context);
         const controller = new TestController(context);
 
-        await expect(
-            adapter.setQueryData(
+        expect(
+            await adapter.setQueryData(
                 {
                     update_type: 'message_created',
                     message: { body: null, recipient: { chat_id: 42, chat_type: 'chat' } },
                 } as never,
                 controller,
             ),
-        ).resolves.toBe(true);
+        ).toBe(true);
         expect(controller.userCommand).toBe('');
         expect(controller.messageId).toBe(0);
         expect(controller.userId).toBe(0);

@@ -8,6 +8,7 @@ import {
     AppContext,
     IDatabaseInfo,
     IAppDB,
+    IDbTableSchema,
 } from '../../../index';
 import type { MongoClient, MongoClientOptions, Db, Document, Filter, OptionalId } from 'mongodb';
 
@@ -577,7 +578,8 @@ export class MongoAdapter extends Base<IMongoDbInfo> {
      * @param selectData Дополнительная информация для запроса. Содержит информацию о таблице и структуре.
      * @param where Сам запрос
      * @param isOne Определяет нужно ли вернуть только 1 найденную запись, либо отдать все доступные данные.
-     * @returns Promise<IModelRes> — результат выборки ({ status: true, data } при успехе, { status: false, error } при ошибке/запрете)
+     * @returns Promise<IModelRes> — `{ status: true, data }` при успехе; `{ status: false }`, если запись
+     *   не найдена; `{ status: false, error }` при ошибке или запрещённом запросе
      */
     public async _select(
         selectData: IQuery,
@@ -594,33 +596,33 @@ export class MongoAdapter extends Base<IMongoDbInfo> {
                     error: 'Запрос содержит запрещённые ключи (NoSQL-инъекция)',
                 };
             }
-            return (await this.query(async (_client, db: Db) => {
-                try {
-                    const collection = db.collection(selectData.tableName);
-                    let results;
-                    if (isOne) {
-                        results = await collection.findOne((where as Filter<Document>) || {});
-                    } else {
-                        results = await collection
-                            .find((where as Filter<Document>) || {})
-                            .toArray();
-                    }
-                    // exactOptionalPropertyTypes: data заполняем только реальным
-                    // результатом; findOne при отсутствии записи вернёт null.
-                    if (results === null) {
-                        return { status: false };
-                    }
-                    return {
-                        status: true,
-                        data: results as NonNullable<IModelRes['data']>,
-                    };
-                } catch (err) {
-                    return {
-                        status: false,
-                        error: err as Error,
-                    };
+            // Не через query(): он возвращает сам результат драйвера, а не IModelRes,
+            // и найденная запись не отличалась бы от «не найдено».
+            const client = this._appContext.database.databaseInfo.mongoConnect;
+            if (!client) {
+                this._saveLog('Не удалось выполнить запрос.');
+                return { status: false, error: 'Нет подключения к базе данных' };
+            }
+            try {
+                const collection = client
+                    .db(this._appContext.appConfig.db?.database)
+                    .collection(selectData.tableName);
+                const filter = (where as Filter<Document>) || {};
+                const results = isOne
+                    ? await collection.findOne(filter)
+                    : await collection.find(filter).toArray();
+                // findOne без совпадения возвращает null: это «не найдено», а не ошибка.
+                if (results === null) {
+                    return { status: false };
                 }
-            })) as IModelRes;
+                return { status: true, data: results as NonNullable<IModelRes['data']> };
+            } catch (err) {
+                this._saveLog(
+                    err instanceof Error ? err.message : String(err),
+                    err instanceof Error ? err : undefined,
+                );
+                return { status: false, error: err instanceof Error ? err : String(err) };
+            }
         }
         return {
             status: false,
@@ -660,6 +662,54 @@ export class MongoAdapter extends Base<IMongoDbInfo> {
         this._appContext?.logError(`MongoDB: ${errorMsg}`, {
             error,
         });
+    }
+
+    /**
+     * Создаёт индексы для встроенных таблиц: без них поиск пользователя и токенов
+     * медиа идёт полным перебором коллекции и замедляется с ростом базы.
+     * Коллекции MongoDB создаёт сама при первой записи, поэтому здесь — только индексы.
+     *
+     * Индексы не уникальные: в данных прежних версий могут быть дубли (параллельные
+     * первые запросы одного пользователя), и уникальный индекс на них не создался бы.
+     * Создание существующего индекса — no-op. Если у пользователя БД нет прав на
+     * создание индексов, адаптер пишет предупреждение и продолжает работу.
+     *
+     * @param tables Описание встроенных таблиц (`DB_TABLES_SCHEMA`)
+     * @returns true, если все индексы есть; false, если какой-то создать не удалось
+     *
+     * @example
+     * ```ts
+     * // Вызывается фреймворком автоматически после connect(); вручную — например, в миграции:
+     * await mongoAdapter.ensureSchema(DB_TABLES_SCHEMA);
+     * ```
+     */
+    public async ensureSchema(tables: readonly IDbTableSchema[]): Promise<boolean> {
+        const client = this._appContext.database.databaseInfo?.mongoConnect;
+        if (!client) {
+            return false;
+        }
+        const db = client.db(this._appContext.appConfig.db?.database);
+        let ok = true;
+        for (const table of tables) {
+            for (const fields of table.indexes) {
+                const name = `umbot_${fields.join('_')}`;
+                try {
+                    await db
+                        .collection(table.tableName)
+                        .createIndex(Object.fromEntries(fields.map((field) => [field, 1])), {
+                            name,
+                        });
+                } catch (err) {
+                    ok = false;
+                    this._appContext.logWarn(
+                        `MongoAdapter: не удалось создать индекс "${name}" для "${table.tableName}" — ` +
+                            'поиск будет работать без него, медленнее. Проверьте права пользователя БД ' +
+                            `(createIndex). Текст ошибки: ${(err as Error).message}`,
+                    );
+                }
+            }
+        }
+        return ok;
     }
 
     /**

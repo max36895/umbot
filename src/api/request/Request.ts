@@ -103,6 +103,12 @@ export class Request {
     #error: Error | string | null;
 
     /**
+     * HTTP-статус и тело ответа сервера, если он ответил не 2xx (null — ответа не было)
+     */
+    #httpStatus: number | null = null;
+    #errorBody: string | null = null;
+
+    /**
      * Контекст приложения
      */
     #appContext?: AppContext;
@@ -169,6 +175,8 @@ export class Request {
         }
 
         this.#error = null;
+        this.#httpStatus = null;
+        this.#errorBody = null;
         const data = (await this.#run()) as T;
         // Сбрасываем всё, что относится к конкретному вызову: инстанс Request
         // переиспользуется API-клиентами, и «залипшие» get/customRequest уходили
@@ -190,7 +198,13 @@ export class Request {
         this.isConvertJson = true;
         this.isBinaryResponse = false;
         if (this.#error) {
-            return { status: false, data: null, err: this.#error };
+            return {
+                status: false,
+                data: null,
+                err: this.#error,
+                ...(this.#httpStatus === null ? {} : { httpStatus: this.#httpStatus }),
+                ...(this.#errorBody === null ? {} : { errorBody: this.#errorBody }),
+            };
         }
         return { status: true, data };
     }
@@ -256,7 +270,9 @@ export class Request {
                 // Платформы отдают причину отказа в теле ответа (Telegram — description,
                 // VK — error_msg). Без него в логах остаётся только код статуса,
                 // по которому невозможно понять, что именно не понравилось API.
-                this.#error = `Не удалось получить данные с "${this.url}". Статус: ${response.status}. Ответ: ${await this.#readErrorBody(response)}`;
+                this.#httpStatus = response.status;
+                this.#errorBody = await this.#readErrorBody(response);
+                this.#error = `Не удалось получить данные с "${this.url}". Статус: ${response.status}. Ответ: ${this.#errorBody}`;
             } catch (e) {
                 // fetch в Node может бросить не только Error (строки, DOMException
                 // от AbortSignal.timeout). Потребители читают err.message — без

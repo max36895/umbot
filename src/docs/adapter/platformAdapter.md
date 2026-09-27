@@ -19,25 +19,28 @@ import { BotController, Text } from 'umbot'; // BotController и Text экспо
 большую часть контракта рабочими реализациями: обязательных членов всего четыре, остальные
 переопределяются по мере надобности.
 
-| Член контракта                                           | Обязателен           | Поведение по умолчанию                      | Назначение                                                                                                        |
-| -------------------------------------------------------- | -------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `platformName`                                           | **да**               | `'unknown'`                                 | Идентификатор платформы: ядро регистрирует адаптер в `appContext.platforms` и сопоставляет с `controller.appType` |
-| `isPlatformOnQuery(query, headers?)`                     | **да** (абстрактный) | —                                           | «Этот запрос мой?»                                                                                                |
-| `setQueryData(query, controller)`                        | **да** (абстрактный) | —                                           | Разбор входящего запроса и заполнение контроллера                                                                 |
-| `getContent(controller, stateData?)`                     | **да** (абстрактный) | —                                           | Сборка ответа в формате платформы                                                                                 |
-| `isVoice`                                                | нет                  | `true`                                      | Голосовая ли платформа. **Чат-платформа обязана выставить `false`**                                               |
-| `supportedEvents`                                        | нет                  | `['message']`                               | События, которые адаптер выставляет в `controller.eventType` (см. «События платформы»)                            |
-| `createApi(controller)`                                  | нет                  | `null`                                      | Фасад `controller.api` (см. «API-фасад платформы»)                                                                |
-| `signatureName`                                          | нет                  | не задан                                    | Имя HTTP-заголовка, в котором платформа передаёт подпись вебхука                                                  |
-| `isCorrectQuery(query, headers?)`                        | нет                  | HMAC SHA256 по `signatureName` и токену     | Проверка подлинности запроса                                                                                      |
-| `isSignatureCheckEnabled()`                              | нет                  | `true`, если заданы токен и `signatureName` | Сообщает ядру, защищён ли вебхук: по нему `bot.start()` предупреждает о незащищённой точке входа                  |
-| `limit`                                                  | нет                  | `null`                                      | Лимит запросов/сек для middleware `rateLimiter`                                                                   |
-| `isLocalStorage` / `getLocalStorage` / `setLocalStorage` | нет                  | `false` / `null` / пусто                    | Хранилище состояния на стороне платформы                                                                          |
-| `getQueryExample(query, userId, count, state)`           | нет                  | generic-заглушка                            | Пример запроса платформы для `BotTest`                                                                            |
-| `getRatingContext(controller)`                           | нет                  | вызывает `getContent`                       | Ответ на запрос оценки приложения                                                                                 |
-| `send(userId, controllerOrText)`                         | нет                  | собирает контроллер и вызывает `getContent` | Активные рассылки через `bot.send()`                                                                              |
-| `soundProcessing(controller)`                            | нет                  | пусто                                       | Дополнительная обработка озвучки                                                                                  |
-| `init(appContext)`                                       | нет                  | регистрация в `appContext.platforms`        | Инициализация адаптера                                                                                            |
+| Член контракта                                           | Обязателен           | Поведение по умолчанию                                                         | Назначение                                                                                                        |
+| -------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `platformName`                                           | **да**               | `'unknown'`                                                                    | Идентификатор платформы: ядро регистрирует адаптер в `appContext.platforms` и сопоставляет с `controller.appType` |
+| `isPlatformOnQuery(query, headers?)`                     | **да** (абстрактный) | —                                                                              | «Этот запрос мой?»                                                                                                |
+| `setQueryData(query, controller)`                        | **да** (абстрактный) | —                                                                              | Разбор входящего запроса и заполнение контроллера                                                                 |
+| `getContent(controller, stateData?)`                     | **да** (абстрактный) | —                                                                              | Сборка ответа в формате платформы                                                                                 |
+| `isVoice`                                                | нет                  | `true`                                                                         | Голосовая ли платформа. **Чат-платформа обязана выставить `false`**                                               |
+| `supportedEvents`                                        | нет                  | `['message']`                                                                  | События, которые адаптер выставляет в `controller.eventType` (см. «События платформы»)                            |
+| `createApi(controller)`                                  | нет                  | `null`                                                                         | Фасад `controller.api` (см. «API-фасад платформы»)                                                                |
+| `signatureName`                                          | нет                  | не задан                                                                       | Имя HTTP-заголовка, в котором платформа передаёт подпись вебхука                                                  |
+| `isCorrectQuery(query, headers?, parsedQuery?)`          | нет                  | HMAC SHA256 по `signatureName` и токену                                        | Проверка подлинности запроса; `parsedQuery` — тело, уже разобранное фреймворком                                   |
+| `isSignatureCheckEnabled()`                              | нет                  | `true`, если заданы токен и `signatureName`                                    | Сообщает ядру, защищён ли вебхук: по нему `bot.start()` предупреждает о незащищённой точке входа                  |
+| `isSignatureSupported()`                                 | нет                  | `true`, если задан `signatureName` или переопределён `isSignatureCheckEnabled` | Есть ли у платформы механизм подписи вебхука; платформы без него не попадают в предупреждение при старте          |
+| `getDeliveryId(query)`                                   | нет                  | не задан (дедупликации нет)                                                    | ID доставки вебхука для дедупликации повторов (см. «Дедупликация повторных доставок»)                             |
+| `getResponseTimeout()`                                   | нет                  | `null` (срока нет)                                                             | Сколько платформа ждёт ответа, мс (см. «Срок ответа платформы»)                                                   |
+| `limit`                                                  | нет                  | `null`                                                                         | Лимит запросов/сек для middleware `rateLimiter`                                                                   |
+| `isLocalStorage` / `getLocalStorage` / `setLocalStorage` | нет                  | `false` / `null` / пусто                                                       | Хранилище состояния на стороне платформы                                                                          |
+| `getQueryExample(query, userId, count, state)`           | нет                  | generic-заглушка                                                               | Пример запроса платформы для `BotTest`                                                                            |
+| `getRatingContext(controller)`                           | нет                  | вызывает `getContent`                                                          | Ответ на запрос оценки приложения                                                                                 |
+| `send(userId, controllerOrText)`                         | нет                  | собирает контроллер и вызывает `getContent`                                    | Активные рассылки через `bot.send()`                                                                              |
+| `soundProcessing(controller)`                            | нет                  | пусто                                                                          | Дополнительная обработка озвучки                                                                                  |
+| `init(appContext)`                                       | нет                  | регистрация в `appContext.platforms`                                           | Инициализация адаптера                                                                                            |
 
 Минимальный каркас адаптера чат-платформы выглядит так — дальше по документу каждый метод разбирается
 подробно:
@@ -123,6 +126,17 @@ isPlatformOnQuery(query: unknown, headers?: Record<string, unknown>): boolean {
 Если стандартной проверки недостаточно (например, платформа использует Ed25519 вместо HMAC SHA256), переопределите метод
 `isCorrectQuery` и реализуйте свою логику валидации.
 
+`webhookHandle` и `webhookEvent` передают первым аргументом сырое тело строкой (от него считается HMAC), а третьим —
+то же тело, уже разобранное из JSON (`parsedQuery`). Если подпись лежит в теле запроса (как секрет у VK), берите её из
+`parsedQuery`: повторный `JSON.parse` тела на каждом запросе — лишние микросекунды.
+
+```ts
+isCorrectQuery(query: string | IMyQuery, headers?: Record<string, unknown>, parsedQuery?: unknown): boolean {
+    const body = (parsedQuery ?? (typeof query === 'string' ? JSON.parse(query) : query)) as IMyQuery;
+    return body.secret === this.secret;
+}
+```
+
 **Примечание:** Если вы получаете ошибки при проверке подписи, убедитесь, что:
 
 1. Поле `signatureName` установлено в классе адаптера
@@ -147,9 +161,63 @@ isSignatureCheckEnabled(): boolean {
 ```
 
 Метод отвечает на вопрос «защищён ли вебхук в текущей конфигурации» — возвращайте реальное
-положение дел. Если у платформы подписи нет по построению (как у Алисы, Маруси и SmartApp),
-предупреждение при старте справедливо: защищать такой вебхук нужно на других уровнях
-(middleware `ipFilter`, секрет в пути URL, проверки в бизнес-логике).
+положение дел.
+
+Предупреждение выводится только для платформ, у которых подпись вообще есть: ядро спрашивает
+`isSignatureSupported()`. `BasePlatform` отвечает `true`, если задан `signatureName` или переопределён
+`isSignatureCheckEnabled()` (как у VK), поэтому переопределять его нужно, только если эвристика не подходит.
+Если у платформы подписи нет по построению (как у Алисы, SmartApp и Маруси), совет «задайте секрет» был бы
+невыполним — защищать такой вебхук нужно на других уровнях (middleware `ipFilter`, секрет в пути URL,
+проверки в бизнес-логике).
+
+Вне режима `dev` и без своего логгера предупреждения при старте дублируются в stderr (`logWarn(msg, meta, { stderr: true })`):
+файл `warn.log` в контейнере никто не читает.
+
+### Дедупликация повторных доставок (`getDeliveryId`)
+
+Мессенджеры повторяют доставку вебхука, если не получили ответ 2xx вовремя. Реализуйте
+`getDeliveryId(query)`, и ядро будет помнить принятые доставки (час, до 10 000 в памяти процесса) и отвечать
+на повтор `200 ok` без повторного запуска логики. Проверка идёт после `isCorrectQuery`. Если подпись вебхука включена
+(`isSignatureCheckEnabled()` возвращает `true`), ключ — сам ID: подделать запрос нельзя. Без подписи ключ — хэш тела
+запроса, поэтому поддельный запрос с угаданным ID не заблокирует настоящий.
+
+Повтор часто приходит, пока исходный запрос ещё обрабатывается (платформа не дождалась ответа). Такой повтор ждёт
+исхода исходного запроса, но не дольше 30 секунд:
+
+- исходный обработан (ответ 2xx или 400) — повтор получает `200 ok`;
+- исходный упал с 500 — повтор обрабатывается заново, апдейт не теряется;
+- исходный не завершился за 30 секунд — повтор получает `200 ok`, в лог пишется предупреждение.
+
+```ts
+getDeliveryId(query: IMyUpdate): string | null {
+    return query.update_id === undefined ? null : String(query.update_id);
+}
+```
+
+Правила:
+
+- ID должен быть одинаковым у повторов одной доставки и разным у разных событий. Если платформа не даёт ID,
+  соберите его из типа события, времени и идентификатора объекта (так делает MAX: `mid` одного сообщения
+  приходит и в `message_created`, и в `message_edited`).
+- Возвращайте `null` для событий, ответ на которые несёт содержимое (строка подтверждения VK, приветствие
+  Viber, ответ телом вебхука у Telegram в режиме `telegram_webhook_reply`): повтор получит пустой `ok`.
+- Голосовым платформам (ответ всегда телом вебхука) метод не нужен.
+
+### Срок ответа платформы (`getResponseTimeout`)
+
+Ядро выполняет запросы одного пользователя по очереди, чтобы параллельные апдейты не затирали `userData`.
+Предыдущий запрос ждётся до 10 секунд. Если платформа ждёт ответ ограниченное время, верните этот срок в мс:
+тогда запрос ждёт предыдущий не дольше половины оставшегося срока, а потом выполняется параллельно — иначе ответ
+опоздал бы. Алиса, SmartApp и Маруся возвращают `MAX_TIME_REQUEST` (2900 мс), мессенджерам срок не нужен: ответ
+уходит через API.
+
+```ts
+class MyVoiceAdapter extends BasePlatform {
+    getResponseTimeout(): number | null {
+        return this.MAX_TIME_REQUEST;
+    }
+}
+```
 
 ## Парсинг запроса (setQueryData)
 
@@ -197,6 +265,33 @@ setQueryData(query: unknown, controller: BotController): boolean {
     return true;
 }
 ```
+
+### Синхронно, если ждать нечего
+
+`setQueryData` и `getContent` могут вернуть значение сразу или промис (`boolean | Promise<boolean>`,
+`TContent`). Не объявляйте их `async`, если внутри нечего ждать: каждый async-метод на каждом запросе создаёт
+промис и асинхронный кадр, а это заметная доля времени обработки (у встроенных адаптеров — до трети). Встроенные
+адаптеры отдают промис только там, где есть сетевой вызов:
+
+```ts
+setQueryData(query: IMyQuery, controller: BotController): boolean | Promise<boolean> {
+    // ...разбор запроса...
+    const cached = userCache.get(controller.userId);
+    if (cached) {
+        controller.setThisUser(cached);
+        return true; // синхронно: имя уже есть в кэше
+    }
+    return this.#loadUser(controller); // промис — только когда нужен запрос к API
+}
+
+getContent(controller: BotController): string | Promise<string> {
+    // Без автоответа отвечать нечем — без промиса.
+    return controller.skipAutoReply ? 'ok' : this.#send(controller);
+}
+```
+
+Код, который вызывает методы адаптера напрямую, должен использовать `await`: он работает и со значением, и с
+промисом, а `.then()` — только с промисом.
 
 ## События платформы (`controller.eventType` и `supportedEvents`)
 
@@ -361,6 +456,27 @@ const keyboard = controller.buttons.getButtons(myPlatformButtonProcessing);
 при несериализуемом значении хелпер вернёт `null` и напишет в лог предупреждение вместо того, чтобы
 уронить сборку всей клавиатуры.
 
+#### Раскладка по рядам (`buttons.row()`)
+
+Разработчик бота раскладывает кнопки по рядам через `ctx.buttons.row()`; в кнопке это видно как
+группа `options._group` — у кнопок одного ряда она одинаковая, у кнопки без группы её нет. Если у платформы
+клавиатура из рядов, не разбирайте группы сами — используйте `pUtils.layoutButtonRows`, как встроенные
+адаптеры Telegram, VK, MAX и Viber. Хелпер собирает кнопки одной группы в один ряд, кнопке без группы
+отдаёт отдельную строку, а ряд длиннее лимита платформы переносит с предупреждением в лог:
+
+```ts
+import { pUtils } from 'umbot/plugins';
+
+function myPlatformButtonProcessing(buttons: IButtonType[], appContext?: AppContext): MyButton[][] {
+    const items: pUtils.IButtonRowItem<MyButton>[] = buttons.map((btn) => ({
+        group: btn.options?._group,
+        item: { text: btn.title },
+    }));
+    // Второй аргумент — лимит кнопок в ряду; может зависеть от типов кнопок ряда
+    return pUtils.layoutButtonRows(items, () => 5, 'MyPlatform', appContext);
+}
+```
+
 #### Callback-кнопки и `bot.addAction`
 
 Если платформа умеет callback-кнопки (нажатие приходит отдельным апдейтом с payload), адаптер
@@ -522,7 +638,8 @@ const audioToken = await pUtils.getSoundToken(
 - `shouldProcessChatSound(controller, platformName)` — нужно ли вообще обрабатывать звук: есть добавленные звуки либо задан `speech_kit_token`;
 - `defaultSoundProcessing(soundInfo, defaultSounds, defaultEffects?)` — стандартная подстановка звуков и эффектов (используют Алиса и Маруся);
 - `getCorrectButtons(buttons, limit, appContext?)` — обрезает массив кнопок до лимита платформы (дефолт 10; с `appContext` пишет предупреждение об усечении);
-- `serializePlatformPayload(payload, platform, appContext?)` — сериализует payload кнопки в строку, возвращает `null` с предупреждением вместо исключения.
+- `serializePlatformPayload(payload, platform, appContext?)` — сериализует payload кнопки в строку, возвращает `null` с предупреждением вместо исключения;
+- `layoutButtonRows(items, getRowLimit, platform, appContext?)` — раскладывает кнопки по рядам клавиатуры по `options._group` (`buttons.row()`) с учётом лимита ряда (см. «Раскладка по рядам» выше).
 
 **Медиа-токены:** `getImageToken` и `getSoundToken` разобраны выше; `cacheMediaToken(model, controller)` —
 записывает уже полученный токен в модель `ImageTokens`/`SoundTokens`. Кэш здесь — оптимизация, а не
@@ -558,7 +675,7 @@ bot.addEvent('callback', async (ctx) => {
 равен `null`, и включается он переопределением одного метода — правки ядра не нужны. Фасад ленивый:
 объект создаётся при первом обращении к `ctx.api`, запросы без API-вызовов за него не платят.
 
-Голосовым платформам (Алиса, Маруся, SmartApp) фасад не нужен: их ответ формируется телом вебхука,
+Голосовым платформам (Алиса, SmartApp, Маруся) фасад не нужен: их ответ формируется телом вебхука,
 а медиа отправляются через `controller.card` / `controller.sound`. Такие адаптеры метод не
 переопределяют.
 
