@@ -75,6 +75,8 @@ export interface ISelectOneModelRes extends Omit<IModelRes, 'data'> {
  *
  * @template TState - Тип состояния модели
  * @class Model
+ *
+ * @group Хранение данных
  */
 export abstract class Model<TState extends IModelState> {
     /**

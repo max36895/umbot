@@ -9,6 +9,7 @@
         "src/Preload.ts",
         "src/docs"
     ],
+    "cleanOutputDir": true,
     "entryPointStrategy": "resolve",
     "readme": "README.md",
     "projectDocuments": ["src/docs/**/*.md", "cli/README.md"],
@@ -41,6 +42,27 @@
         "yaml"
     ],
     "categorizeByGroup": true,
+    "navigation": {
+        "includeGroups": true
+    },
+    "groupOrder": [
+        "Основное",
+        "Ответ пользователю",
+        "Хранение данных",
+        "Подключение платформ",
+        "Адаптеры платформ",
+        "Адаптеры баз данных",
+        "Свой адаптер",
+        "API платформ",
+        "Classes",
+        "Functions",
+        "Variables",
+        "Interfaces",
+        "Type Aliases",
+        "Enumerations",
+        "*",
+        "Namespaces"
+    ],
     "searchInComments": true,
     "sort": ["kind", "instance-first", "alphabetical"],
     "validation": {

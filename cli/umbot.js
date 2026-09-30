@@ -20,7 +20,9 @@ if (argv[2]) {
     param.hostname = '0.0.0.0';
     param.port = 3000;
     if (argv[3]) {
-        if (argv[3].endsWith('.json')) {
+        // JSON-конфиг проекта читает только create: validate и другие команды получают
+        // свой .json (flow.json) и сами сообщают об ошибках в нём.
+        if (param.command === 'create' && argv[3].endsWith('.json')) {
             if (utils.isFile(argv[3])) {
                 try {
                     const jsonParam = JSON.parse(utils.read(argv[3]));

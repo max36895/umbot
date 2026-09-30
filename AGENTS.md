@@ -70,7 +70,8 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    Encapsulation: Use private fields (#field) for internal class state. The "any" type is prohibited. Use "unknown" with type narrowing or strict interfaces.
 3. Workflow (Strict Algorithm)
    When you receive a code modification task, perform the steps strictly in the specified order. Do not proceed to the next step if the previous one is not completed successfully.
-   Step 3.1 Analysis: Identify the affected files using the structure map from Section 1.
+   Step 3.1 Analysis: Identify the affected files using the structure map from Section 1. Look for an existing spec or notes for the task BEFORE designing (untracked `*.md` in the root from `git status`, `audit/`): finding a spec after the implementation means redoing it.
+   A spec (ТЗ) is input, not truth. For every requirement decide "agree / disagree and why" (does its premise hold in this code? does it contradict its own goal?). A disagreement goes to the user with the reason BEFORE implementing — never follow a wrong requirement silently, never drop one silently.
    Step 3.2 Plan: Formulate a brief plan of changes (which files, what logic).
    Step 3.3 Modification: Make the changes to the code.
    Step 3.4 Persistence check: если с репозиторием могут работать параллельно (IDE, другой агент, аудит-скрипт), после правок проверь, что они физически сохранились (grep по ключевым маркерам правок), и коммить/фиксируй промежуточное состояние до того, как другой процесс сделает checkout/stash. Инструмент правок может отчитаться об успехе, а файл — быть откачен параллельным процессом.
@@ -80,6 +81,7 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    Step 3.6.2: npm run test — Run Jest. Ensure that all tests pass, including new ones.
    Step 3.6.3: npm run prettier — Format code according to .prettierrc.
    Step 3.6.4: npm run lint — Check ESLint. If there are errors, you are responsible for fixing them yourself, not just reporting them.
+   Step 3.6.5: Self-review — run the `umbot-code-review` checklist on your own diff as if someone else wrote it (full functions, skeptical filter, verdict). Green build/tests/lint are the entry ticket, not the verdict. Findings are fixed before the report, not listed as "known limitations". Code whose correctness depends on runtime behaviour (AbortSignal, timers, memory of long-lived objects) is checked on the minimum Node from `engines`, not only on the local one. The report states separately what was NOT verified (live platform APIs, manual scenarios).
    Step 3.7 Commit — only when the user asks for it. Never push unless the user explicitly asks.
    Commit message: the first line is `v-<version> <описание>`, where `<version>` is the CHANGELOG.md section the change belongs to (the topmost not-yet-released section, e.g. `v-3.1.4`), not necessarily the version in package.json. If the change closes an issue, put its URL right after the version: `v-3.1.4 https://github.com/max36895/umbot/issues/NNN <описание>`. The description is in Russian and says what was done — take it from this change's CHANGELOG entries or from the actual diff. For a large change, add a body with a short list of the main items.
    Commit does not mean release: do not change the release date in CHANGELOG.md and do not bump the version in package.json as part of a commit. If the version for the commit is unclear (no suitable CHANGELOG section), ask the user.
@@ -108,6 +110,7 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
 6. Documentation
    Documentation is part of the change, not a follow-up. A change that adds a feature, adds or renames an option, changes default behavior, changes a platform limit, or changes CLI behavior is NOT done until the matching documentation is updated in the same change. "Code now, docs later" is an incomplete task, not a backlog item.
    JSDoc: Required for all public classes, methods, interfaces, and types exported externally. Must contain @param, @returns, and @example.
+   Doc groups: module pages list what a developer needs first via `@group` tags (`Основное`, `Ответ пользователю`, `Хранение данных` in `umbot`; `Подключение платформ`, `Адаптеры платформ`, `Адаптеры баз данных`, `Свой адаптер`, `API платформ` in `umbot/plugins`); their order is `groupOrder` in `typedoc.json`. A new entity of the same kind (a platform adapter, a DB adapter, an API client) gets the same `@group` tag; a new group name must also be added to `groupOrder`.
    Markdown: update every document that describes the surface you touched. The map below is a starting point, not a whitelist — always grep the docs for the old name, default, or limit you changed.
 
     | Changed surface                                                    | Documentation to update                                                                                                                  |
@@ -162,15 +165,15 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
     - **`umbot-write-tests`** — how to write unit tests and integration tests with `BotTest`, how to stub logger, mock fetch, isolate DB.
 9. Platform compatibility matrix (reference for contributors)
 
-    | Platform | Text limit   | Buttons/row | Card types                                | Webhook signature                 |
-    | -------- | ------------ | ----------- | ----------------------------------------- | --------------------------------- |
-    | Alisa    | 1024         | unlimited   | BigImage, ItemsList, ImageGallery (до 10) | (none)                            |
-    | Marusia  | 1024 (≠ ∅)   | unlimited   | BigImage, ItemsList (image_id: int only)  | (none)                            |
-    | Telegram | 4096         | 8           | Photo, MediaGroup                         | `x-telegram-bot-api-secret-token` |
-    | VK       | 4096         | 5           | Carousel                                  | `secret_key` in body              |
-    | Max      | 4000         | 7x30        | Inline keyboard                           | `x-max-bot-api-secret`            |
-    | Viber    | 7000         | 6x7         | RichMedia                                 | `x-viber-content-signature`       |
-    | SmartApp | 250 (bubble) | -           | ListCard                                  | (none)                            |
+    | Platform | Text limit   | Buttons/row | Card types                                | Webhook signature                 | Long polling            |
+    | -------- | ------------ | ----------- | ----------------------------------------- | --------------------------------- | ----------------------- |
+    | Alisa    | 1024         | unlimited   | BigImage, ItemsList, ImageGallery (до 10) | (none)                            | -                       |
+    | Marusia  | 1024 (≠ ∅)   | unlimited   | BigImage, ItemsList (image_id: int only)  | (none)                            | -                       |
+    | Telegram | 4096         | 8           | Photo, MediaGroup                         | `x-telegram-bot-api-secret-token` | `getUpdates` (offset)   |
+    | VK       | 4096         | 5           | Carousel                                  | `secret_key` in body              | Bots Long Poll (ts/key) |
+    | Max      | 4000         | 7x30        | Inline keyboard                           | `x-max-bot-api-secret`            | `GET /updates` (marker) |
+    | Viber    | 7000         | 6x7         | RichMedia                                 | `x-viber-content-signature`       | -                       |
+    | SmartApp | 250 (bubble) | -           | ListCard                                  | (none)                            | -                       |
 
     When changing limits or adding platforms, update this table.
 

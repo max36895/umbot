@@ -98,6 +98,8 @@ interface IState {
  * @see Bot
  * @see BotController
  * @see BasePlatform
+ *
+ * @group Адаптеры платформ
  */
 export class AlisaAdapter extends BasePlatform<string | IAlisaWebhookRequest> {
     /**

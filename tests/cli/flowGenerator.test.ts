@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { generateFromFlow, validateFlowSchema } from './../../cli/flowGenerator';
 import { expectProjectToTypeCheck } from '../helpers/typecheck';
+import { loadEnvFile } from '../../src/utils';
 
 const TEST_DIR = path.join(__dirname, '__test_output__');
 const JSON_DIR = path.join(TEST_DIR, 'json');
@@ -448,6 +449,203 @@ describe('flowGenerator', () => {
             expect(code).toContain(
                 'const errorMessage = e instanceof Error ? e.message : String(e);',
             );
+        });
+    });
+
+    describe('HTTP: заголовки, переменные и секреты', () => {
+        function httpDoc(actions: Record<string, unknown>[], text = 'ok'): object {
+            return {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'send',
+                        slots: ['send'],
+                        actions: actions.map((action) => ({
+                            type: 'http_request',
+                            url: 'https://api.example.com',
+                            ...action,
+                        })),
+                        response: { text, buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [],
+                fallback: { text: 'no' },
+                welcome: { text: 'hi' },
+                database: { type: 'none', config: {} },
+                isLocalStorage: true,
+            };
+        }
+
+        function generateHttp(name: string, action: Record<string, unknown>): string {
+            return writeJsonAndGenerate(name, httpDoc([action]));
+        }
+
+        function readGenerated(name: string, file: string): string {
+            return fs.readFileSync(path.join(TEST_DIR, name, file), 'utf8');
+        }
+
+        let warnSpy: jest.SpyInstance;
+        beforeEach(() => {
+            warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+        });
+        afterEach(() => {
+            warnSpy.mockRestore();
+        });
+
+        it('свои заголовки с телом сохраняют Content-Type: application/json', () => {
+            const code = generateHttp('headers_body', {
+                method: 'POST',
+                headers: '{"Accept": "application/json"}',
+                body: '{"k": "v"}',
+            });
+            expect(code).toContain(
+                `headers: { "Content-Type": 'application/json', "Accept": 'application/json' }`,
+            );
+        });
+
+        it('явный Content-Type пользователя не перезаписывается', () => {
+            const code = generateHttp('headers_ct', {
+                method: 'POST',
+                headers: { 'content-type': 'text/plain' },
+                body: 'raw',
+            });
+            expect(code).toContain(`headers: { "content-type": 'text/plain' }`);
+            expect(code).not.toContain('application/json');
+        });
+
+        it('заголовки объектом передаются в запрос без тела', () => {
+            const code = generateHttp('headers_object', {
+                method: 'GET',
+                headers: { 'X-Trace': 'abc', Bad: { nested: true } },
+            });
+            expect(code).toContain(
+                `fetchWithTimeout('https://api.example.com', { headers: { "X-Trace": 'abc' } })`,
+            );
+        });
+
+        it('некорректные заголовки пропускаются с предупреждением', () => {
+            const code = generateHttp('headers_invalid', {
+                method: 'POST',
+                headers: '{not json',
+                body: '{"k": 1}',
+            });
+            expect(code).toContain(`headers: { "Content-Type": 'application/json' }`);
+            expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('headers'))).toBe(true);
+        });
+
+        it('переменная сценария в URL кодируется encodeURIComponent', () => {
+            const code = generateHttp('url_var', {
+                url: 'https://api.example.com/weather/{{city}}?day={{__currentDate}}',
+            });
+            expect(code).toContain(
+                "fetchWithTimeout(`https://api.example.com/weather/${encodeURIComponent(String(ctrl.userData.city ?? ''))}" +
+                    "?day=${encodeURIComponent(String(new Date().toLocaleDateString('ru-RU')))}`)",
+            );
+        });
+
+        it('адрес сервера из {{env.NAME}} подставляется без кодирования', () => {
+            const code = generateHttp('url_env', { url: '{{env.API_BASE}}/items/{{id}}' });
+            expect(code).toContain(
+                "fetchWithTimeout(`${env('API_BASE')}/items/${encodeURIComponent(String(ctrl.userData.id ?? ''))}`)",
+            );
+            expect(readGenerated('url_env', '.env')).toMatch(/^API_BASE=$/m);
+        });
+
+        it.each([
+            ['https://{{host}}/api', 'хост'],
+            ['{{url}}', 'весь адрес'],
+            ['https://api.example.com{{path}}', 'сразу после хоста без /'],
+        ])('переменная сценария в адресе сервера отклоняется: %s (%s)', (url) => {
+            const jsonPath = path.join(JSON_DIR, 'ssrf.json');
+            fs.writeFileSync(jsonPath, JSON.stringify(httpDoc([{ url }])));
+            expect(validateFlowSchema(jsonPath).join('\n')).toContain('адресе сервера');
+            expect(() => generateFromFlow(jsonPath, path.join(TEST_DIR, 'ssrf'))).toThrow(
+                'адресе сервера',
+            );
+        });
+
+        it('некорректное имя {{env.…}} — ошибка валидации', () => {
+            const jsonPath = path.join(JSON_DIR, 'bad_env.json');
+            fs.writeFileSync(
+                jsonPath,
+                JSON.stringify(httpDoc([{ headers: { 'X-Id': '{{env.MY.KEY}}' } }])),
+            );
+            expect(validateFlowSchema(jsonPath).join('\n')).toContain('{{env.MY.KEY}}');
+        });
+
+        it('секрет в заголовке переносится в .env, в коде остаётся env()', () => {
+            const code = generateHttp('secret_header', {
+                headers: '{"Authorization": "Bearer sk-live-123"}',
+            });
+            expect(code).toContain(
+                `headers: { "Authorization": \`\${env('HTTP_AUTHORIZATION')}\` }`,
+            );
+            expect(code).toContain("import { setText, fetchWithTimeout, env } from './utils';");
+            expect(code).not.toContain('sk-live-123');
+            expect(readGenerated('secret_header', '.env')).toContain(
+                'HTTP_AUTHORIZATION=Bearer sk-live-123',
+            );
+            expect(readGenerated('secret_header', 'src/utils.ts')).toContain(
+                'export function env(name: string): string',
+            );
+            expect(readGenerated('secret_header', 'README.md')).toContain('`HTTP_AUTHORIZATION`');
+            expect(
+                warnSpy.mock.calls.some((c) => String(c[0]).includes('HTTP_AUTHORIZATION')),
+            ).toBe(true);
+            expectProjectToTypeCheck(path.join(TEST_DIR, 'secret_header'));
+        });
+
+        it('секреты в параметре URL и в JSON-теле тоже переносятся (и из комментария к действию)', () => {
+            const code = generateHttp('secret_query_body', {
+                url: 'https://api.example.com/v1?units=metric&api_key=q-777#top',
+                method: 'POST',
+                body: { query: '{{city}}', nested: { token: 'b-888' } },
+            });
+            const all = code + readGenerated('secret_query_body', 'README.md');
+            expect(all).not.toContain('q-777');
+            expect(all).not.toContain('b-888');
+            expect(code).toContain("?units=metric&api_key=${env('HTTP_API_KEY')}#top");
+            expect(code).toContain(`"token": \`\${env('HTTP_TOKEN')}\``);
+            const envFile = readGenerated('secret_query_body', '.env');
+            expect(envFile).toContain('HTTP_API_KEY=q-777');
+            expect(envFile).toContain('HTTP_TOKEN=b-888');
+        });
+
+        it('одинаковый секрет — одна переменная, разные — с суффиксом', () => {
+            const code = writeJsonAndGenerate(
+                'secret_dedup',
+                httpDoc([
+                    { headers: { Authorization: 'Bearer one' } },
+                    { headers: { Authorization: 'Bearer one' } },
+                    { headers: { Authorization: 'Bearer two' } },
+                ]),
+            );
+            expect(code.match(/env\('HTTP_AUTHORIZATION'\)/g)).toHaveLength(2);
+            expect(code).toContain("env('HTTP_AUTHORIZATION_2')");
+            const envFile = readGenerated('secret_dedup', '.env');
+            expect(envFile).toContain('HTTP_AUTHORIZATION=Bearer one');
+            expect(envFile).toContain('HTTP_AUTHORIZATION_2=Bearer two');
+        });
+
+        it('значение с « #» записывается в .env в кавычках и читается фреймворком целиком', () => {
+            writeJsonAndGenerate(
+                'secret_hash',
+                httpDoc([{ headers: { 'X-Api-Key': 'abc #def' } }]),
+            );
+            const envPath = path.join(TEST_DIR, 'secret_hash', '.env');
+            expect(fs.readFileSync(envPath, 'utf8')).toContain('HTTP_X_API_KEY="abc #def"');
+            expect(loadEnvFile(envPath).data?.['HTTP_X_API_KEY']).toBe('abc #def');
+        });
+
+        it('{{env.NAME}} в тексте ответа не раскрывается: секрет не уходит пользователю', () => {
+            const code = writeJsonAndGenerate(
+                'env_in_text',
+                httpDoc([{ headers: { 'X-Id': '{{env.MY_KEY}}' } }], 'Ключ: {{env.MY_KEY}}'),
+            );
+            expect(code).toContain("setText(ctrl, `Ключ: ${ctrl.userData['env.MY_KEY'] ?? ''}`)");
+            expect(code.match(/env\('MY_KEY'\)/g)).toHaveLength(1);
         });
     });
 
@@ -2321,6 +2519,29 @@ describe('flowGenerator', () => {
             ]);
             expect(validateFlowSchema(protoPath).some((error) => error.includes('прототипа'))).toBe(
                 true,
+            );
+        });
+
+        it('отклоняет actions/conditions/buttons/slots не массивом', () => {
+            const jsonPath = writeFlowJson('actions_object', {
+                name: 'test',
+                nodes: [
+                    {
+                        id: 'a',
+                        type: 'action',
+                        name: 'act',
+                        actions: { type: 'set_variable', field: 'x', value: '1' },
+                    },
+                    { id: 'c', type: 'command', name: 'hi', slots: 'hi', conditions: [null] },
+                ],
+            });
+            const errors = validateFlowSchema(jsonPath);
+            expect(errors).toContain('nodes[0]: поле `actions` должно быть массивом');
+            expect(errors).toContain('nodes[1]: поле `slots` должно быть массивом');
+            expect(errors).toContain('nodes[1]: элементы `conditions` должны быть объектами');
+            // Генерация отклоняет такой файл понятной ошибкой, а не «is not iterable».
+            expect(() => generateFromFlow(jsonPath, path.join(TEST_DIR, 'actions_obj'))).toThrow(
+                'должно быть массивом',
             );
         });
 

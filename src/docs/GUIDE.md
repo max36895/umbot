@@ -138,6 +138,23 @@ npm run start
 передайте хост явно: `bot.start('0.0.0.0', 3000)`.
 `npm run start` запускает собранный код из `dist/`, поэтому после любых изменений исходников нужен `npm run build`.
 
+### Запуск без вебхука (long polling)
+
+Для Telegram, VK и MAX бота можно запустить без публичного HTTPS-адреса: `bot.startPolling()` вместо
+`bot.start()`. Бот сам запрашивает обновления у платформы — удобно для локальной разработки.
+
+```ts
+const bot = new Bot();
+bot.use(new TelegramAdapter(process.env.TELEGRAM_TOKEN));
+bot.addCommand('hello', ['привет'], (_text, ctx) => {
+    ctx.text = 'Привет!';
+});
+await bot.startPolling(); // { platforms: ['telegram'] } — только выбранные платформы
+```
+
+Ограничения платформ (вебхук у Telegram, настройка Long Poll API у VK) — в
+[platform-integration](./platform-integration.md#приём-обновлений-вебхук-или-long-polling).
+
 ### CLI-команды
 
 | Команда                                                                 | Что делает                                                                                                              |
@@ -149,6 +166,8 @@ npm run start
 | `npx umbot create from-flow <flow.json> [--output ./path] [--usecloud]` | Создать проект из flow.json (визуальный редактор). Флаг `--usecloud` генерирует конфигурацию для Yandex Cloud Functions |
 | `npx umbot validate <flow.json>`                                        | Проверить корректность flow.json перед генерацией                                                                       |
 | `npx umbot stats --log <path>`                                          | Агрегировать метрики из лога (число строк/ошибок/предупреждений, топ команд, p50/p95/p99 latency)                       |
+| `npx umbot doctor [--env <path>] [--offline]`                           | Проверить проект: Node.js, установленный umbot, `.env` и `.gitignore`, токены платформ и состояние вебхуков             |
+| `npx umbot webhook <telegram\|max> <https-url>`                         | Зарегистрировать вебхук Telegram/MAX с секретом и сохранить секрет в `.env`                                             |
 | `npx umbot generateenv [--force]`                                       | Сгенерировать `.env` в текущей папке (`--force` — перезаписать существующий)                                            |
 | `npx umbot add docker`                                                  | Добавить `Dockerfile` в текущую папку                                                                                   |
 | `npx umbot add deploy`                                                  | Добавить `.github/workflows/deploy.yml`                                                                                 |
@@ -853,7 +872,7 @@ export default function (): IAppParam {
 
 > Практический совет: не смешивайте способы для одной платформы. Либо передавайте токен в конструкторе адаптера
 > и не настраивайте `env`, либо используйте `.env`/`process.env` и создавайте адаптеры без токена
-> (подробнее — в разделе [Конфигурация и безопасность](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_configuration.html)).
+> (подробнее — в разделе [Конфигурация и безопасность](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration)).
 
 ### Содержимое `.env`
 
@@ -893,7 +912,7 @@ DB_NAME=umbot
 > автоматически: `TELEGRAM_WEBHOOK_SECRET`, `MAX_WEBHOOK_SECRET`, `VK_SECRET_KEY`. Для Telegram и MAX секрет создаёт
 > и регистрирует на платформе команда `npx umbot webhook <telegram|max> <https-url>`.
 > Это обязательный шаг для production — см.
-> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_configuration.html#проверка-подписи-вебхука-обязательно-для-production).
+> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration#проверка-подписи-вебхука-обязательно-для-production).
 
 ### Доступ к контексту в рантайме
 
@@ -952,21 +971,21 @@ class Bot<
 
 ### Команды и шаги
 
-| Метод                                           | Назначение                                                                                                                                                                                  |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `addCommand(name, slots, cb, isPattern?): this` | Зарегистрировать команду                                                                                                                                                                    |
-| `removeCommand(name): this`                     | Удалить команду                                                                                                                                                                             |
-| `clearCommands(): this`                         | Очистить все команды                                                                                                                                                                        |
-| `addStep(name, cb): this`                       | Зарегистрировать шаг                                                                                                                                                                        |
-| `removeStep(name): this`                        | Удалить шаг                                                                                                                                                                                 |
-| `clearSteps(): this`                            | Очистить все шаги                                                                                                                                                                           |
-| `addEvent(eventType, cb): this`                 | Зарегистрировать событийный обработчик (`'photo'`, `'callback'`, ...) — срабатывает первым, до шагов и команд                                                                               |
-| `removeEvent(eventType): this`                  | Удалить все обработчики указанного события                                                                                                                                                  |
-| `clearEvents(): this`                           | Удалить все событийные обработчики                                                                                                                                                          |
-| `addAction(actionName, cb): this`               | Обработчик нажатия кнопки по payload — эквивалент `addCommand(actionName, [actionName], cb)` (нормализация payload на Telegram/VK/MAX)                                                      |
-| `addForm(name, options): this`                  | Зарегистрировать многошаговую форму с валидацией полей (подробнее — [api-reference.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_api-reference.html#формы-addform)) |
-| `removeForm(name): this`                        | Удалить форму и все её шаги                                                                                                                                                                 |
-| `clearUse(): this`                              | Удалить все плагины/middleware                                                                                                                                                              |
+| Метод                                           | Назначение                                                                                                                                                          |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `addCommand(name, slots, cb, isPattern?): this` | Зарегистрировать команду                                                                                                                                            |
+| `removeCommand(name): this`                     | Удалить команду                                                                                                                                                     |
+| `clearCommands(): this`                         | Очистить все команды                                                                                                                                                |
+| `addStep(name, cb): this`                       | Зарегистрировать шаг                                                                                                                                                |
+| `removeStep(name): this`                        | Удалить шаг                                                                                                                                                         |
+| `clearSteps(): this`                            | Очистить все шаги                                                                                                                                                   |
+| `addEvent(eventType, cb): this`                 | Зарегистрировать событийный обработчик (`'photo'`, `'callback'`, ...) — срабатывает первым, до шагов и команд                                                       |
+| `removeEvent(eventType): this`                  | Удалить все обработчики указанного события                                                                                                                          |
+| `clearEvents(): this`                           | Удалить все событийные обработчики                                                                                                                                  |
+| `addAction(actionName, cb): this`               | Обработчик нажатия кнопки по payload — эквивалент `addCommand(actionName, [actionName], cb)` (нормализация payload на Telegram/VK/MAX)                              |
+| `addForm(name, options): this`                  | Зарегистрировать многошаговую форму с валидацией полей (подробнее — [api-reference.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference#формы-addform)) |
+| `removeForm(name): this`                        | Удалить форму и все её шаги                                                                                                                                         |
+| `clearUse(): this`                              | Удалить все плагины/middleware                                                                                                                                      |
 
 ### Запуск
 
@@ -2194,9 +2213,9 @@ bot.addCommand('фото', ['фото'], async (_, ctx) => {
 - `answerCallback(text, showAlert?)` — уведомление на нажатие callback-кнопки (вне callback-запроса — warn и `null`).
 - `can(method)` — проверка поддержки метода платформой (у Viber возвращает `false`).
 - Своя платформа подключает фасад переопределением метода адаптера `createApi(controller)` — как, см.
-  [platform-integration.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html), раздел «API платформы».
-- Полная матрица и сигнатуры — в [api-reference.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_api-reference.html), раздел «API платформы», и в
-  [platform-integration.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html).
+  [platform-integration.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration), раздел «API платформы».
+- Полная матрица и сигнатуры — в [api-reference.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference), раздел «API платформы», и в
+  [platform-integration.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration).
 
 ---
 
@@ -2239,7 +2258,7 @@ bot.use(new SmartAppAdapter()); // без токена — аутентифик�
 
 > Нужна своя платформа (Discord, Slack, WhatsApp, корпоративный мессенджер)? `umbot` поддерживает добавление кастомных
 > адаптеров через `BasePlatformAdapter`. Подробное руководство —
-> в [официальной документации](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_adapter_platformAdapter.html).
+> в [официальной документации](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/platformAdapter).
 
 ### Авто-определение платформы
 
@@ -2445,7 +2464,7 @@ multi-process safe. Подходит для production-нагрузок.
 
 Нужна другая БД? `umbot` поддерживает кастомные адаптеры через `BaseDbAdapter` — реализуйте 5 методов (`_select`,
 `_insert`, `_update`, `_remove`, `isConnected`) и зарегистрируйте через `bot.use(new MyAdapter())`. Пример реализации —
-в [официальной документации](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_adapter_dbAdapter.html) и
+в [официальной документации](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/dbAdapter) и
 в `examples/skills/userDbConnect/` репозитория.
 
 ### Что фреймворк хранит в БД автоматически
@@ -2686,7 +2705,7 @@ bot.use(requestId());
 `ipFilter` берёт IP из `platformOptions.clientIp` (заполняется в `webhookHandle` из сокета
 HTTP-запроса; в serverless — третий аргумент `webhookEvent(body, headers, clientIp)`). Без IP запрос по умолчанию
 пропускается (fail-open); опция `rejectWithoutIp: true` его отклоняет.
-Подробности и примеры — в [middleware.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_middleware.html).
+Подробности и примеры — в [middleware.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/middleware).
 
 ### Своё middleware как фабрика
 
@@ -2963,7 +2982,7 @@ adapter.init(appContext);
 Перед запуском в продакшене убедитесь, что всё выполнено:
 
 - [ ] **Режим `strict_prod`** — включен через `bot.setAppMode('strict_prod')`
-- [ ] **Проверка подписи вебхука включена** — задан `tokens.telegram.webhookSecret` / `tokens.max_app.webhookSecret` / `tokens.vk.secret_key`; при старте в логе нет предупреждения «Вебхук принимает запросы платформ [...] БЕЗ проверки подписи». У Алисы/SmartApp/Маруси подписи нет в принципе — не считайте их `userId` аутентифицированной идентичностью. Подробнее — [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_configuration.html#проверка-подписи-вебхука-обязательно-для-production)
+- [ ] **Проверка подписи вебхука включена** — задан `tokens.telegram.webhookSecret` / `tokens.max_app.webhookSecret` / `tokens.vk.secret_key`; при старте в логе нет предупреждения «Вебхук принимает запросы платформ [...] БЕЗ проверки подписи». У Алисы/SmartApp/Маруси подписи нет в принципе — не считайте их `userId` аутентифицированной идентичностью. Подробнее — [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration#проверка-подписи-вебхука-обязательно-для-production)
 - [ ] **Re2 установлен** — `npm install re2` (ускорение RegExp в 2-15 раз)
 - [ ] **MongoAdapter вместо FileAdapter** — FileAdapter хранит данные в памяти, не подходит для production
 - [ ] **Preload для медиа** — все изображения и звуки предзагружены (иначе первый ответ > 1 сек)

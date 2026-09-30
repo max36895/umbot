@@ -30,6 +30,8 @@ import { BasePlugin } from '../../Base';
  * Если по техническим причинам наследование невозможно — ваш класс должен в точности реализовывать интерфейс `IDatabaseAdapter`
  *
  * Важно: в приложении может быть активен только один адаптер БД.
+ *
+ * @group Свой адаптер
  */
 export abstract class Base<TDbInfo extends IDatabaseInfo = IDatabaseInfo>
     extends BasePlugin

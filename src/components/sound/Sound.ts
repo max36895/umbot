@@ -61,6 +61,8 @@ const regReplace = /((?:^|\s)#\w+#(?:\s|$))/g;
  * // Получение текста со звуками (text, soundProcessing, controller)
  * const result = await sound.getSounds('Текст сообщения #myKey#', mySoundProcessing, controller);
  * ```
+ *
+ * @group Ответ пользователю
  */
 export class Sound {
     /**

@@ -69,6 +69,8 @@ export interface ISoundModelState extends IModelState {
  *     console.log('Запись сохранена:', saved);
  * }
  * ```
+ *
+ * @group Хранение данных
  */
 export class SoundTokens extends Model<ISoundModelState> {
     /**

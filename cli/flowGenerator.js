@@ -117,6 +117,29 @@ const START_SLOT = '/start';
 /** Режимы приложения, которые принимает Bot.setAppMode. */
 const APP_MODES = new Set(['dev', 'prod', 'strict_prod']);
 
+/** Поля узла, которые генератор обходит как массивы. */
+const ARRAY_NODE_FIELDS = ['actions', 'conditions', 'buttons', 'slots'];
+
+/** Имя переменной окружения в шаблоне http_request: `{{env.NAME}}`. */
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Ссылки `{{env.…}}` в шаблоне (имя проверяется отдельно, чтобы сообщить об ошибке). */
+const ENV_REF_PATTERN = /\{\{env\.([^{}]*)\}\}/g;
+
+/**
+ * Имена заголовков, параметров URL и ключей JSON-тела, значение которых — секрет.
+ * Такие значения из flow.json генератор переносит в .env, а в код пишет `env('…')`.
+ */
+const SECRET_NAME_PATTERN =
+    /authorization|token|secret|password|passwd|api[-_]?key|access[-_]?key|private[-_]?key|cookie|^key$/i;
+
+/**
+ * Начало URL до конца адреса сервера: схема и хост литералом или `{{env.NAME}}`, затем
+ * `/`, `?` или `#`. Переменные пользователя допустимы только после него.
+ */
+const URL_ORIGIN_PATTERN =
+    /^(?:[a-z][a-z0-9+.-]*:\/\/[^/?#]*|\{\{env\.[A-Za-z_][A-Za-z0-9_]*\}\})[/?#]/i;
+
 /**
  * Первая команда с ролью (welcome/help/fallback). Роль задаётся полем role или именем команды.
  * @param {Object} doc — FlowDocument
@@ -474,10 +497,14 @@ function getSystemVarExpr(name) {
  * Конвертирует текст с {{variable}} в JS template literal.
  * Порядок экранирования: \ → \\, ` → \`, ${ → \${.
  * Затем заменяет {{var}} → ${ctrl.userData.var} или системное выражение.
+ * `{{env.NAME}}` подставляется только с `options.env` (поля http_request): в текстах ответа
+ * переменная окружения не раскрывается, иначе секрет ушёл бы пользователю.
  * @param {string} text — текст с возможными {{variable}}
+ * @param {{env?: boolean, encodeVars?: boolean}} [options] — `env`: раскрывать `{{env.NAME}}`
+ *   через `env()` из utils; `encodeVars`: оборачивать переменные сценария в `encodeURIComponent` (URL)
  * @returns {string} JS-выражение (одинарные кавычки или template literal)
  */
-function textExpr(text) {
+function textExpr(text, options = {}) {
     if (!text) return "''";
     if (text.includes('{{')) {
         // Порядок экранирования: \ → \\, потом ` → \`, потом ${ → \${
@@ -489,20 +516,33 @@ function textExpr(text) {
         escaped = escaped.replace(/\{{4,}([\w.]+)\}{4,}/g, '{{$1}}');
         // Заменяем {{var}} на ${...} — поддерживаем как identifier, так и dotted path (user.name)
         const converted = escaped.replace(/\{\{([\w.]+)\}\}/g, (_, name) => {
+            if (options.env && name.startsWith('env.')) {
+                // Значение окружения задаёт разработчик — подставляется как есть, без кодирования.
+                return `\${env('${escapeStr(name.slice(4))}')}`;
+            }
             if (isSystemVar(name)) {
-                return `\${${getSystemVarExpr(name)}}`;
+                return options.encodeVars
+                    ? `\${encodeURIComponent(String(${getSystemVarExpr(name)}))}`
+                    : `\${${getSystemVarExpr(name)}}`;
             }
             // Переменная ещё не задана — пустая строка, а не «undefined» в тексте
-            return `\${${userDataAccess(name)} ?? ''}`;
+            return options.encodeVars
+                ? `\${encodeURIComponent(String(${userDataAccess(name)} ?? ''))}`
+                : `\${${userDataAccess(name)} ?? ''}`;
         });
         return '`' + converted + '`';
     }
     return `'${escapeStr(text)}'`;
 }
 
+/**
+ * Выражение для значения JSON-тела http_request: строки — через шаблон с `{{var}}` и `{{env.NAME}}`.
+ * @param {unknown} value — значение из разобранного JSON
+ * @returns {string} TypeScript-выражение
+ */
 function templateValueExpr(value) {
     if (typeof value === 'string') {
-        return textExpr(value);
+        return textExpr(value, { env: true });
     }
     if (Array.isArray(value)) {
         return `[${value.map((item) => templateValueExpr(item)).join(', ')}]`;
@@ -515,12 +555,180 @@ function templateValueExpr(value) {
     return JSON.stringify(value);
 }
 
+/**
+ * Выражение тела http_request: JSON собирается объектом (значения пользователя
+ * сериализуются JSON.stringify), не-JSON — шаблонной строкой.
+ * @param {string} body — тело из flow
+ * @returns {string} TypeScript-выражение
+ */
 function httpBodyExpr(body) {
     try {
         return `JSON.stringify(${templateValueExpr(JSON.parse(String(body)))})`;
     } catch {
-        return textExpr(String(body));
+        return textExpr(String(body), { env: true });
     }
+}
+
+/**
+ * Объект заголовков http_request в виде TypeScript-литерала: имена — строками,
+ * значения — шаблоном с `{{var}}` и `{{env.NAME}}`.
+ * @param {Record<string, string>} headers — заголовки
+ * @returns {string} TypeScript-выражение
+ */
+function httpHeadersExpr(headers) {
+    return `{ ${Object.entries(headers)
+        .map(([name, value]) => `${JSON.stringify(name)}: ${textExpr(value, { env: true })}`)
+        .join(', ')} }`;
+}
+
+/**
+ * Проверяет, что переменные сценария в URL http_request стоят после адреса сервера.
+ * Иначе ввод пользователя бота выбирал бы сервер, к которому ходит бот (SSRF).
+ * @param {string} url — URL из flow
+ * @returns {string|null} текст ошибки или null
+ */
+function getUrlOriginError(url) {
+    const firstVar = /\{\{(?!env\.)[\w.]+\}\}/.exec(url);
+    if (!firstVar || URL_ORIGIN_PATTERN.test(url.slice(0, firstVar.index))) {
+        return null;
+    }
+    return (
+        `переменная ${firstVar[0]} стоит в адресе сервера URL "${url}". Переменные сценария ` +
+        'допустимы только после хоста (в пути и параметрах); адрес сервера задайте литералом или {{env.NAME}}'
+    );
+}
+
+/**
+ * Обходит действия http_request всех узлов.
+ * @param {Object} doc — FlowDocument
+ * @param {(action: Object, node: Object) => void} callback — обработчик действия
+ */
+function forEachHttpAction(doc, callback) {
+    for (const node of doc.nodes || []) {
+        if (!node || !Array.isArray(node.actions)) continue;
+        for (const action of node.actions) {
+            if (action && action.type === 'http_request') callback(action, node);
+        }
+    }
+}
+
+/**
+ * Значение для строки .env: в кавычках, если без них `loadEnvFile` исказил бы его
+ * (« #» начинает комментарий, кавычки по краям снимаются, пробелы по краям обрезаются).
+ * @param {string} value — значение
+ * @returns {string} значение для записи после «=»
+ */
+function formatEnvValue(value) {
+    const clean = String(value).replace(/[\r\n\0]+/g, '');
+    const needsQuotes = /\s#|^\s|\s$|^["']|["']$/.test(clean);
+    if (!needsQuotes) return clean;
+    return clean.includes('"') ? `'${clean}'` : `"${clean}"`;
+}
+
+/**
+ * Переносит секреты из http_request в переменные окружения: значения заголовков,
+ * параметров URL и ключей JSON-тела с «секретными» именами (Authorization, api_key, token…)
+ * заменяются на `{{env.HTTP_…}}`, а сами значения возвращаются для записи в .env.
+ * Иначе ключ API из flow.json оказался бы открытым текстом в src/index.ts и в git.
+ * Меняет doc: заголовки приводятся к объекту, тело — к JSON-строке.
+ * @param {Object} doc — FlowDocument (уже провалидированный)
+ * @returns {{secrets: Array<{envName: string, value: string}>, envNames: string[]}}
+ *   секреты для .env и все имена `{{env.NAME}}`, на которые ссылаются запросы
+ */
+function extractHttpSecrets(doc) {
+    const valuesByName = new Map();
+    const secrets = [];
+    const toEnvRef = (fieldName, value, node, where) => {
+        const base =
+            'HTTP_' +
+            String(fieldName)
+                .toUpperCase()
+                .replace(/[^A-Z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '');
+        let envName = base;
+        for (let i = 2; valuesByName.has(envName) && valuesByName.get(envName) !== value; i++) {
+            envName = `${base}_${i}`;
+        }
+        if (!valuesByName.has(envName)) {
+            valuesByName.set(envName, value);
+            secrets.push({ envName, value: formatEnvValue(value) });
+        }
+        console.warn(
+            `  Блок "${node.name || node.id}": ${where} «${fieldName}» — секрет, он перенесён в .env как ${envName}.`,
+        );
+        return `{{env.${envName}}}`;
+    };
+    const isLiteralSecret = (name, value) =>
+        SECRET_NAME_PATTERN.test(name) &&
+        typeof value === 'string' &&
+        value !== '' &&
+        !value.includes('{{');
+    const replaceInBody = (value, node) => {
+        if (Array.isArray(value)) return value.map((item) => replaceInBody(item, node));
+        if (!value || typeof value !== 'object') return value;
+        const out = {};
+        for (const [key, item] of Object.entries(value)) {
+            out[key] = isLiteralSecret(key, item)
+                ? toEnvRef(key, item, node, 'поле тела')
+                : replaceInBody(item, node);
+        }
+        return out;
+    };
+
+    forEachHttpAction(doc, (action, node) => {
+        const headers = parseHttpHeaders(action.headers, node.name || action.url);
+        if (headers) {
+            for (const [name, value] of Object.entries(headers)) {
+                if (isLiteralSecret(name, value)) {
+                    headers[name] = toEnvRef(name, value, node, 'заголовок');
+                }
+            }
+        }
+        action.headers = headers;
+
+        if (typeof action.url === 'string' && action.url.includes('?')) {
+            const hashIndex = action.url.indexOf('#');
+            const end = hashIndex === -1 ? action.url.length : hashIndex;
+            const queryStart = action.url.indexOf('?');
+            if (queryStart < end) {
+                const query = action.url
+                    .slice(queryStart + 1, end)
+                    .split('&')
+                    .map((pair) => {
+                        const eq = pair.indexOf('=');
+                        if (eq === -1) return pair;
+                        const name = pair.slice(0, eq);
+                        const value = pair.slice(eq + 1);
+                        return isLiteralSecret(name, value)
+                            ? `${name}=${toEnvRef(name, value, node, 'параметр URL')}`
+                            : pair;
+                    })
+                    .join('&');
+                action.url = action.url.slice(0, queryStart + 1) + query + action.url.slice(end);
+            }
+        }
+
+        if (action.body && typeof action.body === 'object') {
+            action.body = JSON.stringify(replaceInBody(action.body, node));
+        } else if (typeof action.body === 'string') {
+            try {
+                action.body = JSON.stringify(replaceInBody(JSON.parse(action.body), node));
+            } catch {
+                // Тело не JSON — секреты в произвольном тексте не распознаются.
+            }
+        }
+    });
+
+    const envNames = new Set();
+    forEachHttpAction(doc, (action) => {
+        const texts = [action.url, action.body, ...Object.values(action.headers || {})];
+        for (const text of texts) {
+            for (const match of String(text ?? '').matchAll(ENV_REF_PATTERN)) {
+                envNames.add(match[1]);
+            }
+        }
+    });
+    return { secrets, envNames: [...envNames] };
 }
 
 /**
@@ -678,6 +886,38 @@ function getHttpMethod(value) {
 }
 
 /**
+ * Разбирает заголовки http_request: JSON-строку (формат редактора) или объект.
+ * Нестроковые значения отбрасываются — в сгенерированный код попадают только строки.
+ * @param {unknown} raw — поле headers из flow
+ * @param {string} blockName — имя блока для предупреждения
+ * @returns {Record<string, string>|null} заголовки или null, если их нет или они некорректны
+ */
+function parseHttpHeaders(raw, blockName) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    let parsed = raw;
+    if (typeof raw === 'string') {
+        try {
+            parsed = JSON.parse(raw);
+        } catch {
+            parsed = null;
+        }
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        console.warn(
+            `  Блок "${blockName}": поле headers http_request не является JSON-объектом и пропущено.`,
+        );
+        return null;
+    }
+    const headers = {};
+    for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === 'string' || typeof value === 'number') {
+            headers[key] = String(value);
+        }
+    }
+    return Object.keys(headers).length ? headers : null;
+}
+
+/**
  * Генерирует код для блока действия (random_number, set_variable, http_request).
  * @param {Object} block — блок действия из FlowDocument
  * @param {string[]} varNames — имена переменных для ограниченных выражений
@@ -705,14 +945,9 @@ function generateActionFunc(block, varNames, indent) {
         case 'http_request':
             if (block.url) {
                 const method = getHttpMethod(block.method);
-                let safeHeaders = null;
-                if (block.headers && block.headers !== '{}') {
-                    try {
-                        safeHeaders = JSON.stringify(JSON.parse(block.headers));
-                    } catch {
-                        safeHeaders = '{}';
-                    }
-                }
+                const headers = parseHttpHeaders(block.headers, block.name || block.url);
+                // Переменные сценария в URL кодируются: ввод пользователя не меняет путь и параметры.
+                const urlExpr = textExpr(String(block.url), { env: true, encodeVars: true });
                 // Обрабатываем body как строку или объект
                 let body = block.body;
                 if (body && typeof body === 'object') {
@@ -722,15 +957,19 @@ function generateActionFunc(block, varNames, indent) {
 
                 lines.push(`${indent}try {`);
                 if (method !== 'GET' && body) {
+                    // Свои заголовки не отменяют Content-Type: без него fetch отправит тело
+                    // как text/plain, и JSON-парсер API его не увидит.
+                    const hasContentType = Object.keys(headers || {}).some(
+                        (key) => key.toLowerCase() === 'content-type',
+                    );
+                    const bodyHeaders = hasContentType
+                        ? headers
+                        : { 'Content-Type': 'application/json', ...headers };
                     const fetchOpts = [`method: '${method}'`];
-                    if (safeHeaders) {
-                        fetchOpts.push(`headers: ${safeHeaders}`);
-                    } else {
-                        fetchOpts.push(`headers: { 'Content-Type': 'application/json' }`);
-                    }
+                    fetchOpts.push(`headers: ${httpHeadersExpr(bodyHeaders)}`);
                     fetchOpts.push(`body: ${httpBodyExpr(body)}`);
                     lines.push(
-                        `${indent}    const response = await fetchWithTimeout('${escapeStr(block.url)}', { ${fetchOpts.join(', ')} });`,
+                        `${indent}    const response = await fetchWithTimeout(${urlExpr}, { ${fetchOpts.join(', ')} });`,
                     );
                 } else {
                     // Запрос без body: метод всё равно нужен для POST/PUT/PATCH/DELETE.
@@ -738,12 +977,12 @@ function generateActionFunc(block, varNames, indent) {
                     if (method !== 'GET') {
                         fetchOpts.push(`method: '${method}'`);
                     }
-                    if (safeHeaders) {
-                        fetchOpts.push(`headers: ${safeHeaders}`);
+                    if (headers) {
+                        fetchOpts.push(`headers: ${httpHeadersExpr(headers)}`);
                     }
                     const optsStr = fetchOpts.length > 0 ? `, { ${fetchOpts.join(', ')} }` : '';
                     lines.push(
-                        `${indent}    const response = await fetchWithTimeout('${escapeStr(block.url)}'${optsStr});`,
+                        `${indent}    const response = await fetchWithTimeout(${urlExpr}${optsStr});`,
                     );
                 }
                 lines.push(
@@ -1311,13 +1550,6 @@ function findNextNonBlockNode(doc, fromId) {
     return null;
 }
 
-/**
- * Главная функция генерации. Создаёт полный src/index.ts из FlowDocument.
- * @param {Object} doc — FlowDocument с узлами, рёбрами и настройками
- * @param {boolean} [useCloud=false] — генерировать Yandex Cloud Function handler вместо bot.start()
- * @param {string} [outputPath='.'] — корень генерируемого проекта (для переноса Mongo-кредов в .env)
- * @returns {string} содержимое src/index.ts
- */
 /** Операторы условий, для которых генерируется не isEqual, а собственное выражение. */
 const NON_EQUALITY_OPERATORS = new Set([
     'gt',
@@ -1349,6 +1581,27 @@ function usesEqualityCondition(doc) {
     );
 }
 
+/**
+ * Ссылаются ли запросы http_request на переменные окружения `{{env.NAME}}`.
+ * @param {Object} doc — FlowDocument
+ * @returns {boolean} true, если в utils.ts нужен хелпер env()
+ */
+function usesHttpEnv(doc) {
+    let found = false;
+    forEachHttpAction(doc, (action) => {
+        const texts = [action.url, action.body, ...Object.values(action.headers || {})];
+        found ||= texts.some((text) => String(text ?? '').includes('{{env.'));
+    });
+    return found;
+}
+
+/**
+ * Главная функция генерации. Создаёт полный src/index.ts из FlowDocument.
+ * @param {Object} doc — FlowDocument с узлами, рёбрами и настройками
+ * @param {boolean} [useCloud=false] — генерировать Yandex Cloud Function handler вместо bot.start()
+ * @param {string} [outputPath='.'] — корень генерируемого проекта (для переноса Mongo-кредов в .env)
+ * @returns {string} содержимое src/index.ts
+ */
 function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     const lines = [];
     const varNames = collectVarNames(doc);
@@ -1484,6 +1737,7 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     if (needsTTS) utilsImports.push('setTTS');
     if (usesEqualityCondition(doc)) utilsImports.push('isEqual');
     if (needsHttp) utilsImports.push('fetchWithTimeout');
+    if (usesHttpEnv(doc)) utilsImports.push('env');
     lines.push(`import { ${utilsImports.join(', ')} } from './utils';`);
 
     // Обработка платформ
@@ -2073,8 +2327,7 @@ function generateGitIgnore() {
 }
 
 /** Документация по подключению платформ (webhook, токены, проверка подписи). */
-const PLATFORM_DOCS_URL =
-    'https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html';
+const PLATFORM_DOCS_URL = 'https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration';
 
 /** Как подключить платформу: где взять токен и куда указать адрес вебхука. */
 const PLATFORM_README = {
@@ -2144,7 +2397,7 @@ const PLATFORM_README = {
  * @param {boolean} useCloud — проект для Yandex Cloud Functions
  * @returns {string} содержимое README.md
  */
-function generateReadme(doc, useCloud) {
+function generateReadme(doc, useCloud, httpEnvNames = []) {
     const platforms = (Array.isArray(doc.platforms) ? doc.platforms : []).filter(
         (p) => PLATFORM_README[p],
     );
@@ -2183,6 +2436,16 @@ function generateReadme(doc, useCloud) {
         out.push('- платформы в flow.json не выбраны — добавьте нужные токены вручную');
     }
     out.push('');
+    if (httpEnvNames.length > 0) {
+        out.push(
+            'HTTP-запросы сценария читают переменные окружения (сначала окружение процесса, затем `.env`):',
+        );
+        out.push('');
+        for (const name of httpEnvNames) {
+            out.push(`- \`${name}\``);
+        }
+        out.push('');
+    }
     if (useCloud) {
         out.push('## 3. Деплой в Yandex Cloud Functions');
         out.push('');
@@ -2239,10 +2502,29 @@ function generateReadme(doc, useCloud) {
     return out.join('\n');
 }
 
-/** Генерирует src/utils.ts с setText, setTTS и fetchWithTimeout (для http_request-блоков). @returns {string} содержимое файла */
-function generateUtils() {
-    return `import { BotController } from 'umbot';
+/**
+ * Генерирует src/utils.ts с setText, setTTS, fetchWithTimeout и — если запросы используют
+ * `{{env.NAME}}` — хелпером env().
+ * @param {{needsEnv?: boolean}} [options] — нужен ли хелпер env()
+ * @returns {string} содержимое файла
+ */
+function generateUtils(options = {}) {
+    const envHelper = options.needsEnv
+        ? `
+/** Переменные из .env проекта: файл читается один раз при запуске тем же разбором, что в umbot. */
+const envFile = loadEnvFile('./.env').data ?? {};
 
+/**
+ * Значение переменной окружения для HTTP-запросов сценария: сначала окружение процесса
+ * (Docker, serverless), затем .env. Пустая строка — переменная не задана.
+ */
+export function env(name: string): string {
+    return process.env[name] || envFile[name] || '';
+}
+`
+        : '';
+    return `import { BotController${options.needsEnv ? ', loadEnvFile' : ''} } from 'umbot';
+${envHelper}
 /**
  * Установить текст ответа. Если текст уже задан — добавляет через \\n.
  */
@@ -2353,6 +2635,10 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
     if (!doc.platforms || !Array.isArray(doc.platforms)) doc.platforms = ['telegram'];
     if (!doc.database) doc.database = { type: 'file', config: {} };
 
+    // Секреты из http_request переносятся в .env до генерации кода: в src/index.ts
+    // (включая комментарии с URL) остаются только ссылки env('…').
+    const httpEnv = extractHttpSecrets(doc);
+
     // Валидация имён переменных
     const warnings = [];
     for (const node of doc.nodes) {
@@ -2405,13 +2691,17 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
         generateIndexTs(doc, options.useCloud, outputPath),
         'utf8',
     );
-    fs.writeFileSync(path.join(srcDir, 'utils.ts'), generateUtils(), 'utf8');
+    fs.writeFileSync(
+        path.join(srcDir, 'utils.ts'),
+        generateUtils({ needsEnv: httpEnv.envNames.length > 0 }),
+        'utf8',
+    );
     fs.writeFileSync(path.join(outputPath, 'package.json'), generatePackageJson(doc), 'utf8');
     fs.writeFileSync(path.join(outputPath, 'tsconfig.json'), generateTsConfig(), 'utf8');
     fs.writeFileSync(path.join(outputPath, '.gitignore'), generateGitIgnore(), 'utf8');
     fs.writeFileSync(
         path.join(outputPath, 'README.md'),
-        generateReadme(doc, !!options.useCloud),
+        generateReadme(doc, !!options.useCloud, httpEnv.envNames),
         'utf8',
     );
 
@@ -2466,6 +2756,8 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
     const envResult = mergeEnvFile(path.join(outputPath, '.env'), [
         ...tokenEntries,
         ...platformEntries,
+        ...httpEnv.secrets,
+        ...httpEnv.envNames.map((envName) => ({ envName, value: '' })),
     ]);
     if (envResult.created) {
         console.log('  .env');
@@ -2694,10 +2986,50 @@ function validateFlowSchema(flowJsonPath) {
             if (!n.type) {
                 errors.push(`nodes[${idx}]: отсутствует \`type\``);
             }
+            // Генератор обходит эти поля как массивы: объект вместо массива проходил
+            // валидацию, но ронял генерацию с «is not iterable».
+            for (const field of ARRAY_NODE_FIELDS) {
+                const value = n[field];
+                if (value === undefined || value === null) continue;
+                if (!Array.isArray(value)) {
+                    errors.push(`nodes[${idx}]: поле \`${field}\` должно быть массивом`);
+                } else if (
+                    field !== 'slots' &&
+                    value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))
+                ) {
+                    errors.push(`nodes[${idx}]: элементы \`${field}\` должны быть объектами`);
+                }
+            }
             if (n.saveTo && !/^[\w.]+$/.test(n.saveTo)) {
                 errors.push(
                     `nodes[${idx}]: saveTo="${n.saveTo}" — некорректный идентификатор (используйте [a-zA-Z0-9_.]+)`,
                 );
+            }
+            if (Array.isArray(n.actions)) {
+                n.actions.forEach((action, actionIdx) => {
+                    if (!action || action.type !== 'http_request') return;
+                    const where = `nodes[${idx}].actions[${actionIdx}]`;
+                    if (typeof action.url === 'string') {
+                        const originError = getUrlOriginError(action.url);
+                        if (originError) errors.push(`${where}: ${originError}`);
+                    }
+                    const texts = [
+                        action.url,
+                        typeof action.body === 'object' ? JSON.stringify(action.body) : action.body,
+                        typeof action.headers === 'object'
+                            ? JSON.stringify(action.headers)
+                            : action.headers,
+                    ];
+                    for (const text of texts) {
+                        for (const match of String(text ?? '').matchAll(ENV_REF_PATTERN)) {
+                            if (!ENV_NAME_PATTERN.test(match[1])) {
+                                errors.push(
+                                    `${where}: {{env.${match[1]}}} — некорректное имя переменной окружения (латиница, цифры, _)`,
+                                );
+                            }
+                        }
+                    }
+                });
             }
             const variableNames = [
                 n.saveTo,

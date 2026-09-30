@@ -429,6 +429,8 @@ export interface IControllerApi {
  * ```
  * @see {@link action} – переопределите этот метод, чтобы добавить свою логику.
  * @see см. класс Bot в umbot — основной класс приложения, управляющий адаптерами и контроллерами.
+ *
+ * @group Основное
  */
 export abstract class BotController<
     TUserData extends IUserData = IUserData,

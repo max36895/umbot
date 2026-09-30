@@ -45,7 +45,7 @@
 поля с типами (`string` с `maxLength` / `text`) и наборы полей для индексов. Метод должен быть идемпотентным
 (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`); при сбое верните `false` или бросьте исключение —
 фреймворк запишет ошибку в лог и продолжит работу. Полный пример для PostgreSQL — в
-[спецификации внешних адаптеров](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_adapter_external-db-adapter-spec.html).
+[спецификации внешних адаптеров](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/external-db-adapter-spec).
 
 ## Форматы данных (Шпаргалка):
 

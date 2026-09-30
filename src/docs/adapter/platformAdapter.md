@@ -34,6 +34,7 @@ import { BotController, Text } from 'umbot'; // BotController и Text экспо
 | `isSignatureSupported()`                                 | нет                  | `true`, если задан `signatureName` или переопределён `isSignatureCheckEnabled` | Есть ли у платформы механизм подписи вебхука; платформы без него не попадают в предупреждение при старте          |
 | `getDeliveryId(query)`                                   | нет                  | не задан (дедупликации нет)                                                    | ID доставки вебхука для дедупликации повторов (см. «Дедупликация повторных доставок»)                             |
 | `getResponseTimeout()`                                   | нет                  | `null` (срока нет)                                                             | Сколько платформа ждёт ответа, мс (см. «Срок ответа платформы»)                                                   |
+| `getUpdates(signal)`                                     | нет                  | не задан (polling недоступен)                                                  | Один запрос long polling за новыми обновлениями (см. «Long polling»)                                              |
 | `limit`                                                  | нет                  | `null`                                                                         | Лимит запросов/сек для middleware `rateLimiter`                                                                   |
 | `isLocalStorage` / `getLocalStorage` / `setLocalStorage` | нет                  | `false` / `null` / пусто                                                       | Хранилище состояния на стороне платформы                                                                          |
 | `getQueryExample(query, userId, count, state)`           | нет                  | generic-заглушка                                                               | Пример запроса платформы для `BotTest`                                                                            |
@@ -215,6 +216,47 @@ getDeliveryId(query: IMyUpdate): string | null {
 class MyVoiceAdapter extends BasePlatform {
     getResponseTimeout(): number | null {
         return this.MAX_TIME_REQUEST;
+    }
+}
+```
+
+### Long polling (`getUpdates`)
+
+Если платформа отдаёт обновления по запросу, реализуйте `getUpdates(signal)` — тогда бота можно запустить
+`bot.startPolling()` без публичного адреса. Ядро вызывает метод в цикле и обрабатывает каждое обновление как
+запрос вебхука (`setQueryData`, middleware, команды), но без `isCorrectQuery`: обновление получено от API по токену.
+
+- Позицию чтения (`offset`, `marker`, `ts`) храните в адаптере: следующий вызов возвращает обновления после отданных.
+- Запрос обязан завершаться по `signal`, иначе `bot.stopPolling()` и `bot.close()` ждут окончания долгого запроса.
+  Передавайте его через `request.signal` встроенного `Request`, а не `AbortSignal.any([signal, ...])`: сигнал
+  живёт весь сеанс polling, и в Node 20 `AbortSignal.any()` копит на нём память с каждым запросом.
+- Временную ошибку (сеть, 5xx) бросайте исключением — ядро повторит вызов с паузой от 1 до 30 секунд. Если polling
+  невозможен (неверный токен, конфликт с вебхуком), запишите причину в лог и верните `null`: ядро остановит цикл.
+- Ответ пользователю в режиме polling уходит только через API платформы: тело `getContent` никто не получит.
+
+```ts
+class MyAdapter extends BasePlatform {
+    #offset = 0;
+
+    async getUpdates(signal: AbortSignal): Promise<unknown[] | null> {
+        const request = new Request(this.appContext as AppContext);
+        request.maxTimeQuery = 35_000; // дольше, чем платформа держит запрос (25 с)
+        request.signal = signal;
+        const res = await request.send<{ id: number }[]>(
+            `https://api.example.com/updates?offset=${this.#offset}&timeout=25`,
+        );
+        if (res.httpStatus === 401) {
+            this.appContext?.logError('MyAdapter: неверный токен, polling остановлен.');
+            return null;
+        }
+        if (!res.status || !res.data) {
+            throw new Error(`HTTP ${res.httpStatus ?? 'нет ответа'}`);
+        }
+        const updates = res.data;
+        if (updates.length) {
+            this.#offset = updates[updates.length - 1].id + 1;
+        }
+        return updates;
     }
 }
 ```

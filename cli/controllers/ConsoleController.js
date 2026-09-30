@@ -4,6 +4,7 @@ const CreateController = require(path.join(__dirname, 'CreateController.js')).cr
 const utils = require(path.join(__dirname, '..', 'utils.js')).utils;
 const flowGenerator = require(path.join(__dirname, '..', 'flowGenerator.js'));
 const { setupWebhook } = require(path.join(__dirname, 'WebhookController.js'));
+const { runDoctor } = require(path.join(__dirname, 'DoctorController.js'));
 const fs = require('node:fs');
 
 const VERSION = require(path.join(__dirname, '..', '..', 'package.json')).version;
@@ -108,7 +109,7 @@ function generateEnv(force = false, fileName = '.env') {
 
 /**
  * Консольный контроллер CLI: маршрутизирует команды create (в т.ч. from-flow), validate,
- * stats, generateEnv, add и version.
+ * stats, doctor, webhook, generateEnv, add и version.
  * @param param
  * @param argv
  */
@@ -126,6 +127,9 @@ async function main(
         '\n - validate <flow.json> - Проверить корректность flow.json перед генерацией' +
         '\n - stats --log <path> - Агрегировать метрики из лога (число строк/ошибок/предупреждений, топ команд, p50/p95/p99 latency)' +
         '\n - generateEnv - Сгенерировать файл .env' +
+        '\n - doctor [--env <path>] [--offline] - Проверить проект: версию Node.js, установленный umbot, .env и .gitignore, токены платформ (запросом к API) и состояние вебхуков. Токены в вывод не попадают' +
+        '\n\t --env      Путь к .env (по умолчанию ./.env)' +
+        '\n\t --offline  Не обращаться к API платформ' +
         '\n - webhook <telegram|max> <https-url> - Зарегистрировать вебхук с секретом. Секрет генерируется, сохраняется в .env (TELEGRAM_WEBHOOK_SECRET / MAX_WEBHOOK_SECRET) и включает проверку подписи. Токен берётся из .env' +
         '\n - add <feature> - Добавляет данные в проект. Доступные типы: ' +
         '\n\t docker  Добавляет Dockerfile и .dockerignore' +
@@ -401,6 +405,23 @@ async function main(
                             ? 'Секрет вебхука сгенерирован и сохранён в .env. Перезапустите бота, чтобы включилась проверка подписи.'
                             : 'Использован секрет вебхука из .env или окружения.',
                     );
+                } catch (e) {
+                    console.error(`Ошибка: ${e.message}`);
+                    process.exitCode = 1;
+                }
+                break;
+            }
+
+            case 'doctor': {
+                const envIdx = argv.indexOf('--env');
+                try {
+                    const { errors } = await runDoctor({
+                        envPath: envIdx !== -1 ? argv[envIdx + 1] : undefined,
+                        offline: argv.includes('--offline'),
+                    });
+                    if (errors > 0) {
+                        process.exitCode = 1;
+                    }
                 } catch (e) {
                     console.error(`Ошибка: ${e.message}`);
                     process.exitCode = 1;

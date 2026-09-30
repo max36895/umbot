@@ -26,18 +26,19 @@ my-bot/
 
 ## Файлы
 
-| Файл                               | Назначение                                                                                                                                            |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flowGenerator.js`                 | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.                              |
-| `umbot.js`                         | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                                                |
-| `controllers/ConsoleController.js` | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                                         |
-| `controllers/CreateController.js`  | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                                        |
-| `controllers/WebhookController.js` | Команда `webhook`: регистрирует вебхук Telegram/MAX с секретом и пишет секрет в `.env` только после успеха.                                           |
-| `utils.js`, `index.ts`             | Файловые хелперы CLI и TS-обёртка.                                                                                                                    |
-| `template/`                        | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`, `gitignore.text`. |
+| Файл                               | Назначение                                                                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flowGenerator.js`                 | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.                                |
+| `umbot.js`                         | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                                                  |
+| `controllers/ConsoleController.js` | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                                           |
+| `controllers/CreateController.js`  | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                                          |
+| `controllers/WebhookController.js` | Команда `webhook`: регистрирует вебхук Telegram/MAX с секретом и пишет секрет в `.env` только после успеха.                                             |
+| `controllers/DoctorController.js`  | Команда `doctor`: Node.js, umbot в node_modules, `.env`/`.gitignore`, токены платформ по API, состояние вебхуков. Токены не выводит, код 1 при ошибках. |
+| `utils.js`, `index.ts`             | Файловые хелперы CLI и TS-обёртка.                                                                                                                      |
+| `template/`                        | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`, `gitignore.text`.   |
 
 Тесты: каталог `tests/cli/` (Jest) — `flowGenerator`, `flowGeneratorUserScenario`, `flowUtilsIsEqual`,
-`createController`, `consoleController`, `deploySanitize`. При изменении генератора или шаблонов добавляй проверку
+`createController`, `consoleController`, `deploySanitize`, `webhookController`, `doctorController`. При изменении генератора или шаблонов добавляй проверку
 именно того кода/файла, который получит пользователь.
 
 Воркфлоу правок в `cli/` (что проверить, что обновить, чем верифицировать) — скилл `umbot-cli-change`.
@@ -48,25 +49,28 @@ my-bot/
 
 ### Ключевые функции
 
-| Функция                                        | Назначение                                                                   |
-| ---------------------------------------------- | ---------------------------------------------------------------------------- |
-| `escapeStr(s)`                                 | Экранирует строки (кавычки, бэктики, $, переносы).                           |
-| `isValidJSIdentifier(name)`                    | Проверяет, является ли строка валидным JS-идентификатором.                   |
-| `userDataAccess(name)`                         | Безопасное обращение к userData: `ctrl.userData.x` или `ctrl.userData['x']`. |
-| `textExpr(text)`                               | Конвертирует `{{var}}` → `` `${ctrl.userData.var}` `` (template literal).    |
-| `collectVarNames(doc)`                         | Собирает имена переменных из всех узлов.                                     |
-| `parseArithmeticExpression(expr, varNames)`    | Разбирает ограниченную арифметику flow без исполнения произвольного кода.    |
-| `generateActionFunc(block, varNames, indent)`  | Генерирует код действия (set_variable, random_number, http_request).         |
-| `generateConditionFunc(cond, ...)`             | Генерирует `if/else` из условия (7 параметров).                              |
-| `generateButtonCode(buttons, indent, shuffle)` | Генерирует `addBtn()` / `addLink()`.                                         |
-| `generateCardCode(card, indent)`               | Генерирует `card.addImage()`.                                                |
-| `generateBlockFunc(block, ...)`                | Генерирует функцию `__name(ctrl)` из блока (5 параметров).                   |
-| `findNextNonBlockNode(doc, fromId)`            | Ищет следующий command/step в цепочке (лимит 20).                            |
-| `generateIndexTs(doc)`                         | Главная функция. Генерирует полный `src/index.ts`.                           |
-| `generateUtils()`                              | Генерирует `src/utils.ts` с setText/setTTS/fetchWithTimeout.                 |
-| `generatePackageJson(doc)`                     | Генерирует `package.json`.                                                   |
-| `generateTsConfig()`                           | Генерирует `tsconfig.json`.                                                  |
-| `generateFromFlow(flowJsonPath, outputPath)`   | Точка входа: читает JSON, вызывает все генераторы, записывает файлы.         |
+| Функция                                        | Назначение                                                                                                                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `escapeStr(s)`                                 | Экранирует строки (кавычки, бэктики, $, переносы).                                                                                                                 |
+| `isValidJSIdentifier(name)`                    | Проверяет, является ли строка валидным JS-идентификатором.                                                                                                         |
+| `userDataAccess(name)`                         | Безопасное обращение к userData: `ctrl.userData.x` или `ctrl.userData['x']`.                                                                                       |
+| `textExpr(text, options?)`                     | `{{var}}` → `` `${ctrl.userData.var}` ``; `options.env` — `{{env.NAME}}` → `env('NAME')` (только http_request), `options.encodeVars` — `encodeURIComponent` (URL). |
+| `extractHttpSecrets(doc)`                      | До генерации переносит секреты http_request (заголовки, параметры URL, ключи JSON-тела) в `.env` как `HTTP_*`, в doc — `{{env.HTTP_*}}`.                           |
+| `getUrlOriginError(url)`                       | Ошибка `validate`, если переменная сценария стоит в адресе сервера URL (SSRF).                                                                                     |
+| `httpHeadersExpr(headers)`                     | Литерал заголовков с шаблонами значений.                                                                                                                           |
+| `collectVarNames(doc)`                         | Собирает имена переменных из всех узлов.                                                                                                                           |
+| `parseArithmeticExpression(expr, varNames)`    | Разбирает ограниченную арифметику flow без исполнения произвольного кода.                                                                                          |
+| `generateActionFunc(block, varNames, indent)`  | Генерирует код действия (set_variable, random_number, http_request).                                                                                               |
+| `generateConditionFunc(cond, ...)`             | Генерирует `if/else` из условия (7 параметров).                                                                                                                    |
+| `generateButtonCode(buttons, indent, shuffle)` | Генерирует `addBtn()` / `addLink()`.                                                                                                                               |
+| `generateCardCode(card, indent)`               | Генерирует `card.addImage()`.                                                                                                                                      |
+| `generateBlockFunc(block, ...)`                | Генерирует функцию `__name(ctrl)` из блока (5 параметров).                                                                                                         |
+| `findNextNonBlockNode(doc, fromId)`            | Ищет следующий command/step в цепочке (лимит 20).                                                                                                                  |
+| `generateIndexTs(doc)`                         | Главная функция. Генерирует полный `src/index.ts`.                                                                                                                 |
+| `generateUtils(options?)`                      | Генерирует `src/utils.ts` с setText/setTTS/fetchWithTimeout; `needsEnv` — хелпер `env()` поверх `loadEnvFile`.                                                     |
+| `generatePackageJson(doc)`                     | Генерирует `package.json`.                                                                                                                                         |
+| `generateTsConfig()`                           | Генерирует `tsconfig.json`.                                                                                                                                        |
+| `generateFromFlow(flowJsonPath, outputPath)`   | Точка входа: читает JSON, вызывает все генераторы, записывает файлы.                                                                                               |
 
 ### Поток генерации
 
@@ -113,10 +117,14 @@ generateFromFlow(jsonPath, outputPath)
 13. **JSON body** — переменные `{{var}}` внутри JSON body нельзя подставлять через `JSON.parse(template)`: значения
     пользователя должны безопасно сериализоваться через объект и `JSON.stringify`.
 14. **Secrets** — реальные токены из `flow.json` нельзя писать в `serverless.yml`, `package.json`, исходники или README.
-    В commit-prone файлах используй ссылки на env-переменные.
-15. **Output safety** — генератор не должен молча перезаписывать непустую папку. Перезапись разрешена только через
+    В commit-prone файлах используй ссылки на env-переменные. Секреты http_request (в том числе в URL, который
+    попадает и в JSDoc-комментарий действия) выносит `extractHttpSecrets` — до генерации любого файла.
+    `{{env.NAME}}` раскрывается только в полях http_request, в текстах ответа — никогда.
+15. **URL http_request** — переменные сценария кодируются `encodeURIComponent` и допустимы только после адреса
+    сервера (`URL_ORIGIN_PATTERN`); адрес сервера — литерал или `{{env.NAME}}`. `{{env.NAME}}` не кодируется.
+16. **Output safety** — генератор не должен молча перезаписывать непустую папку. Перезапись разрешена только через
     явный `--force`/`options.force` и должна быть покрыта тестом.
-16. **Docker** — production Docker template должен собирать TypeScript с devDependencies в builder-stage, а runtime
+17. **Docker** — production Docker template должен собирать TypeScript с devDependencies в builder-stage, а runtime
     stage оставлять production-only.
 
 ### Исправленные баги
@@ -133,6 +141,10 @@ generateFromFlow(jsonPath, outputPath)
 - **HTTP headers** — передаются в fetch через fetchOpts.
 - **HTTP timeout** — generated HTTP использует `fetchWithTimeout`.
 - **HTTP body** — JSON body с `{{var}}` сериализуется безопасно без `JSON.parse(template)`.
+- **Секреты http_request в исходнике** — `Authorization`, `api_key` и т.п. из flow.json писались открытым текстом в
+  `src/index.ts` (и URL с ключом — в комментарий действия). Теперь они уходят в `.env` (`extractHttpSecrets`).
+- **URL http_request без подстановок** — `{{var}}` в адресе вставлялся литералом. Теперь подставляется с
+  `encodeURIComponent`, а переменная в адресе сервера отклоняется `validate`.
 - **serverless.yml** — хранит ссылки вида `${env:TOKEN_NAME}`, а не значения токенов.
 - **outputPath** — непустая папка защищена от случайной перезаписи без `force`.
 - **Dockerfile** — builder устанавливает devDependencies перед `npm run build`.
@@ -154,6 +166,14 @@ generateFromFlow(jsonPath, outputPath)
 - **mode** — без поля `mode` генерируется `strict_prod`; `setAppMode` стоит сразу после `new Bot()`, до регистрации
   команд (strict_prod проверяет регулярки при регистрации). В шаблонах `create` — тот же порядок.
 - **Dockerfile** — каталоги `/app/json` и `/app/logs` создаются и отдаются пользователю `umbot` до `USER`.
+- **`validate` и JSON-конфиг `create`** — `umbot.js` читал любой второй аргумент `*.json` как конфиг `create`:
+  `validate flow.json` без `name` падал с «Проект не создан», битый JSON не доходил до валидатора. Конфиг читается
+  только для `create`; тест запускает `umbot.js validate` дочерним процессом.
+- **Поля-массивы узла** — `validateFlowSchema` проверяет, что `actions`, `conditions`, `buttons`, `slots` — массивы
+  (элементы первых трёх — объекты): иначе `validate` отвечал «валиден», а генерация падала с «is not iterable».
+- **HTTP headers + body** — свои `headers` заменяли `Content-Type: application/json`, и тело уходило как
+  `text/plain`. Теперь `Content-Type` добавляется, если в `headers` нет своего (без учёта регистра). `headers`
+  принимаются JSON-строкой или объектом (`parseHttpHeaders`), некорректные пропускаются с предупреждением.
 
 ## Тесты
 

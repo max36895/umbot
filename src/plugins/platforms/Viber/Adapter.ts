@@ -50,6 +50,8 @@ import { getChatText, setThisUserToNlu, viberMessageEvent } from '../Base/utils'
  * @see Bot
  * @see BotController
  * @see BasePlatform
+ *
+ * @group Адаптеры платформ
  */
 export class ViberAdapter extends BasePlatform<IViberContent | string> {
     /**

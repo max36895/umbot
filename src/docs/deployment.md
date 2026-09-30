@@ -110,7 +110,7 @@ bot.start('0.0.0.0', 3000);
 
 ### 2. Интеграция в существующее приложение (Express/Fastify)
 
-Смотри раздел: [Универсальный webhook-обработчик](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html#🌐-универсальный-webhook-обработчик) в руководстве по платформам.
+Смотри раздел: [Универсальный webhook-обработчик](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration#🌐-универсальный-webhook-обработчик) в руководстве по платформам.
 
 ## Сборка Docker-образа
 
@@ -211,7 +211,7 @@ export const handler = async (event: Record<string, unknown>) => {
 > запросе). На Telegram/VK/MAX/Viber без DB-адаптера `userData` живёт в памяти экземпляра функции и теряется, когда
 > вызов попадает в новый экземпляр, — для шагов диалога на чат-платформах подключите БД (например, `MongoAdapter`).
 
-Подробнее о serverless — в разделе [Рецепты: Serverless](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_GUIDE.html#рецепты-cookbook).
+Подробнее о serverless — в разделе [Рецепты: Serverless](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/GUIDE#рецепты-cookbook).
 
 ## Чеклист деплоя
 

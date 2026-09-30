@@ -1,17 +1,19 @@
 const fs = require('fs');
 const path = require('path');
 
+// Адрес гайда на сайте: https://www.maxim-m.ru/docs/umbot/v-3.1/guides/<путь>, где
+// <путь> — путь markdown-файла без .md и без префикса src/docs/
+// (src/docs/adapter/readme.md → guides/adapter/readme, cli/README.md → guides/cli/README).
+// Схема совпадает с prettyRelPath из server/scriptDoc.js, который раскладывает
+// собранную доку по этим адресам.
 const config = {
-    baseUrl: 'https://www.maxim-m.ru/docs/umbot/documents/',
+    baseUrl: 'https://www.maxim-m.ru/docs/umbot/',
     excludeFiles: [
         'AGENTS.md',
         'SECURITY.md',
         'CHANGELOG.md',
         'CONTRIBUTING.md',
         'CODE_OF_CONDUCT.md',
-        'typedoc.json',
-        'tsconfig.json',
-        'tsconfigForDoc.json',
         'scr.js',
         'clean.js',
         'fix-doc.js',
@@ -64,6 +66,21 @@ const config = {
 };
 
 const PROJECT_ROOT = path.resolve('.');
+
+// Конфиги typedoc/tsconfig перечисляют .md-файлы (projectDocuments) как пути
+// сборки — подмена их на URL ломает сборку доки.
+const CONFIG_FILE_RE = /^(?:typedoc|tsconfig)[\w.-]*\.json$/i;
+
+// Ссылка на гайд: текущий формат (v-3.1/guides/…) и прежний — имя файла typedoc
+// (documents/umbot_v-3.1_.src_docs_GUIDE.html). Прежний переписывается на текущий.
+const GUIDE_URL_RE = /^v-\d+\.\d+\/guides\/(.+)$/;
+const LEGACY_GUIDE_URL_RE = /^documents\/(?:umbot_v-\d+\.\d+_\.)?(.+?)(?:\.html)+$/;
+
+// Тело URL гайда до пробела, скобок, кавычек, бэктика или многоточия.
+const GUIDE_LINK_RE = new RegExp(
+    escapeRegex(config.baseUrl) + '(?:documents|v-\\d+\\.\\d+\\/guides)\\/[^\\s)\\]"\'<>`…]+',
+    'g',
+);
 
 function loadGitignore() {
     try {
@@ -139,7 +156,7 @@ function isExcluded(fullPath, isRoot = false) {
     }
 
     const fileName = path.basename(fullPath);
-    if (config.excludeFiles.includes(fileName)) {
+    if (config.excludeFiles.includes(fileName) || CONFIG_FILE_RE.test(fileName)) {
         return true;
     }
 
@@ -147,30 +164,35 @@ function isExcluded(fullPath, isRoot = false) {
     return config.ignoredExtensions.includes(ext);
 }
 
+/**
+ * URL гайда → путь markdown-файла от корня проекта или null, если URL не
+ * похож на гайд. Текущий формат: guides/adapter/readme → src/docs/adapter/readme.md,
+ * а если такого нет — adapter/readme.md от корня (guides/cli/README → cli/README.md).
+ * Прежний формат: имя файла typedoc, где «_» заменяет «/» пути.
+ */
 function urlToFilePath(url) {
-    let urlPath = url.replace(config.baseUrl, '');
-
+    let urlPath = url.slice(config.baseUrl.length);
     const hashIndex = urlPath.indexOf('#');
     if (hashIndex !== -1) urlPath = urlPath.substring(0, hashIndex);
 
-    const versionMatch = urlPath.match(/umbot_v-\d+\.\d+_\.?/);
-    if (versionMatch) urlPath = urlPath.substring(versionMatch[0].length);
-
-    urlPath = urlPath.replace(/(\.html)+$/g, '');
-    urlPath = urlPath.replace(/_/g, '/');
-    urlPath = urlPath.replace(/^\//, '');
-
-    return urlPath + '.md';
+    const guide = urlPath.match(GUIDE_URL_RE);
+    if (guide) {
+        const docPath = guide[1].replace(/\/+$/, '');
+        const inDocs = `src/docs/${docPath}.md`;
+        return fs.existsSync(path.resolve(PROJECT_ROOT, inDocs)) ? inDocs : `${docPath}.md`;
+    }
+    const legacy = urlPath.match(LEGACY_GUIDE_URL_RE);
+    return legacy ? `${legacy[1].replace(/_/g, '/')}.md` : null;
 }
 
+/** Путь markdown-файла от корня проекта → URL гайда указанной версии. */
 function filePathToUrl(filePath, version) {
     let urlPath = path.normalize(filePath).replace(/\\/g, '/');
     urlPath = urlPath.replace(/\.md$/, '');
-    urlPath = urlPath.replace(/(\.html)+$/g, '');
     urlPath = urlPath.replace(/^\.\//, '');
     urlPath = urlPath.replace(/^\//, '');
-    urlPath = urlPath.replace(/\//g, '_');
-    return config.baseUrl + 'umbot_v-' + version + '_.' + urlPath + '.html';
+    urlPath = urlPath.replace(/^src\/docs\//, '');
+    return `${config.baseUrl}v-${version}/guides/${urlPath}`;
 }
 
 function isRelativePath(p) {
@@ -184,10 +206,8 @@ function isRelativePath(p) {
  * ссылка с мусорным хвостом помечалась битой.
  */
 function trimUrlTail(url) {
-    // .htmld` → .html (буква прилипла к расширению), отрезаем бэктики
-    // и любые не-URL символы после .html (…html → …/html-хвосты).
-    const m = url.match(/^(.*?\.html)([`'\"<>…].*)?$/);
-    return m ? m[1] : url;
+    // Знаки препинания в конце — конец предложения («см. …/guides/FAQ.»), а не URL.
+    return url.replace(/[.,;:!?]+$/, '');
 }
 
 function resolveFilePath(urlOrPath, currentFile) {
@@ -200,7 +220,9 @@ function resolveFilePath(urlOrPath, currentFile) {
 
     if (target.startsWith(config.baseUrl)) {
         // URL - конвертируем в путь и резолвим от корня проекта
-        localPath = path.resolve(PROJECT_ROOT, urlToFilePath(target));
+        const filePath = urlToFilePath(target);
+        if (!filePath) return null;
+        localPath = path.resolve(PROJECT_ROOT, filePath);
     } else if (target.endsWith('.md') && !target.startsWith('http')) {
         // Любая .md-ссылка в markdown относительна к директории текущего
         // файла: и './x.md'/'../x.md', и голая 'x.md' (GUIDE.md → GUIDE.md
@@ -278,20 +300,18 @@ function findLinksInFile(filePath) {
     }
     const links = [];
 
-    const urlRegex = new RegExp(escapeRegex(config.baseUrl) + '[^\\s\\)\\]"\'<>]+', 'g');
+    GUIDE_LINK_RE.lastIndex = 0;
     let match;
-    while ((match = urlRegex.exec(content)) !== null) {
+    while ((match = GUIDE_LINK_RE.exec(content)) !== null) {
         const url = trimUrlTail(match[0]);
-        // URL без .html — обрывок (например, обрезанный пример в цитате) или
-        // ссылка на страницу вне documents/; не исправляем и не ругаемся,
-        // если это не похоже на ссылку на реальный гайд.
-        if (!url.endsWith('.html')) continue;
+        const page = url.split('#')[0];
+        // Прежний формат без .html — обрывок (обрезанный пример в цитате), не ссылка.
+        if (page.startsWith(`${config.baseUrl}documents/`) && !page.endsWith('.html')) continue;
         links.push({
             type: 'url',
             value: url,
             line: content.substring(0, match.index).split('\n').length,
             index: match.index,
-            length: match[0].length,
         });
     }
 
@@ -320,7 +340,8 @@ function findLinksInFile(filePath) {
                 type: 'path',
                 value: match[1],
                 line: content.substring(0, match.index).split('\n').length,
-                index: match.index,
+                // +1: match.index указывает на открывающую кавычку, а заменяется путь внутри неё.
+                index: match.index + 1,
             });
         }
     }
@@ -363,15 +384,11 @@ function processFiles() {
                     const localPath = urlToFilePath(urlWithoutHash);
                     const newUrl = filePathToUrl(localPath, version) + hash;
 
-                    // length: URL в файле мог быть длиннее распарсенного
-                    // значения (жадный хвост из бэктиков) — заменяем по
-                    // фактической длине вхождения.
-                    const rawLength = link.length || link.value.length;
                     if (link.value !== newUrl) {
                         content =
                             content.substring(0, link.index) +
                             newUrl +
-                            content.substring(link.index + rawLength);
+                            content.substring(link.index + link.value.length);
                         updatedFiles.add(filePath);
                     }
                 } else if (link.type === 'path') {

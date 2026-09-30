@@ -1,4 +1,4 @@
-import { BotController, AppContext, Text } from '../../../index';
+import { BotController, AppContext, Request, Text, httpBuildQuery } from '../../../index';
 import type { IControllerApi } from '../../../controller';
 import type { TEventType } from '../../../core/events';
 import { VkRequest, IVkParams } from '../API';
@@ -17,7 +17,27 @@ import {
     tryParse,
     shouldProcessChatSound,
 } from '../Base/utils';
+import { POLLING_REQUEST_MARGIN, describePollingError } from '../Base/polling';
 import { timingSafeEqual } from 'crypto';
+
+/** Адрес методов VK API. */
+const VK_API_URL = 'https://api.vk.ru/method/';
+
+/** Версия VK API для запросов long polling, если в конфигурации не задана своя. */
+const VK_POLLING_API_VERSION = '5.199';
+
+/** Сколько секунд сервер Bots Long Poll держит запрос, если событий нет. */
+const VK_POLLING_WAIT = 25;
+
+/** Сервер Bots Long Poll: адрес, ключ сессии и номер последнего события. */
+interface IVkLongPollServer {
+    server: string;
+    key: string;
+    ts: string;
+}
+
+/** Результат вызова метода VK API для long polling. */
+type TVkPollingApiResult = { response: unknown } | { apiError: string };
 
 type IVkRequestData = Record<string, unknown> & {
     eventId?: string;
@@ -64,6 +84,64 @@ function peekVkUserInfo(userId: string | number): IVkUserInfo | null | undefined
 }
 
 /**
+ * Кладёт данные пользователя в кэш имён, вытесняя самую старую запись при переполнении.
+ * @param key Идентификатор пользователя строкой
+ * @param value Имя и фамилия (`null` — VK не вернул данных)
+ * @param now Текущее время, мс
+ */
+function rememberVkUserInfo(key: string, value: IVkUserInfo | null, now: number): void {
+    if (vkUserCache.size >= VK_USER_CACHE_MAX_SIZE) {
+        // Map хранит порядок вставки — вытесняем самую старую запись.
+        const oldestKey = vkUserCache.keys().next().value;
+        if (oldestKey !== undefined) {
+            vkUserCache.delete(oldestKey);
+        }
+    }
+    vkUserCache.set(key, { value, expiresAt: now + VK_USER_CACHE_TTL });
+}
+
+/**
+ * Загружает в кэш имена авторов сообщений пачки long polling одним запросом `users.get`.
+ * С прогретым кэшем разбор каждого сообщения синхронный, поэтому сообщения одного
+ * пользователя встают в его очередь в порядке пачки, а не в порядке ответов `users.get`.
+ * Сбой запроса не кэшируется: имя загрузится при разборе сообщения.
+ * @param appContext Контекст приложения
+ * @param updates События пачки
+ */
+async function prefetchVkUsers(appContext: AppContext, updates: unknown[]): Promise<void> {
+    const ids = new Set<string>();
+    for (const update of updates) {
+        const event = update as IVkRequestContent | null;
+        const fromId = event?.type === 'message_new' ? event.object?.message?.from_id : undefined;
+        if (typeof fromId === 'number' && fromId > 0 && peekVkUserInfo(fromId) === undefined) {
+            ids.add(String(fromId));
+        }
+    }
+    if (ids.size === 0) {
+        return;
+    }
+    const now = Date.now();
+    const users = await new VkRequest(appContext).usersGet([...ids]);
+    if (users === null) {
+        return;
+    }
+    for (const user of users) {
+        const key = String(user.id);
+        if (ids.delete(key)) {
+            rememberVkUserInfo(
+                key,
+                { first_name: user.first_name || null, last_name: user.last_name || null },
+                now,
+            );
+        }
+    }
+    // Пользователи, которых VK не вернул, запоминаются как «без имени», как в getVkUserInfo.
+    for (const key of ids) {
+        rememberVkUserInfo(key, null, now);
+    }
+}
+
+/**
  * Возвращает данные пользователя VK из кэша либо запрашивает их у API.
  *
  * @param appContext Контекст приложения
@@ -95,14 +173,7 @@ async function getVkUserInfo(
               last_name: user.last_name || null,
           }
         : null;
-    if (vkUserCache.size >= VK_USER_CACHE_MAX_SIZE) {
-        // Map хранит порядок вставки — вытесняем самую старую запись.
-        const oldestKey = vkUserCache.keys().next().value;
-        if (oldestKey !== undefined) {
-            vkUserCache.delete(oldestKey);
-        }
-    }
-    vkUserCache.set(key, { value, expiresAt: now + VK_USER_CACHE_TTL });
+    rememberVkUserInfo(key, value, now);
     return value;
 }
 
@@ -170,6 +241,8 @@ function getKeyboardActionName(payload: unknown): string {
  * @see Bot
  * @see BotController
  * @see BasePlatform
+ *
+ * @group Адаптеры платформ
  */
 export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
     /**
@@ -188,6 +261,16 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
      * Лимит запросов/сек для входящего rateLimiter (лимит VK Callback API).
      */
     limit = 30;
+
+    /**
+     * Сервер Bots Long Poll текущей сессии; `null` — запросить заново перед следующим опросом.
+     */
+    #longPoll: IVkLongPollServer | null = null;
+
+    /**
+     * Номер события, с которого продолжить после смены ключа (ответ `failed: 2`).
+     */
+    #longPollTs: string | null = null;
 
     /**
      * API-фасад VK для `controller.api` (sendPhoto/sendDocument через штатный
@@ -224,6 +307,180 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
         if (this._platformOptions?.vk_api_version) {
             platformToken.api_version = this._platformOptions.vk_api_version as string;
         }
+    }
+
+    /**
+     * Long polling: получает события сообщества через Bots Long Poll API.
+     * Сервер и ключ запрашиваются методом `groups.getLongPollServer` (ID сообщества —
+     * через `groups.getById` по токену сообщества), затем события читаются запросом
+     * `a_check`. События приходят в формате Callback API. Ответы `failed` обрабатываются
+     * по протоколу: 1 — новый `ts`, 2 — новый ключ, 3 — новый ключ и `ts`.
+     * Имена авторов сообщений пачки загружаются одним запросом `users.get` (если не
+     * отключено опцией `vk_load_user_info: false`).
+     * Long Poll API должен быть включён в настройках сообщества вместе с нужными типами событий.
+     * @param signal Сигнал остановки polling
+     * @returns События, `null` — polling невозможен (нет токена, VK отклонил запрос сервера)
+     * @example
+     * ```ts
+     * bot.use(new VkAdapter(process.env.VK_TOKEN));
+     * await bot.startPolling(); // ядро вызывает getUpdates в цикле
+     * ```
+     */
+    async getUpdates(signal: AbortSignal): Promise<unknown[] | null> {
+        const appContext = this.appContext as AppContext | undefined;
+        const token = appContext?.appConfig.tokens[this.platformName]?.token;
+        if (!appContext || !token) {
+            appContext?.logError(
+                'VkAdapter.getUpdates(): не задан токен сообщества (VK_TOKEN) — long polling невозможен.',
+            );
+            return null;
+        }
+        if (!this.#longPoll) {
+            const server = await this.#getLongPollServer(appContext, token, signal);
+            if (!server) {
+                return null;
+            }
+            if (this.#longPollTs !== null) {
+                server.ts = this.#longPollTs;
+                this.#longPollTs = null;
+            }
+            this.#longPoll = server;
+        }
+        const longPoll = this.#longPoll;
+        const request = new Request(appContext);
+        request.maxTimeQuery = VK_POLLING_WAIT * 1000 + POLLING_REQUEST_MARGIN;
+        request.signal = signal;
+        request.get = {
+            act: 'a_check',
+            key: longPoll.key,
+            ts: longPoll.ts,
+            wait: String(VK_POLLING_WAIT),
+        };
+        const res = await request.send<{
+            ts?: string | number;
+            updates?: unknown[];
+            failed?: number;
+        }>(longPoll.server);
+        if (!res.status || !res.data) {
+            throw new Error(describePollingError(res));
+        }
+        const { failed, ts, updates } = res.data;
+        if (failed) {
+            if (failed === 1 && ts !== undefined) {
+                longPoll.ts = String(ts);
+            } else {
+                // 2 — истёк ключ (номер события прежний), 3 — потеряны ключ и номер.
+                this.#longPollTs = failed === 2 ? longPoll.ts : null;
+                this.#longPoll = null;
+            }
+            return [];
+        }
+        if (ts !== undefined) {
+            longPoll.ts = String(ts);
+        }
+        if (!Array.isArray(updates)) {
+            return [];
+        }
+        if (this._platformOptions?.vk_load_user_info !== false) {
+            await prefetchVkUsers(appContext, updates);
+        }
+        return updates;
+    }
+
+    /**
+     * Запрашивает сервер Bots Long Poll сообщества, которому принадлежит токен.
+     * @param appContext Контекст приложения
+     * @param token Токен сообщества
+     * @param signal Сигнал остановки polling
+     * @returns Сервер или `null`, если VK отклонил запрос (причина записана в лог)
+     */
+    async #getLongPollServer(
+        appContext: AppContext,
+        token: string,
+        signal: AbortSignal,
+    ): Promise<IVkLongPollServer | null> {
+        const groups = await this.#callPollingApi(appContext, token, 'groups.getById', {}, signal);
+        if ('apiError' in groups) {
+            appContext.logError(
+                `VkAdapter.getUpdates(): VK отклонил groups.getById (${groups.apiError}). ` +
+                    'Для long polling нужен токен сообщества (VK_TOKEN).',
+            );
+            return null;
+        }
+        // С версии API 5.139 ответ — { groups: [...] }, раньше — массив сообществ.
+        const list = Array.isArray(groups.response)
+            ? groups.response
+            : (groups.response as { groups?: unknown[] } | null)?.groups;
+        const groupId = (list?.[0] as { id?: number } | undefined)?.id;
+        if (!groupId) {
+            appContext.logError(
+                'VkAdapter.getUpdates(): VK не вернул ID сообщества. Для long polling нужен токен сообщества, а не пользователя.',
+            );
+            return null;
+        }
+        const server = await this.#callPollingApi(
+            appContext,
+            token,
+            'groups.getLongPollServer',
+            { group_id: String(groupId) },
+            signal,
+        );
+        if ('apiError' in server) {
+            appContext.logError(
+                `VkAdapter.getUpdates(): VK отклонил groups.getLongPollServer (${server.apiError}). ` +
+                    'Включите Long Poll API в настройках сообщества («Работа с API» → «Long Poll API») и отметьте нужные типы событий.',
+            );
+            return null;
+        }
+        const data = server.response as Partial<Record<'server' | 'key' | 'ts', unknown>> | null;
+        if (!data?.server || !data.key || data.ts === undefined) {
+            throw new Error('VK вернул неполные данные сервера Long Poll.');
+        }
+        return { server: String(data.server), key: String(data.key), ts: String(data.ts) };
+    }
+
+    /**
+     * Вызывает метод VK API для long polling. Сетевую ошибку бросает (ядро повторит
+     * запрос), ошибку API возвращает — повтор с тем же токеном её не исправит.
+     * @param appContext Контекст приложения
+     * @param token Токен сообщества
+     * @param method Метод VK API
+     * @param params Параметры метода
+     * @param signal Сигнал остановки polling
+     * @returns Ответ метода или текст ошибки API
+     */
+    async #callPollingApi(
+        appContext: AppContext,
+        token: string,
+        method: string,
+        params: Record<string, string>,
+        signal: AbortSignal,
+    ): Promise<TVkPollingApiResult> {
+        const request = new Request(appContext);
+        request.maxTimeQuery = POLLING_REQUEST_MARGIN;
+        request.signal = signal;
+        request.header = { 'Content-Type': 'application/x-www-form-urlencoded' };
+        request.postInString = httpBuildQuery({
+            ...params,
+            access_token: token,
+            v:
+                (appContext.appConfig.tokens[this.platformName]?.api_version as string) ||
+                VK_POLLING_API_VERSION,
+        });
+        const res = await request.send<{
+            response?: unknown;
+            error?: { error_code?: number; error_msg?: string };
+        }>(VK_API_URL + method);
+        if (!res.status || !res.data) {
+            throw new Error(describePollingError(res));
+        }
+        if (res.data.error) {
+            return {
+                apiError:
+                    `${res.data.error.error_code ?? ''} ${res.data.error.error_msg ?? ''}`.trim(),
+            };
+        }
+        return { response: res.data.response };
     }
 
     /**

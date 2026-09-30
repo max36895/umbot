@@ -95,7 +95,7 @@
 ¹ Замерено на версиях до 3.1.4. На той же машине `npm run stress` у 3.1.4 против 3.1.3: полный цикл
 60 000 → 68 000 RPS, последовательный сценарий ~74 500 → ~80 000 RPS, burst-тесты 42 000 → 45 000 RPS;
 стресс-стенд сравнения (`npm run stress:compare*`) — 69 000–78 000 → 580 000–760 000 RPS (подробности —
-в [BENCHMARKS](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_BENCHMARKS.html)).
+в [BENCHMARKS](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/BENCHMARKS)).
 
 Burst-тесты (тысячи параллельных запросов) на нагруженном сервере выполняются без ошибок и быстрее чем за 1 с.
 
@@ -171,7 +171,7 @@ Burst-тесты (тысячи параллельных запросов) на �
 Повтор уже принятой доставки (Telegram, VK, MAX, Viber) подтверждается `200 ok` без повторного запуска логики:
 пользователь не получает ответ дважды. Повтор, пришедший во время обработки исходного запроса, ждёт его исхода
 (до 30 секунд) и обрабатывается заново, если исходный упал с 500: апдейт не теряется. Подробности и исключения — в
-[«Поддерживаемые платформы» → «Приём обновлений»](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html).
+[«Поддерживаемые платформы» → «Приём обновлений»](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration).
 
 ### Объём файловых логов
 
@@ -198,8 +198,8 @@ npm run stress
 ```
 
 Полные результаты (включая память, разные типы регулярок, сравнение «первый vs повторный запуск») — в
-файле [src/docs/BENCHMARKS.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_BENCHMARKS.html)
-(он же онлайн: https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_BENCHMARKS.html).
+файле [src/docs/BENCHMARKS.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/BENCHMARKS)
+(он же онлайн: https://www.maxim-m.ru/docs/umbot/v-3.1/guides/BENCHMARKS).
 
 Также есть возможность запустить тестирование в легком и долгом режиме.
 В легком режиме регистрируется 5 команд вместо 1000 (всего с фиксированными start/help/fallback — 8 против 1003).

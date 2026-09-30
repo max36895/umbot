@@ -15,6 +15,8 @@ import { adapters } from './adapters';
  * const bot = new Bot();
  * bot.use(voicePlatforms); // подключает Алису, Марусю, SmartApp
  * ```
+ *
+ * @group Подключение платформ
  */
 function voicePlatforms(appContext: AppContext): void {
     adapters.forEach((adapter) => {

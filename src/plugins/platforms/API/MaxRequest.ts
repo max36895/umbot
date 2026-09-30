@@ -125,6 +125,8 @@ function getMaxUploadToken(uploaded: Record<string, unknown>): string | undefine
  * Класс для взаимодействия с API Max.
  * Предоставляет методы для отправки сообщений, загрузки файлов.
  * @see https://dev.max.ru/docs-api
+ *
+ * @group API платформ
  */
 export class MaxRequest {
     /**

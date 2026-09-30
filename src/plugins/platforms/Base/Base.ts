@@ -75,6 +75,8 @@ export const EMPTY_CONTEXT_ERROR =
  *
  * @see Bot
  * @see BotController
+ *
+ * @group Свой адаптер
  */
 export abstract class BasePlatform<TQuery = unknown>
     extends BasePlugin

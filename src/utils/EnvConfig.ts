@@ -15,7 +15,9 @@ import * as path from 'path';
  * Определяет структуру переменных окружения для приложения
  *
  * @remarks
- * Все поля являются опциональными и могут быть определены в файле .env
+ * Все поля являются опциональными и могут быть определены в файле .env.
+ * `loadEnvFile` возвращает все переменные файла, поэтому кроме известных фреймворку
+ * полей доступны и собственные (`API_TOKEN` и т.п.) — через индекс.
  *
  * @example
  * ```ts
@@ -29,6 +31,16 @@ import * as path from 'path';
  * ```
  */
 export interface IEnvConfig {
+    /**
+     * Собственные переменные проекта из того же файла .env
+     *
+     * @example
+     * ```ts
+     * const apiToken = loadEnvFile('.env').data?.['API_TOKEN'];
+     * ```
+     */
+    [name: string]: string | undefined;
+
     /**
      * Токен для Telegram Bot API
      * Используется для авторизации бота в Telegram
@@ -273,13 +285,15 @@ export interface IEnvConfigStatus {
  *
  * @example
  * ```ts
+ * import { loadEnvFile } from 'umbot/utils';
+ *
  * // Загрузка конфигурации
  * const result = loadEnvFile('.env');
  *
- * // Использование значений
+ * // Использование значений, в том числе собственных переменных проекта
  * if (result.status) {
  *   const telegramToken = result.data?.TELEGRAM_TOKEN;
- *   const dbHost = result.data?.DB_HOST;
+ *   const weatherKey = result.data?.['WEATHER_KEY'];
  * } else {
  *   console.error(result.error);
  * }

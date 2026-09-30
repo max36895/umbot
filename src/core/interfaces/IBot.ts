@@ -94,6 +94,23 @@ export type TBotResponseCb = (
 ) => void;
 
 /**
+ * Параметры запуска long polling ({@link Bot.startPolling}).
+ * Настройки конкретной платформы задаются опциями её адаптера
+ * (например, `telegram_delete_webhook` у `TelegramAdapter`).
+ * @example
+ * ```ts
+ * await bot.startPolling({ platforms: ['telegram'] });
+ * ```
+ */
+export interface IPollingOptions {
+    /**
+     * Платформы, для которых запустить polling. По умолчанию — все подключённые
+     * адаптеры, реализующие `getUpdates`.
+     */
+    platforms?: string[];
+}
+
+/**
  * Интерфейс для плагина в виде объекта.
  */
 export interface IPlugin {
@@ -246,6 +263,54 @@ export interface IPlatformAdapter<TQuery = unknown> extends IPlugin {
      * ```
      */
     getResponseTimeout?: () => number | null;
+    /**
+     * Long polling: один запрос за новыми обновлениями платформы (Telegram `getUpdates`,
+     * VK Bots Long Poll, MAX `GET /updates`). Реализуйте, если платформа умеет отдавать
+     * обновления по запросу, — тогда бота можно запустить `bot.startPolling()` без
+     * публичного HTTPS-адреса.
+     *
+     * Ядро вызывает метод в цикле и обрабатывает каждое обновление как запрос вебхука,
+     * но без проверки подписи: обновление получено от API платформы по токену бота.
+     * Позицию чтения (offset, marker, ts) хранит адаптер: следующий вызов должен вернуть
+     * обновления после уже отданных. Запрос должен завершаться по `signal` — так
+     * `bot.stopPolling()` и `bot.close()` не ждут окончания долгого запроса. Передавайте
+     * сигнал через `Request.signal`: `AbortSignal.any()` с этим сигналом в Node 20 копит
+     * память, ведь сигнал живёт весь сеанс polling.
+     *
+     * Временную ошибку (сеть, 5xx) бросайте исключением — ядро повторит вызов с растущей
+     * паузой. Если polling невозможен (неверный токен, у бота активен вебхук), запишите
+     * причину в лог и верните `null`: ядро остановит цикл этой платформы.
+     * @param signal Сигнал остановки polling
+     * @returns Обновления в формате тела вебхука платформы, `[]` — новых нет, `null` — остановить polling
+     * @example
+     * ```ts
+     * class MyAdapter extends BasePlatform {
+     *     #offset = 0;
+     *
+     *     async getUpdates(signal: AbortSignal): Promise<unknown[] | null> {
+     *         const request = new Request(this.appContext as AppContext);
+     *         request.maxTimeQuery = 35_000; // дольше, чем платформа держит запрос (25 с)
+     *         request.signal = signal;
+     *         const res = await request.send<{ id: number }[]>(
+     *             `https://api.example.com/updates?offset=${this.#offset}&timeout=25`,
+     *         );
+     *         if (res.httpStatus === 401) {
+     *             this.appContext?.logError('MyAdapter: неверный токен, polling остановлен.');
+     *             return null;
+     *         }
+     *         if (!res.status || !res.data) {
+     *             throw new Error(`HTTP ${res.httpStatus ?? 'нет ответа'}`);
+     *         }
+     *         const updates = res.data;
+     *         if (updates.length) {
+     *             this.#offset = updates[updates.length - 1].id + 1;
+     *         }
+     *         return updates;
+     *     }
+     * }
+     * ```
+     */
+    getUpdates?: (signal: AbortSignal) => Promise<unknown[] | null>;
     /**
      * Определяет, принадлежит ли входящий запрос данной платформе.
      *

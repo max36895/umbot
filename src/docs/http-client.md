@@ -148,6 +148,23 @@ if (!res.status && res.httpStatus === 429) {
 телом. Более долгую паузу (например, лимит 20 сообщений в минуту в группах) ждать внутри ответа на вебхук нельзя —
 такое сообщение не отправляется, причина пишется в лог.
 
+## Отмена запроса (`Request.signal`)
+
+У `Request` кроме таймаута `maxTimeQuery` есть поле `signal` — внешний сигнал отмены. Оба действуют вместе:
+запрос обрывается, что бы ни сработало раньше. Как и тело запроса, `signal` относится к одному вызову и
+сбрасывается после `send()`, а подписка запроса на внешний сигнал снимается после его завершения — долгоживущий
+сигнал (сеанс long polling) не копит подписки. Так встроенные адаптеры обрывают долгий запрос long polling при
+`bot.stopPolling()`.
+
+```ts
+const controller = new AbortController();
+const request = new Request(appContext);
+request.maxTimeQuery = 35_000;
+request.signal = controller.signal;
+const pending = request.send('https://api.example.com/updates');
+controller.abort(); // send() вернёт { status: false, err } без ожидания таймаута
+```
+
 ## Какой тип использовать?
 
 `httpClient` должен соответствовать сигнатуре:

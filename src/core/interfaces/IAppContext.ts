@@ -246,6 +246,8 @@ export interface ITokenPlatform {
  *   env: '.env'
  * };
  * ```
+ *
+ * @group Основное
  */
 export interface IAppConfig {
     /**
@@ -324,6 +326,8 @@ export interface IAppConfig {
  *   ]
  * };
  * ```
+ *
+ * @group Основное
  */
 export interface IAppParam {
     /**

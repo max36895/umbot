@@ -77,7 +77,7 @@ describe('scripts/fix-doc.js', () => {
         runFixDoc(TEST_DIR);
 
         const content = fs.readFileSync(path.join(TEST_DIR, 'guide.md'), 'utf8');
-        expect(content).toContain('.sub_page.html#якорь');
+        expect(content).toContain('https://www.maxim-m.ru/docs/umbot/v-3.1/guides/sub/page#якорь');
     });
 
     it('продолжает находить реально битую ссылку с #якорем', () => {
@@ -101,7 +101,7 @@ describe('scripts/fix-doc.js', () => {
 
         expect(status).toBe(0);
         const content = fs.readFileSync(path.join(TEST_DIR, 'guide.md'), 'utf8');
-        expect(content).toContain('.sub_page.html');
+        expect(content).toContain('https://www.maxim-m.ru/docs/umbot/v-3.1/guides/sub/page)');
         expect(content).not.toContain('#');
     });
 
@@ -120,8 +120,8 @@ describe('scripts/fix-doc.js', () => {
         expect(status).toBe(0);
         expect(output).toContain('Все ссылки корректны');
         const content = fs.readFileSync(path.join(TEST_DIR, 'src/docs/GUIDE.md'), 'utf8');
-        expect(content).toContain('umbot_v-3.1_.src_docs_configuration.html#раздел');
-        expect(content).toContain('umbot_v-3.1_.src_docs_api-reference.html');
+        expect(content).toContain('/docs/umbot/v-3.1/guides/configuration#раздел');
+        expect(content).toContain('/docs/umbot/v-3.1/guides/api-reference)');
     });
 
     it('перезапускается идемпотентно: второй прогон ничего не меняет', () => {
@@ -140,7 +140,7 @@ describe('scripts/fix-doc.js', () => {
         expect(afterFirst).toEqual(afterSecond);
     });
 
-    it('обрезает мусорный хвост URL после .html (бэктик)', () => {
+    it('не захватывает бэктик после URL', () => {
         // Регресс: жадный URL-регекс захватывал бэктик после .html —
         // валидная ссылка в markdown-обрамлении помечалась битой.
         createFixture({
@@ -153,8 +153,75 @@ describe('scripts/fix-doc.js', () => {
 
         expect(status).toBe(0);
         const content = fs.readFileSync(path.join(TEST_DIR, 'report.md'), 'utf8');
-        expect(content).toContain(
-            '`https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_FAQ.html`',
+        expect(content).toContain('`https://www.maxim-m.ru/docs/umbot/v-3.1/guides/FAQ`');
+    });
+
+    it('переводит ссылки прежнего формата на короткие адреса, сохраняя якорь', () => {
+        createFixture({
+            'README.md':
+                '[гайд](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.0_.src_docs_adapter_readme.html#типы)\n' +
+                '[cli](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.cli_README.html)\n',
+            'src/docs/adapter/readme.md': '# Адаптеры\n',
+            'cli/README.md': '# CLI\n',
+        });
+
+        const { status } = runFixDoc(TEST_DIR);
+
+        expect(status).toBe(0);
+        const content = fs.readFileSync(path.join(TEST_DIR, 'README.md'), 'utf8');
+        expect(content).toBe(
+            '[гайд](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/readme#типы)\n' +
+                '[cli](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README)\n',
         );
+    });
+
+    it('проверяет короткие адреса и помечает битым адрес несуществующего гайда', () => {
+        createFixture({
+            'README.md':
+                'См. https://www.maxim-m.ru/docs/umbot/v-3.1/guides/FAQ. И ещё ' +
+                'https://www.maxim-m.ru/docs/umbot/v-3.1/guides/missing\n',
+            'src/docs/FAQ.md': '# FAQ\n',
+        });
+
+        const { status, output } = runFixDoc(TEST_DIR);
+
+        expect(status).toBe(1);
+        expect(output).toContain('https://www.maxim-m.ru/docs/umbot/v-3.1/guides/missing');
+        expect(output).not.toContain('guides/FAQ.');
+        const content = fs.readFileSync(path.join(TEST_DIR, 'README.md'), 'utf8');
+        // Точка в конце предложения осталась на месте, а не ушла в URL.
+        expect(content).toContain('v-3.1/guides/FAQ. И ещё');
+    });
+
+    it('заменяет путь в кавычках целиком, не задевая кавычки', () => {
+        // Регресс: замена начиналась с открывающей кавычки — кавычка пропадала,
+        // а последняя буква пути оставалась хвостом («…README.htmld»).
+        createFixture({
+            'guide.md': "Файл 'cli/README.md' — справка по CLI.\n",
+            'cli/README.md': '# CLI\n',
+        });
+
+        runFixDoc(TEST_DIR);
+
+        const content = fs.readFileSync(path.join(TEST_DIR, 'guide.md'), 'utf8');
+        expect(content).toBe(
+            "Файл 'https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README' — справка по CLI.\n",
+        );
+    });
+
+    it('не трогает пути .md в конфигах typedoc и tsconfig', () => {
+        const config = '{ "projectDocuments": ["cli/README.md"] }\n';
+        createFixture({
+            'server/typedocBranchLocal.json': config,
+            'cli/README.md': '# CLI\n',
+        });
+
+        runFixDoc(TEST_DIR);
+
+        const content = fs.readFileSync(
+            path.join(TEST_DIR, 'server/typedocBranchLocal.json'),
+            'utf8',
+        );
+        expect(content).toBe(config);
     });
 });

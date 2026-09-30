@@ -1,4 +1,4 @@
-import { AppContext, BotController, Text } from '../../../index';
+import { AppContext, BotController, Request, Text } from '../../../index';
 import type { IControllerApi } from '../../../controller';
 import type { TEventType } from '../../../core/events';
 import { IMaxParams, MaxRequest } from '../API';
@@ -9,6 +9,7 @@ import { soundProcessing } from './Sound';
 import { T_MAX_APP } from './constants';
 import { IMaxButtonObject, IMaxRequestContent } from './interfaces/IMaxPlatform';
 import { makeMaxApi } from './apiFacade';
+import { POLLING_REQUEST_MARGIN, describePollingError } from '../Base/polling';
 import { timingSafeEqual } from 'crypto';
 import {
     getChatText,
@@ -42,6 +43,12 @@ const MAX_UPDATE_TYPES = new Set<IMaxRequestContent['update_type']>([
     'user_added',
     'user_removed',
 ]);
+
+/** Адрес получения обновлений MAX (long polling). */
+const MAX_UPDATES_URL = 'https://platform-api2.max.ru/updates';
+
+/** Сколько секунд MAX держит запрос обновлений, если их нет (допустимо 0–90). */
+const MAX_POLLING_TIMEOUT = 30;
 
 /**
  * Адаптер, обеспечивающий поддержку платформы MAX. Позволяет разрабатывать чат-ботов для мессенджера MAX на TypeScript с использованием кросс-платформенного функционала: обработка текстовых запросов, работа с карточками и кнопками.
@@ -81,6 +88,8 @@ const MAX_UPDATE_TYPES = new Set<IMaxRequestContent['update_type']>([
  * @see Bot
  * @see BotController
  * @see BasePlatform
+ *
+ * @group Адаптеры платформ
  */
 export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
     /**
@@ -99,6 +108,11 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
      * Лимит запросов/сек для входящего rateLimiter (лимит MAX Bot API).
      */
     limit = 30;
+
+    /**
+     * Позиция чтения long polling (`marker` из ответа `GET /updates`); `null` — первый запрос.
+     */
+    #pollingMarker: number | null = null;
 
     /**
      * API-фасад MAX для `controller.api` (медиа через `POST /uploads`,
@@ -210,6 +224,55 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
             query.user?.user_id ??
             '';
         return `${query.update_type}:${query.timestamp}:${target}`;
+    }
+
+    /**
+     * Long polling: запрашивает новые обновления методом `GET /updates`.
+     * MAX держит запрос до 30 секунд, если обновлений нет; `marker` из ответа
+     * передаётся в следующий запрос. MAX рекомендует long polling для разработки
+     * и тестов, а в продакшене — вебхук (`POST /subscriptions`).
+     * @param signal Сигнал остановки polling
+     * @returns Обновления, `null` — polling невозможен (нет токена или токен неверный)
+     * @example
+     * ```ts
+     * bot.use(new MaxAdapter(process.env.MAX_TOKEN));
+     * await bot.startPolling(); // ядро вызывает getUpdates в цикле
+     * ```
+     */
+    async getUpdates(signal: AbortSignal): Promise<unknown[] | null> {
+        const appContext = this.appContext as AppContext | undefined;
+        const token = appContext?.appConfig.tokens[this.platformName]?.token;
+        if (!appContext || !token) {
+            appContext?.logError(
+                'MaxAdapter.getUpdates(): не задан токен бота (MAX_TOKEN) — long polling невозможен.',
+            );
+            return null;
+        }
+        const request = new Request(appContext);
+        request.maxTimeQuery = MAX_POLLING_TIMEOUT * 1000 + POLLING_REQUEST_MARGIN;
+        request.signal = signal;
+        request.header = { Authorization: token };
+        request.get = {
+            timeout: String(MAX_POLLING_TIMEOUT),
+            ...(this.#pollingMarker === null ? {} : { marker: String(this.#pollingMarker) }),
+        };
+        const res = await request.send<{ updates?: unknown[]; marker?: number | null }>(
+            MAX_UPDATES_URL,
+        );
+        if (!res.status || !res.data) {
+            const reason = describePollingError(res);
+            if (res.httpStatus === 401) {
+                appContext.logError(
+                    `MaxAdapter.getUpdates(): MAX отклонил запрос обновлений (${reason}). Проверьте токен бота (MAX_TOKEN).`,
+                );
+                return null;
+            }
+            throw new Error(reason);
+        }
+        if (typeof res.data.marker === 'number') {
+            this.#pollingMarker = res.data.marker;
+        }
+        return Array.isArray(res.data.updates) ? res.data.updates : [];
     }
 
     /**

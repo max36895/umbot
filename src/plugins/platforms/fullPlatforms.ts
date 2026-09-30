@@ -15,6 +15,8 @@ import { adapters } from './adapters';
  * const bot = new Bot();
  * bot.use(fullPlatforms); // подключает все 7 платформ
  * ```
+ *
+ * @group Подключение платформ
  */
 function fullPlatforms(appContext: AppContext): void {
     adapters.forEach((adapter) => {

@@ -1,7 +1,7 @@
 # Справочник API umbot
 
 Данный справочник содержит описание основных публичных классов, методов и интерфейсов фреймворка umbot. Для начала
-работы смотрите раздел [«Быстрый старт»](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_getting-started.html).
+работы смотрите раздел [«Быстрый старт»](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/getting-started).
 
 ## Основные классы
 
@@ -95,7 +95,9 @@
 | webhookHandle            | req: IncomingMessage, res: ServerResponse, responseCb?: TBotResponseCb                                                                               | Promise\<void\>                | Обработчик HTTP-запроса (для Express/Fastify интеграции)                                                                                                                                                |
 | webhookEvent             | data: string \| object \| null, headers?: Record\<string, unknown\>, clientIp?: string                                                               | Promise\<IWebhookEventResult\> | Обработка события serverless-платформы (Yandex Cloud Functions, AWS Lambda) с проверкой подписи вебхука. Возвращает `{ statusCode, body }` для возврата из cloud-функции                                |
 | start                    | hostname?: string, port?: number, responseCb?: TBotResponseCb                                                                                        | Server                         | Запуск HTTP-сервера (возвращает экземпляр Server)                                                                                                                                                       |
-| close                    | -                                                                                                                                                    | Promise\<void\>                | Остановка HTTP-сервера и очистка ресурсов                                                                                                                                                               |
+| startPolling             | options?: IPollingOptions (`{ platforms?: TAppType[] }`)                                                                                             | Promise\<void\>                | Запуск long polling (Telegram, VK, MAX) вместо вебхука. Промис выполняется после остановки; отклоняется, если ни один адаптер не поддерживает polling                                                   |
+| stopPolling              | -                                                                                                                                                    | Promise\<void\>                | Остановка long polling: обрывает текущие запросы обновлений и ждёт обработки уже полученных                                                                                                             |
+| close                    | -                                                                                                                                                    | Promise\<void\>                | Остановка HTTP-сервера и long polling, очистка ресурсов                                                                                                                                                 |
 | send                     | userId: string \| number, controllerOrText: BotController \| string, platform: TAppType                                                              | Promise\<unknown \| boolean\>  | Отправка сообщения пользователю (для платформ с поддержкой)                                                                                                                                             |
 
 ## Компоненты
@@ -457,7 +459,7 @@ bot.addAction('buy', async (_, ctx) => {
 
 Фасад — ленивый объект: создаётся при первом обращении к `ctx.api`, на голосовых платформах (Алиса, SmartApp, Маруся) равен `null` (их ответ формируется телом webhook — используйте `card`/`sound`). Неподдерживаемые методы логируют предупреждение и возвращают `null`; поддержка проверяется заранее через `can()`. У Viber `can()` возвращает `false` для всех методов — Bot API Viber требует URL и размер файла, поэтому фасад там недоступен.
 
-Фасад выбирается адаптером: метод `createApi(controller)` контракта `IPlatformAdapter` (базовая реализация `BasePlatform` возвращает `null`). Кастомная платформа подключает свой фасад переопределением этого метода — возвращает объект, реализующий `IControllerApi`; пример — в [platform-integration.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html), раздел «API платформы».
+Фасад выбирается адаптером: метод `createApi(controller)` контракта `IPlatformAdapter` (базовая реализация `BasePlatform` возвращает `null`). Кастомная платформа подключает свой фасад переопределением этого метода — возвращает объект, реализующий `IControllerApi`; пример — в [platform-integration.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration), раздел «API платформы».
 
 ### Формы (`addForm`)
 
@@ -1022,7 +1024,7 @@ export class ScoreModel extends Model<IScoreState> {
 `DB_TABLES_SCHEMA` и после подключения передаётся DB-адаптеру в `ensureSchema()`: `FileAdapter` создаёт файлы сам,
 `MongoAdapter` создаёт индексы (`{ userId, platform }`, `{ platform, path }`; коллекции MongoDB создаёт при первой
 записи), SQL-адаптер обязан создать таблицы (см.
-[спецификацию внешних адаптеров](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_adapter_external-db-adapter-spec.html)).
+[спецификацию внешних адаптеров](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/external-db-adapter-spec)).
 
 ### Таблица: `ImageTokens`
 

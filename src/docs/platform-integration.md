@@ -35,7 +35,7 @@
 | Любая другая платформа | `...`         | ✅ Через адаптеры                                                             |
 
 Что входит в базовый набор мессенджеров по каждой платформе — в разделах ниже и в
-[«Сравнении контрактов платформ»](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-contract-comparison.html).
+[«Сравнении контрактов платформ»](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-contract-comparison).
 
 Выбор платформы происходит автоматически в зависимости от запроса, который пришел в приложение, главное не забыть
 подключить адаптеры для платформ.
@@ -77,12 +77,40 @@ bot.setAppConfig({
 bot.start('localhost', 3000); // Запуск приложения
 ```
 
-### Приём обновлений: только вебхук
+### Приём обновлений: вебхук или long polling
 
-Все платформы подключаются через вебхук: платформа сама присылает запрос на ваш HTTPS-адрес. Long polling
-(`getUpdates` у Telegram, Bots Long Poll у VK, `GET /updates` у MAX) не поддерживается, поэтому для проверки
-с реальной платформой на локальной машине нужен туннель (ngrok и аналоги, см. getting-started). Без сети логику
-можно проверить в консоли через `BotTest` (`umbot/test`).
+По умолчанию платформа сама присылает запрос на ваш HTTPS-адрес — вебхук (`bot.start()`, `webhookHandle`,
+`webhookEvent`). Telegram, VK и MAX умеют ещё и отдавать обновления по запросу: `bot.startPolling()` запускает
+long polling (`getUpdates` у Telegram, Bots Long Poll у VK, `GET /updates` у MAX), и публичный адрес не нужен —
+удобно для локальной разработки и серверов без HTTPS.
+
+```ts
+bot.use(new TelegramAdapter(process.env.TELEGRAM_TOKEN));
+await bot.startPolling(); // выполняется после bot.stopPolling(), bot.close() или SIGINT/SIGTERM
+```
+
+- Обновление проходит тот же конвейер, что и вебхук (middleware, команды, очередь пользователя), кроме проверки
+  подписи: оно получено от API по токену бота. Обновления одной пачки выполняются параллельно, не больше 32
+  одновременно; обновления одного пользователя — по очереди, в порядке пачки.
+- IP клиента у polling нет: `ipFilter` с `rejectWithoutIp: true` отклонит все обновления. Для бота на polling
+  `ipFilter` не нужен — запросы к платформе делает сам бот.
+- Ошибка сети или 5xx — повтор с паузой от 1 до 30 секунд. Неверный токен или активный вебхук у Telegram
+  (ответ 409) останавливают polling этой платформы с причиной в логе.
+- Telegram: polling не работает, пока у бота зарегистрирован вебхук (ответ 409). Вебхук не снимается молча —
+  токен может принадлежать production-боту. Возьмите для разработки другой токен или снимите вебхук явно опцией
+  `new TelegramAdapter(token, { telegram_delete_webhook: true })`: адаптер вызовет `deleteWebhook` при первом
+  запросе и запишет предупреждение в лог. В режиме polling ответ всегда уходит через API: опция
+  `telegram_webhook_reply` не действует.
+- VK: нужен токен сообщества и включённый Long Poll API («Работа с API» → «Long Poll API») с нужными типами
+  событий. Секрет Callback API (`VK_SECRET_KEY`) для polling не нужен. Имена авторов сообщений пачки
+  загружаются одним запросом `users.get`.
+- MAX рекомендует polling для разработки и тестов, в продакшене — вебхук (`POST /subscriptions`). По
+  документации MAX первый запрос без `marker` отдаёт только последнее накопившееся событие: сообщения, пришедшие
+  до запуска бота, кроме последнего, не обрабатываются.
+- Можно совмещать: например, `bot.start()` для Алисы и `bot.startPolling({ platforms: ['telegram'] })` для Telegram.
+
+Алиса, Маруся, SmartApp и Viber работают только через вебхук: для проверки на локальной машине нужен туннель
+(ngrok и аналоги, см. getting-started). Без сети логику можно проверить в консоли через `BotTest` (`umbot/test`).
 
 Как фреймворк обрабатывает поток вебхуков:
 
@@ -216,7 +244,7 @@ bot.use(new TelegramAdapter('YOUR_BOT_TOKEN')); // Способ 1: токен в
 > выполнения логики). **Без `webhookSecret` адаптер принимает любой запрос с полем `update_id`** —
 > любой, кто узнает URL вебхука, сможет слать сообщения от имени любого пользователя; это допустимо
 > только для локальной отладки. Подробнее — в
-> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_configuration.html#проверка-подписи-вебхука-обязательно-для-production).
+> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration#проверка-подписи-вебхука-обязательно-для-production).
 
 ### Особенности
 
@@ -349,7 +377,7 @@ bot.use(new MaxAdapter('YOUR_BOT_TOKEN', { secret: 'YOUR_WEBHOOK_SECRET' })); //
 > заголовком (401). **Без секрета адаптер принимает любой запрос с полями `update_type` +
 > `timestamp`** — любой, кто узнает URL вебхука, сможет слать сообщения от имени любого
 > пользователя; допустимо только для локальной отладки. Подробнее — в
-> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_configuration.html#проверка-подписи-вебхука-обязательно-для-production).
+> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration#проверка-подписи-вебхука-обязательно-для-production).
 
 ### Особенности
 
@@ -466,7 +494,7 @@ bot.setAppConfig({
 умеет загружать аудиофайлы в Марусю (`marusia.getAudioUploadLink` → upload → `marusia.createAudio`),
 поэтому кастомные звуки работают у обеих голосовых платформ — у Алисы и Маруси. Предзагрузка — через
 `Preload.loadSounds(paths, [T_ALISA, T_MARUSIA])`: токены звуков кэшируются в БД (как у Алисы),
-маршрут тот же, что и в [контрактной сверке](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-contract-comparison.html#маруся-исходящие-картинки-аудио)
+маршрут тот же, что и в [контрактной сверке](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-contract-comparison#маруся-исходящие-картинки-аудио)
 (раздел 6, «Исходящие API-запросы Маруси»).
 В обработчике достаточно работать с `controller.sound` — адаптер сам подберёт токен по пути к файлу.
 
@@ -786,7 +814,7 @@ ctx.text = `*Пользователь:* ${userName}`;
   `controller.api.answerCallback(text)`, повторного подтверждения не будет.
 - **API.** Базовый URL — `platform-api2.max.ru`; авторизация заголовком `Authorization: <token>`
   (query-параметры платформа больше не поддерживает). Детальное сравнение контракта —
-  в [platform-contract-comparison.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-contract-comparison.html#4-max).
+  в [platform-contract-comparison.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-contract-comparison#4-max).
 
 ### SmartApp (Сбер)
 
@@ -813,7 +841,7 @@ ctx.text = `*Пользователь:* ${userName}`;
 
 Две кросс-платформенные возможности 3.1.0 закрывают то, что раньше требовало ручного разбора
 `requestObject` под каждую платформу. Полный справочник API (сигнатуры, примеры) —
-в [api-reference.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_api-reference.html); здесь — привязка к платформам.
+в [api-reference.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference); здесь — привязка к платформам.
 
 ### Событийный роутинг (`bot.addEvent`)
 

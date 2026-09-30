@@ -119,6 +119,8 @@ export interface IUserDataModelState extends IModelState {
  * // Для Telegram
  * userData.platform = T_TELEGRAM;
  * ```
+ *
+ * @group Хранение данных
  */
 export class UsersData extends Model<IUserDataModelState> {
     /**

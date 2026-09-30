@@ -35,7 +35,8 @@ npm start
 | `validate`         | Проверить корректность flow.json                    | `<flow.json>`                                          |
 | `stats`            | Агрегировать метрики из лога                        | `--log <path>`                                         |
 | `generateenv`      | Сгенерировать файл .env в текущей папке             | `[--force]`                                            |
-| `webhook`          | Зарегистрировать вебхук Telegram/MAX с секретом     | `<telegram                                             | max> <https-url>` |
+| `doctor`           | Проверить проект, токены и вебхуки                  | `[--env <path>] [--offline]`                           |
+| `webhook`          | Зарегистрировать вебхук Telegram/MAX с секретом     | `<telegram\|max> <https-url>`                          |
 | `add docker`       | Добавить Dockerfile и .dockerignore в текущую папку | -                                                      |
 | `add deploy`       | Добавить .github/workflows/deploy.yml               | -                                                      |
 | `add env`          | Сгенерировать .env в текущей папке                  | `[--force]`                                            |
@@ -53,6 +54,25 @@ npm start
 
 ```bash
 npx umbot webhook telegram https://bot.example.com/webhook
+```
+
+### Команда `doctor`
+
+`npx umbot doctor` в папке проекта проверяет, готов ли бот к запуску, и печатает отчёт:
+
+- версия Node.js подходит umbot, пакет `umbot` установлен;
+- `.env` есть и указан в `.gitignore` (иначе токены попадут в git — это ошибка);
+- токены платформ из `.env` и окружения рабочие: запрос к API (Telegram `getMe`, MAX `GET /me`, VK
+  `groups.getById`, Viber `get_account_info`, Алиса — квота загрузки файлов). Для SmartApp и Маруси проверяется
+  только наличие токена;
+- вебхуки: адрес, число недоставленных обновлений и последняя ошибка доставки Telegram, подписки MAX, вебхук Viber;
+  предупреждение, если вебхук зарегистрирован без секрета. Без вебхука — подсказка про `bot.startPolling()`.
+
+Токены в отчёт не попадают. `--offline` отключает запросы к API, `--env <path>` задаёт другой файл `.env`. При
+ошибках команда завершается с кодом 1 — её можно запускать в CI перед деплоем.
+
+```bash
+npx umbot doctor
 ```
 
 ### Флаги команды `create`
@@ -229,7 +249,7 @@ interface ProjectConfig {
 
 **Цепочка:** Визуальный редактор → JSON-конфигурация → `npx umbot create from-flow` → TypeScript-проект
 
-> Подробное описание JSON-формата: [src/docs/json-format.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_json-format.html)
+> Подробное описание JSON-формата: [src/docs/json-format.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/json-format)
 
 #### Использование
 
