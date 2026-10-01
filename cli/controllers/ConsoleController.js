@@ -5,6 +5,7 @@ const utils = require(path.join(__dirname, '..', 'utils.js')).utils;
 const flowGenerator = require(path.join(__dirname, '..', 'flowGenerator.js'));
 const { setupWebhook } = require(path.join(__dirname, 'WebhookController.js'));
 const { runDoctor } = require(path.join(__dirname, 'DoctorController.js'));
+const { runAddScaffold } = require(path.join(__dirname, 'ScaffoldController.js'));
 const fs = require('node:fs');
 
 const VERSION = require(path.join(__dirname, '..', '..', 'package.json')).version;
@@ -109,7 +110,7 @@ function generateEnv(force = false, fileName = '.env') {
 
 /**
  * Консольный контроллер CLI: маршрутизирует команды create (в т.ч. from-flow), validate,
- * stats, doctor, webhook, generateEnv, add и version.
+ * stats, doctor, webhook, generateEnv, add (docker, deploy, env, platform, db, middleware) и version.
  * @param param
  * @param argv
  */
@@ -135,6 +136,9 @@ async function main(
         '\n\t docker  Добавляет Dockerfile и .dockerignore' +
         '\n\t deploy  Добавляет файл для деплоя на сервер' +
         '\n\t env     Добавляет файл .env' +
+        '\n\t platform <Name>    Каркас адаптера своей платформы с тестом: src/platforms/<Name>Adapter.ts' +
+        '\n\t db <Name>          Каркас адаптера базы данных с тестом: src/db/<Name>DbAdapter.ts' +
+        '\n\t middleware <name>  Каркас middleware с тестом: src/middleware/<name>.ts' +
         '\n\t --force    Перезаписать существующие файлы/непустую директорию' +
         '\n - version | -v - Вывести версию CLI';
     if (param && param.command) {
@@ -463,6 +467,11 @@ async function main(
                         break;
                     case 'env':
                         generateEnv(argv.includes('--force'));
+                        break;
+                    case 'platform':
+                    case 'db':
+                    case 'middleware':
+                        runAddScaffold(argv[3], argv);
                         break;
                     default:
                         console.log(infoText);

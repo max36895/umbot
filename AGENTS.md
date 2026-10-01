@@ -50,7 +50,8 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    benchmark/ # Scripts for stress testing performance (RPS, memory).
    live-test/ # Manual checks against REAL platform APIs (npm run live). Plain JS, not part of the npm package and not covered by Jest.
    examples/ # Runnable usage examples. Must keep compiling against the current public API.
-   scripts/ # Build/maintenance helpers used by npm scripts (clean, fix-doc, audit-load, link-skills).
+   scripts/ # Build/maintenance helpers used by npm scripts (clean, fix-doc, audit-load, link-skills) and i18n-docs.js (docs translation).
+   i18n/ # English docs: block translation cache (en/translations.json), glossary, config. Workflow — i18n/README.md. Not shipped.
    audit/ # Stored audit artifacts and reports. Not shipped.
    Important: cli/ is a product surface, not a helper sandbox. It generates code that users run in production. Any audit
    or change that affects project creation, templates, generated TypeScript, generated Docker/Yandex Cloud config, or

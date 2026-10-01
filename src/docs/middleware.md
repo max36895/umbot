@@ -43,6 +43,9 @@ bot.use(T_ALISA, async (ctx, next) => {
 
 ## Кастомная middleware
 
+Каркас middleware-фабрики с настройками и тестом создаёт `npx umbot add middleware <name>` — файл
+`src/middleware/<name>.ts` (подробнее — в [описании CLI](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README)).
+
 ### Пример: логирование всех запросов
 
 ```ts

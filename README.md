@@ -16,6 +16,8 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue)](https://www.typescriptlang.org/)
 [![Supported Platforms](https://img.shields.io/badge/Platforms-7+-green)](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration)
 
+**English:** [documentation in English](https://www.maxim-m.ru/docs/umbot/en/) (machine-translated from Russian).
+
 ---
 
 ## Почему `umbot`?
@@ -128,7 +130,8 @@ VK — без переписывания или существенных дор�
 вебхуков.
 
 > **Нужна своя платформа?**  
-> Просто создайте свой адаптер согласно документации для нужной платформы и подключите его к приложению.  
+> Создайте каркас адаптера командой `npx umbot add platform <Name>` — он сразу компилируется и проходит свой тест,
+> а места под API платформы отмечены `TODO`. Так же создаются адаптер БД (`add db`) и middleware (`add middleware`).  
 > Это позволяет интегрировать `umbot` в любую внутреннюю систему, корпоративный мессенджер или поддержать любую другую
 > платформу, например WhatsApp или WeChat.
 

@@ -26,19 +26,20 @@ my-bot/
 
 ## Файлы
 
-| Файл                               | Назначение                                                                                                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flowGenerator.js`                 | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.                                |
-| `umbot.js`                         | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                                                  |
-| `controllers/ConsoleController.js` | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                                           |
-| `controllers/CreateController.js`  | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                                          |
-| `controllers/WebhookController.js` | Команда `webhook`: регистрирует вебхук Telegram/MAX с секретом и пишет секрет в `.env` только после успеха.                                             |
-| `controllers/DoctorController.js`  | Команда `doctor`: Node.js, umbot в node_modules, `.env`/`.gitignore`, токены платформ по API, состояние вебхуков. Токены не выводит, код 1 при ошибках. |
-| `utils.js`, `index.ts`             | Файловые хелперы CLI и TS-обёртка.                                                                                                                      |
-| `template/`                        | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`, `gitignore.text`.   |
+| Файл                                | Назначение                                                                                                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flowGenerator.js`                  | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.                                |
+| `umbot.js`                          | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                                                  |
+| `controllers/ConsoleController.js`  | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                                           |
+| `controllers/CreateController.js`   | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                                          |
+| `controllers/WebhookController.js`  | Команда `webhook`: регистрирует вебхук Telegram/MAX с секретом и пишет секрет в `.env` только после успеха.                                             |
+| `controllers/DoctorController.js`   | Команда `doctor`: Node.js, umbot в node_modules, `.env`/`.gitignore`, токены платформ по API, состояние вебхуков. Токены не выводит, код 1 при ошибках. |
+| `controllers/ScaffoldController.js` | Команды `add platform\|db\|middleware <name>`: каркас модуля и теста на `node:test` из `template/scaffold/` в `src/` проекта.                           |
+| `utils.js`, `index.ts`              | Файловые хелперы CLI и TS-обёртка.                                                                                                                      |
+| `template/`                         | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`, `gitignore.text`.   |
 
 Тесты: каталог `tests/cli/` (Jest) — `flowGenerator`, `flowGeneratorUserScenario`, `flowUtilsIsEqual`,
-`createController`, `consoleController`, `deploySanitize`, `webhookController`, `doctorController`. При изменении генератора или шаблонов добавляй проверку
+`createController`, `consoleController`, `deploySanitize`, `webhookController`, `doctorController`, `scaffoldController`. При изменении генератора или шаблонов добавляй проверку
 именно того кода/файла, который получит пользователь.
 
 Воркфлоу правок в `cli/` (что проверить, что обновить, чем верифицировать) — скилл `umbot-cli-change`.
@@ -129,6 +130,12 @@ generateFromFlow(jsonPath, outputPath)
     stage оставлять production-only.
 18. **Слоты** — строковые слоты команд и welcome генерируются в нижнем регистре (`slotLiteral`): `userCommand`
     фреймворка уже в нижнем. Слоты-регулярки (`isPattern`) регистр не меняют — `\D` ≠ `\d`.
+19. **Каркасы `add platform|db|middleware`** — шаблоны `template/scaffold/*.text` с подстановками `{{Name}}`,
+    `{{name}}`, `{{platformName}}`, `{{ENV_NAME}}`. Сгенерированный каркас обязан компилироваться с tsconfig шаблона
+    `create` и проходить свой тест сразу после генерации — `scaffoldController.test.ts` собирает его против dist/ и
+    запускает `node --test`. Меняется контракт `BasePlatformAdapter`/`BaseDbAdapter`/middleware — правь шаблон.
+    `src/index.ts` пользователя CLI не трогает, пара файлов пишется целиком или не пишется (без `--force`).
+    В тестах каркаса нельзя использовать `@internal`-API (`getBotController()`): его нет в `.d.ts` пакета.
 
 ### Исправленные баги
 

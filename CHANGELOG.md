@@ -32,6 +32,12 @@
   место в `.gitignore`, токены платформ запросом к API (Telegram, MAX, VK, Viber, Алиса) и состояние вебхуков
   (адрес, недоставленные обновления и последняя ошибка доставки Telegram, вебхук без секрета). Токены в отчёт не
   попадают; при ошибках — код выхода 1.
+- **CLI `umbot add platform|db|middleware <name> [--force]`**: каркас своего адаптера платформы
+  (`src/platforms/<Name>Adapter.ts`), адаптера базы данных (`src/db/<Name>DbAdapter.ts`) или middleware-фабрики
+  (`src/middleware/<name>.ts`) вместе с тестом на встроенном `node:test`. Каркас сразу компилируется и проходит тест,
+  места под API платформы или драйвер базы отмечены `TODO`. Адаптер БД — рабочий, с хранением в памяти процесса, а его
+  тест проверяет ответы, которых ждёт фреймворк. CLI не меняет `src/index.ts` (строки подключения печатает в консоль)
+  и не перезаписывает существующие файлы без `--force`.
 
 ### Безопасность
 
@@ -65,6 +71,12 @@
 - Long polling, `umbot doctor`, `{{env.NAME}}` в `http_request`, `loadEnvFile` и `Request.signal` описаны в README,
   `GUIDE.md`, `getting-started.md`, `platform-integration.md`, `json-format.md`, `configuration.md`,
   `http-client.md` и `adapter/platformAdapter.md`. Убрано устаревшее «мессенджеры подключаются только через вебхук».
+- `umbot add platform|db|middleware` описан в `cli/README.md`, README, `GUIDE.md`, `adapter/platformAdapter.md`,
+  `adapter/dbAdapter.md` и `middleware.md`.
+- **Документация на английском** — `https://www.maxim-m.ru/docs/umbot/en/`: все гайды, README и `cli/README.md`
+  (машинный перевод, русская версия остаётся основной; API-справочник — с русским JSDoc). Перевод хранится по
+  абзацам, и правка русского текста требует перевести только изменённые абзацы: `node scripts/i18n-docs.js`,
+  порядок работы — `i18n/README.md`.
 - **Порядок обработки запроса** был описан неверно: `GUIDE.md` и `api-reference.md` утверждали, что fallback
   проверяется до интентов и перехватывает запрос. На деле интенты из `setPlatformParams` ищутся раньше, а fallback
   срабатывает, только если интент не найден. Схема диспетчера исправлена и сведена к одной во всех разделах.

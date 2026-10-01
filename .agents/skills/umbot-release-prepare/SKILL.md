@@ -133,6 +133,26 @@ git diff $(git describe --tags --abbrev=0)..HEAD --stat -- src/docs/ README.md
 
 - Пробел найден → закрой правкой документации до релиза (скилл `umbot-doc-audit`) либо получи от пользователя явное «релизим без доки» и зафиксируй это в отчёте.
 
+### Шаг 3.2: Перевод документации
+
+Английский сайт собирается на сервере из `i18n/en/translations.json` ветки (`server/pullDoc.sh`). Абзац, изменённый
+после последнего перевода, уходит на английский сайт по-русски — поэтому перевод делается до релиза, после правок
+документации из Шага 3.1. Порядок и правила — `i18n/README.md`, термины — `i18n/en/glossary.md`.
+
+```bash
+node scripts/i18n-docs.js status                 # все страницы должны быть 100%
+node scripts/i18n-docs.js export                 # блоки без перевода → i18n/en/pending.md
+# переведи pending.md по глоссарию в отдельный файл и импортируй его
+node scripts/i18n-docs.js import <перевод.md>    # отклонённые блоки — исправь и импортируй снова
+node scripts/i18n-docs.js prune                  # убрать переводы удалённых блоков
+node scripts/i18n-docs.js build                  # проверить сборку: i18n/en/build/
+```
+
+- `import` перезаписывает кэш, `export` — `pending.*`: не запускай `export` между переводом и `import`.
+- Отклонение `import` — сигнал, что в переводе изменился код, число, ссылка или осталась кириллица. Правится перевод,
+  проверку не ослабляют.
+- `i18n/en/translations.json` коммитится вместе с релизом.
+
 ### Шаг 4: Ревью диффа
 
 ```bash
@@ -223,6 +243,7 @@ npm publish
 - [ ] `git status` — чистая рабочая директория
 - [ ] `CHANGELOG.md` обновлён, соответствует git log, секции `[Unreleased]` нет, дата секции согласована с пользователем, compare-ссылка добавлена
 - [ ] Каждый пункт релизной секции CHANGELOG отражён в `src/docs/`/`README.md`/JSDoc (или пробел явно принят пользователем)
+- [ ] `node scripts/i18n-docs.js status` — все страницы 100%, `i18n/en/translations.json` закоммичен (Шаг 3.2)
 - [ ] `package.json` версия корректная
 - [ ] Ручные хардкоды версии синхронизированы: пин в `cli/template/package.json.text` и JSDoc-шапка `cli/umbot.js` (в `ConsoleController.js` и `flowGenerator.js` версия берётся из `package.json` — проверь, что это не изменилось)
 - [ ] `npm pack` показывает ожидаемый состав (dist, cli, README, LICENSE, package.json — по `files`)

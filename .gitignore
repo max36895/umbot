@@ -33,3 +33,7 @@ benchmark/comparison/baseline.json
 # Claude Code читает скилы только из .claude/skills, поэтому связь создаётся
 # автоматически при `npm i` (хук prepare -> scripts/link-skills.js).
 .claude/
+
+# Перевод документации: рабочие файлы и сборка (scripts/i18n-docs.js), в git — только кэш и настройки
+/i18n/*/pending.*
+/i18n/*/build/

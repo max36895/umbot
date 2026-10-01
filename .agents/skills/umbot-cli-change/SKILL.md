@@ -43,6 +43,7 @@ npx umbot create from-flow <flow.json> [--output ./dir] [--usecloud] [--force]
 npx umbot validate <flow.json>
 npx umbot stats --log <path>
 npx umbot add docker | deploy | env [--force]
+npx umbot add platform | db | middleware <name> [--force]
 npx umbot generateenv [--force]
 npx umbot version | -v
 ```

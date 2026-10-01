@@ -186,7 +186,8 @@ await bot.startPolling(); // { platforms: ['telegram'] } — только выб
 
 Кроме `create`, CLI умеет создавать проект из визуального редактора (`create from-flow`), проверять `flow.json`
 (`validate`), регистрировать вебхук с секретом (`webhook`), проверять токены и вебхуки (`doctor`), добавлять
-Dockerfile и CI (`add docker`, `add deploy`). Полный список команд, флагов и формат JSON-конфига для `create` —
+Dockerfile и CI (`add docker`, `add deploy`), создавать каркас своего адаптера платформы, адаптера БД или middleware
+с готовым тестом (`add platform`, `add db`, `add middleware`). Полный список команд, флагов и формат JSON-конфига для `create` —
 в [описании CLI](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README).
 
 ### Ручная установка

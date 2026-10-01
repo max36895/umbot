@@ -36,6 +36,8 @@ const config = {
         'tests',
         'audit',
         'tmp-surgery',
+        // Переводы собираются из src/docs скриптом i18n-docs.js, их ссылки уже абсолютные.
+        'i18n',
     ],
     rootExcludeDirs: ['dist', 'coverage', 'docs'],
     ignoredExtensions: [

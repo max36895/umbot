@@ -40,7 +40,48 @@ npm start
 | `add docker`       | Добавить Dockerfile и .dockerignore в текущую папку | -                                                      |
 | `add deploy`       | Добавить .github/workflows/deploy.yml               | -                                                      |
 | `add env`          | Сгенерировать .env в текущей папке                  | `[--force]`                                            |
+| `add platform`     | Каркас адаптера своей платформы с тестом            | `<Name> [--force]`                                     |
+| `add db`           | Каркас адаптера базы данных с тестом                | `<Name> [--force]`                                     |
+| `add middleware`   | Каркас middleware с тестом                          | `<name> [--force]`                                     |
 | `-v`, `version`    | Узнать версию CLI                                   | -                                                      |
+
+### Каркас адаптера и middleware: `add platform`, `add db`, `add middleware`
+
+Команды запускаются в корне проекта (там, где папка `src/`) и создают модуль вместе с тестом:
+
+| Команда                         | Файлы                                                          |
+| ------------------------------- | -------------------------------------------------------------- |
+| `npx umbot add platform <Name>` | `src/platforms/<Name>Adapter.ts`, `<Name>Adapter.test.ts`      |
+| `npx umbot add db <Name>`       | `src/db/<Name>DbAdapter.ts`, `<Name>DbAdapter.test.ts`         |
+| `npx umbot add middleware <n>`  | `src/middleware/<name>.ts`, `<name>.test.ts` (функция-фабрика) |
+
+Имя пишется латиницей: `discord`, `my-chat`, `Postgres`. Суффикс `Adapter` можно не писать. У адаптера платформы
+`platformName` получается из имени (`my-chat` → `my_chat`).
+
+Каркас сразу компилируется и проходит свои тесты. Места, которые нужно заполнить под свою платформу или базу, отмечены
+комментарием `TODO`:
+
+- **платформа** — чат-платформа с вебхуком: распознаёт запрос, передаёт текст в команды и отправляет ответ через
+  `Request` (запрос ограничен по времени). Неизвестные события получают ответ без вызова команд: на ошибку платформа
+  повторила бы доставку. Заполнить нужно формат запроса, адрес API, авторизацию и формат кнопок;
+- **база данных** — рабочий адаптер, который хранит данные в памяти процесса. Методы заменяются на вызовы драйвера
+  своей базы. Тесты проверяют ответы, которых ждёт фреймворк, в том числе раздельные записи одного `userId` на
+  разных платформах (`uniqueKeys`);
+- **middleware** — фабрика с настройками на примере блокировки пользователей.
+
+Тесты написаны на встроенном `node:test` и не требуют дополнительных зависимостей. Запуск — командой, которую CLI
+печатает после генерации:
+
+```bash
+npx umbot add platform discord
+npm run build && node --test dist/platforms/DiscordAdapter.test.js
+```
+
+CLI не меняет `src/index.ts`: строки подключения (`bot.use(...)`) он печатает в консоль. Существующие файлы без
+`--force` не перезаписываются. Как устроен каждый метод, описано в руководствах по
+[адаптеру платформы](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/platformAdapter),
+[адаптеру БД](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/dbAdapter) и
+[middleware](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/middleware).
 
 ### Команда `webhook`
 

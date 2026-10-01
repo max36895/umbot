@@ -1,0 +1,28 @@
+{
+    "siteUrl": "https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/",
+    "pages": [
+        "README.md",
+        "src/docs/BENCHMARKS.md",
+        "src/docs/FAQ.md",
+        "src/docs/GUIDE.md",
+        "src/docs/adapter/dbAdapter.md",
+        "src/docs/adapter/external-db-adapter-spec.md",
+        "src/docs/adapter/platformAdapter.md",
+        "src/docs/adapter/readme.md",
+        "src/docs/api-reference.md",
+        "src/docs/configuration.md",
+        "src/docs/deployment.md",
+        "src/docs/getting-started.md",
+        "src/docs/http-client.md",
+        "src/docs/json-format.md",
+        "src/docs/middleware.md",
+        "src/docs/migration-2x-to-3x.md",
+        "src/docs/performance-and-guarantees.md",
+        "src/docs/platform-contract-comparison.md",
+        "src/docs/platform-integration.md",
+        "src/docs/recipes.md",
+        "src/docs/testing.md",
+        "cli/README.md"
+    ],
+    "notice": "> This page is machine-translated from the [Russian original]({url}). If something reads oddly, the Russian version is the source of truth — [open an issue](https://github.com/max36895/umbot/issues)."
+}
