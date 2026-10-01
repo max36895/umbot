@@ -178,14 +178,33 @@ function getSettingsHelpText(doc) {
 }
 
 /**
+ * Литерал строкового слота команды.
+ *
+ * Фреймворк сравнивает слот с `userCommand`, который уже в нижнем регистре, поэтому слот «Погода»
+ * из редактора не сработал бы никогда. Слоты-регулярки (`isPattern`) регистр сохраняют:
+ * `\D` и `\d` — разные классы.
+ * @param {string} slot — слот из flow.json
+ * @param {boolean} isPattern — слоты команды — регулярные выражения
+ * @returns {string} строковый литерал TypeScript
+ *
+ * @example
+ * slotLiteral('Погода', false); // "'погода'"
+ */
+function slotLiteral(slot, isPattern) {
+    const value = isPattern ? String(slot) : String(slot).toLowerCase();
+    return `'${escapeStr(value)}'`;
+}
+
+/**
  * Слоты приветствия: собственные слоты ноды (или стандартные WELCOME_INTENT_SLOTS) и `/start`.
  * @param {string[]} slots — слоты ноды welcome
+ * @param {boolean} [isPattern] — слоты ноды — регулярные выражения
  * @returns {string} выражение массива слотов
  */
-function welcomeSlotsExpr(slots) {
+function welcomeSlotsExpr(slots, isPattern = false) {
     const own = (slots || []).filter((s) => s && s !== START_SLOT);
     return own.length
-        ? `['${START_SLOT}', ${own.map((s) => `'${escapeStr(s)}'`).join(', ')}]`
+        ? `['${START_SLOT}', ${own.map((s) => slotLiteral(s, isPattern)).join(', ')}]`
         : `['${START_SLOT}', ...WELCOME_INTENT_SLOTS]`;
 }
 
@@ -1912,8 +1931,8 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
         }
         // Приветствие срабатывает и на /start (Telegram), а не только на «привет»/«здравст»
         const slotsExpr = isWelcome
-            ? welcomeSlotsExpr(cmd.slots)
-            : `[${(cmd.slots || []).map((s) => `'${escapeStr(s)}'`).join(', ')}]`;
+            ? welcomeSlotsExpr(cmd.slots, !!cmd.isPattern)
+            : `[${(cmd.slots || []).map((s) => slotLiteral(s, !!cmd.isPattern)).join(', ')}]`;
         // Fallback вызывает приветствие в начале диалога — и становится async вместе с ним
         const isAsync = commandNeedsAsync(cmd) || (isFallback && welcomeIsAsync);
         const cmdName = isWelcome

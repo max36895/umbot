@@ -76,7 +76,10 @@ ctx.text = `Привет, ${ctx.userData.name}!`;
 Шаг 2 должен быть зарегистрирован через `bot.addStep('step2', (ctx) => { ... })`, иначе переход не сработает.
 
 - `userData` сохраняется между сессиями (в БД или локальном хранилище).
-- `state` хранится только в рамках текущей сессии (поддерживается не всеми платформами).
+- `state` — хранилище самой платформы (только Алиса, Маруся и SmartApp, при `isLocalStorage: true`). Срок жизни
+  задаёт платформа: адаптер берёт самый долгий уровень из пришедших в запросе. У Алисы это хранилище пользователя
+  (переживает сессии, если пользователь авторизован в Яндексе), затем хранилище приложения (устройства), затем
+  сессии; у Маруси — пользователя, затем сессии. На Telegram, VK, MAX и Viber `state` всегда `null`.
 
 ### Что такое плагин в umbot?
 
@@ -106,12 +109,12 @@ const bot = new Bot();
 
 // 1. Подключение готовых плагинов (платформы и БД)
 bot.use(fullPlatforms);
-bot.use(new MongoAdapter({/* конфиг */}));
+bot.use(new MongoAdapter({ host: 'mongodb://localhost:27017', database: 'umbot' }));
 
 // 2. Подключение кастомного плагина (пример)
 const myPlugin = createPlugin((appContext, bot) => {
     appContext.plugins['myPlugin'] = {
-        getData: (key) => `Value: ${key}`,
+        getData: (key: string) => `Value: ${key}`,
     };
 });
 
@@ -153,6 +156,7 @@ export const gamePlugin = createPlugin((appContext: AppContext, bot: Bot): void 
 
 ```ts
 // index.ts
+import { Bot } from 'umbot';
 import { gamePlugin } from './plugins/game';
 
 const bot = new Bot();
@@ -239,8 +243,9 @@ import { fullPlatforms, FileAdapter } from 'umbot/plugins';
 const bot = new Bot()
     .use(fullPlatforms) // Подключаем платформы как плагин
     .use(new FileAdapter()) // Подключаем адаптер БД
-    .setPlatformParams(params)
-    .start('localhost', 3000);
+    .setPlatformParams(params);
+
+bot.start('localhost', 3000);
 ```
 
 Подробнее об изменениях можно прочитать [тут](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/migration-2x-to-3x)
@@ -558,10 +563,11 @@ bot.setAppMode('dev');
 
 ### При добавлении команды с регулярным выражением появляется предупреждение о ReDoS. Что делать?
 
-Фреймворк автоматически проверяет регулярные выражения на уязвимости. В режиме strict_prod такие команды не
-регистрируются. Чтобы исправить:
+Фреймворк автоматически проверяет регулярные выражения на уязвимости. В режиме strict_prod опасный слот
+отбрасывается: команда работает по оставшимся безопасным слотам, а если опасны все — не регистрируется. Чтобы
+исправить:
 
-- Перепишите выражение, избегая вложенных квантификаторов ((a+)+), повторяющихся групп, `.*` без якорей.
+- Перепишите выражение, избегая вложенных квантификаторов ((a+)+) и повторяющихся групп (список ниже).
 - Проверьте выражение на regex101.com с флагом "debugger".
   Если вы уверены в безопасности, используйте режим prod (не рекомендуется).
 

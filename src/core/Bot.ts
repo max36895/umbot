@@ -35,8 +35,6 @@ import {
 } from './constants';
 import { UsersData, DB_TABLES_SCHEMA } from '../models';
 import { ILogger } from './interfaces/ILogger';
-// Из листовых модулей, а не из барреля: реэкспорт через баррель в CommonJS —
-// цепочка геттеров на горячем пути (см. BotController).
 import { Text } from '../utils/standard/Text';
 import { isPromise } from '../utils/isPromise';
 import { keysCount } from '../utils/standard/util';
@@ -1251,7 +1249,8 @@ export class Bot<
      *
      * @param stepName — Уникальное имя шага (например, `'enter_email'`).
      * @param handler — Функция, вызываемая при получении сообщения в этом шаге.
-     *                  Может вернуть `false`, чтобы пропустить шаг и передать управление командам.
+     *                  Может вернуть `false`, чтобы пропустить шаг и передать управление командам,
+     *                  или строку — она станет текстом ответа, как у `addCommand`.
      * @returns Текущий экземпляр `Bot` (для цепочки вызовов).
      *
      * @example

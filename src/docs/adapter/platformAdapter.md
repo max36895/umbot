@@ -132,9 +132,15 @@ isPlatformOnQuery(query: unknown, headers?: Record<string, unknown>): boolean {
 `parsedQuery`: повторный `JSON.parse` тела на каждом запросе — лишние микросекунды.
 
 ```ts
+import { timingSafeEqual } from 'node:crypto';
+
+// ...внутри класса адаптера
 isCorrectQuery(query: string | IMyQuery, headers?: Record<string, unknown>, parsedQuery?: unknown): boolean {
     const body = (parsedQuery ?? (typeof query === 'string' ? JSON.parse(query) : query)) as IMyQuery;
-    return body.secret === this.secret;
+    const got = Buffer.from(String(body.secret ?? ''));
+    const expected = Buffer.from(this.secret);
+    // Сравнение за постоянное время: обычное === по времени ответа выдаёт, сколько символов секрета совпало
+    return got.length === expected.length && timingSafeEqual(got, expected);
 }
 ```
 

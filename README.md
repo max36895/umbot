@@ -100,10 +100,6 @@ VK — без переписывания или существенных дор�
   Вы устали переносить обработчики из проекта в проект или мучительно адаптировать бизнес-логику под каждый новый API.
   `umbot` позволяет писать ядро один раз и забыть о boilerplate.
 
-> **Ключевая мысль:**
-> `umbot` — это не «надстройка для мультиплатформенности», а базовый слой, который делает разработку под любую платформу
-> (даже одну) быстрее, чище и готовой к масштабированию.
-
 ---
 
 ## Поддерживаемые платформы
@@ -199,8 +195,9 @@ import { EchoController } from './controller/EchoController';
 const bot = new Bot()
     .use(fullPlatforms)
     .setAppConfig({ json: './data', isLocalStorage: true })
-    .initBotController(EchoController)
-    .start('localhost', 3000);
+    .initBotController(EchoController);
+
+bot.start('localhost', 3000);
 ```
 
 ```ts
@@ -251,6 +248,7 @@ export class EchoController extends BotController {
 - [Быстрый старт](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/getting-started) - Подробное
   описание, для быстрого старта проекта
 - [Подробная инструкция по созданию приложений](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/GUIDE)
+- [Рецепты](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/recipes) - Готовые решения типовых задач
 - [API Reference](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference) - Подробное
   описание всех классов, методов и интерфейсов
 - [Поддерживаемые платформы](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration) -

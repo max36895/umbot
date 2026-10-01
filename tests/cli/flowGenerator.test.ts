@@ -81,6 +81,52 @@ describe('flowGenerator', () => {
             expect(code).toContain('}, true);');
             expectProjectToTypeCheck(projectPath);
         });
+
+        it('приводит строковые слоты к нижнему регистру: userCommand приходит в нижнем', () => {
+            const code = writeJsonAndGenerate('slots-case', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'weather',
+                        slots: ['Погода', 'ПРОГНОЗ Погоды'],
+                        response: { text: 'ok', buttons: [], sounds: [] },
+                    },
+                    {
+                        type: 'command',
+                        id: 'c2',
+                        name: 'welcome',
+                        slots: ['Здравствуй'],
+                        response: { text: 'Привет!', buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [],
+                database: { type: 'none', config: {} },
+            });
+            expect(code).toContain("bot.addCommand('weather', ['погода', 'прогноз погоды']");
+            expect(code).toContain("bot.addCommand(WELCOME_INTENT_NAME, ['/start', 'здравствуй']");
+            expect(code).not.toContain("'Погода'");
+        });
+
+        it('не меняет регистр слотов-регулярок: \\D и \\d — разные классы', () => {
+            const code = writeJsonAndGenerate('slots-pattern-case', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 'code',
+                        slots: ['^Код\\D+$'],
+                        isPattern: true,
+                        response: { text: 'ok', buttons: [], sounds: [] },
+                    },
+                ],
+                edges: [],
+                database: { type: 'none', config: {} },
+            });
+            expect(code).toContain("bot.addCommand('code', ['^Код\\\\D+\\$']");
+        });
     });
 
     describe('Pattern 2: Command with buttons', () => {

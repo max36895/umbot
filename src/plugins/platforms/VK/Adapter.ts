@@ -946,7 +946,6 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
         return {
             type: 'message_new',
             // group_id обязателен: isPlatformOnQuery распознаёт VK по этому полю
-            // TODO: привести group_id в getQueryExample к string (тип IVkRequestContent)
             group_id: 1,
             object: {
                 message: {

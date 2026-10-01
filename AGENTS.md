@@ -130,6 +130,10 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
     | Behavior users must migrate to                                     | the `Миграция` block of the release section in CHANGELOG.md; `src/docs/migration-2x-to-3x.md` when 2.x → 3.x is affected                 |
 
     If you deliberately leave a document untouched, say so in the report with the reason. Silence is read as "forgot".
+    One fact — one place. `GUIDE.md` is the learning path (concepts, commands/steps, state, components); signatures and
+    tables live in `api-reference.md`, topics in their own documents, ready-made solutions in `recipes.md`. In GUIDE give
+    a short explanation and a link instead of copying a reference section: duplicated copies drift apart, and
+    `llms-full.txt` (built from all guides for AI agents) then contains two contradicting answers.
     Documentation audit: CHANGELOG.md is the checklist. Every entry of the current (not yet released) section and of the last released sections must be traceable to a place in the documentation. An entry with no documented counterpart is a documentation gap — report it and fix it, do not accept it silently.
 
     CHANGELOG.md: add an entry when a change adds a public feature, changes API behavior, or fixes a critical bug. Choosing the target section is strict:

@@ -62,6 +62,7 @@ my-bot/
 | `parseArithmeticExpression(expr, varNames)`    | Разбирает ограниченную арифметику flow без исполнения произвольного кода.                                                                                          |
 | `generateActionFunc(block, varNames, indent)`  | Генерирует код действия (set_variable, random_number, http_request).                                                                                               |
 | `generateConditionFunc(cond, ...)`             | Генерирует `if/else` из условия (7 параметров).                                                                                                                    |
+| `slotLiteral(slot, isPattern)`                 | Литерал слота команды: строковый слот — в нижнем регистре, слот-регулярка — как есть.                                                                              |
 | `generateButtonCode(buttons, indent, shuffle)` | Генерирует `addBtn()` / `addLink()`.                                                                                                                               |
 | `generateCardCode(card, indent)`               | Генерирует `card.addImage()`.                                                                                                                                      |
 | `generateBlockFunc(block, ...)`                | Генерирует функцию `__name(ctrl)` из блока (5 параметров).                                                                                                         |
@@ -126,6 +127,8 @@ generateFromFlow(jsonPath, outputPath)
     явный `--force`/`options.force` и должна быть покрыта тестом.
 17. **Docker** — production Docker template должен собирать TypeScript с devDependencies в builder-stage, а runtime
     stage оставлять production-only.
+18. **Слоты** — строковые слоты команд и welcome генерируются в нижнем регистре (`slotLiteral`): `userCommand`
+    фреймворка уже в нижнем. Слоты-регулярки (`isPattern`) регистр не меняют — `\D` ≠ `\d`.
 
 ### Исправленные баги
 
@@ -174,6 +177,8 @@ generateFromFlow(jsonPath, outputPath)
 - **HTTP headers + body** — свои `headers` заменяли `Content-Type: application/json`, и тело уходило как
   `text/plain`. Теперь `Content-Type` добавляется, если в `headers` нет своего (без учёта регистра). `headers`
   принимаются JSON-строкой или объектом (`parseHttpHeaders`), некорректные пропускаются с предупреждением.
+- **Регистр слотов** — слот «Погода» из редактора генерировался как есть и не совпадал ни с одной репликой
+  (`userCommand` в нижнем регистре). Строковые слоты приводятся к нижнему регистру, регулярки — нет.
 
 ## Тесты
 
@@ -183,39 +188,40 @@ npx jest tests/cli
 
 ### Покрытые паттерны
 
-| #       | Паттерн                 | Что проверяется                                |
-| ------- | ----------------------- | ---------------------------------------------- |
-| 1       | Простая команда         | `addCommand`, `setText`                        |
-| 2       | Кнопки                  | `addBtn`, `addLink`                            |
-| 3       | Шаг с saveTo            | `saveTo`, `userCommand`                        |
-| 4       | Инлайн action (rand)    | `rand()`, импорт                               |
-| 5       | Условие (блок)          | Функция `__check(ctrl)`                        |
-| 6       | Навигация               | `thisIntentName`                               |
-| 7       | Полный цикл             | command → action → step → condition            |
-| 8       | Карточка                | `card.addImage`                                |
-| 9       | TTS                     | `setTTS`                                       |
-| 10      | HTTP                    | `async fetchWithTimeout`                       |
-| 11      | Response блок           | `__help(ctrl)` вызов                           |
-| 12      | Карточка в response     | Много изображений                              |
-| 13      | isEnd                   | `ctrl.isEnd = true`                            |
-| 14      | set_variable expression | ограниченная арифметика и `Number(userData)`   |
-| 15      | isEmpty                 | `!ctrl.userData.x`                             |
-| 16      | saveAs lowercase        | `toLowerCase()`                                |
-| 17      | Мульти-шаг цепочка      | 3 шага подряд                                  |
-| 18      | Операторы               | gt, lt, contains, neq                          |
-| 19      | Inline condition        | if/else в command                              |
-| 20      | Кнопки в шаге           | `addBtn` в addStep                             |
-| 21      | Ошибки                  | Missing file, invalid JSON, missing name/nodes |
-| 22      | Welcome/fallback        | Тексты приветствия                             |
-| 23      | set_variable текст      | 'Hello world' → 'Hello world' (в кавычках)     |
-| 24      | isNotEmpty              | `!!condVar && condVar !== ''`                  |
-| 25      | helpText vs fallback    | helpText.text имеет приоритет                  |
-| 26      | Branch → step           | thisIntentName вместо \_\_name(ctrl)           |
-| db      | FileAdapter             | Импорт и использование                         |
-| dbmongo | MongoAdapter            | Импорт и использование                         |
-| dbnone  | Без адаптера            | Нет импорта                                    |
-| edge    | Backticks               | Экранирование `` ` `` в тексте                 |
-| edge    | ${}                     | Экранирование $ в тексте                       |
-| edge    | Пустые {{}}             | Не ломает шаблонный литерал                    |
-| edge    | Переменная с точкой     | Скобочный синтаксис `['user.name']`            |
-| edge    | Backticks + {{var}}     | Смешанное экранирование                        |
+| #       | Паттерн                 | Что проверяется                                 |
+| ------- | ----------------------- | ----------------------------------------------- |
+| 1       | Простая команда         | `addCommand`, `setText`                         |
+| 2       | Кнопки                  | `addBtn`, `addLink`                             |
+| 3       | Шаг с saveTo            | `saveTo`, `userCommand`                         |
+| 4       | Инлайн action (rand)    | `rand()`, импорт                                |
+| 5       | Условие (блок)          | Функция `__check(ctrl)`                         |
+| 6       | Навигация               | `thisIntentName`                                |
+| 7       | Полный цикл             | command → action → step → condition             |
+| 8       | Карточка                | `card.addImage`                                 |
+| 9       | TTS                     | `setTTS`                                        |
+| 10      | HTTP                    | `async fetchWithTimeout`                        |
+| 11      | Response блок           | `__help(ctrl)` вызов                            |
+| 12      | Карточка в response     | Много изображений                               |
+| 13      | isEnd                   | `ctrl.isEnd = true`                             |
+| 14      | set_variable expression | ограниченная арифметика и `Number(userData)`    |
+| 15      | isEmpty                 | `!ctrl.userData.x`                              |
+| 16      | saveAs lowercase        | `toLowerCase()`                                 |
+| 17      | Мульти-шаг цепочка      | 3 шага подряд                                   |
+| 18      | Операторы               | gt, lt, contains, neq                           |
+| 19      | Inline condition        | if/else в command                               |
+| 20      | Кнопки в шаге           | `addBtn` в addStep                              |
+| 21      | Ошибки                  | Missing file, invalid JSON, missing name/nodes  |
+| 22      | Welcome/fallback        | Тексты приветствия                              |
+| 23      | set_variable текст      | 'Hello world' → 'Hello world' (в кавычках)      |
+| 24      | isNotEmpty              | `!!condVar && condVar !== ''`                   |
+| 25      | helpText vs fallback    | helpText.text имеет приоритет                   |
+| 26      | Branch → step           | thisIntentName вместо \_\_name(ctrl)            |
+| 27      | Регистр слотов          | строки → нижний регистр, `isPattern` — как есть |
+| db      | FileAdapter             | Импорт и использование                          |
+| dbmongo | MongoAdapter            | Импорт и использование                          |
+| dbnone  | Без адаптера            | Нет импорта                                     |
+| edge    | Backticks               | Экранирование `` ` `` в тексте                  |
+| edge    | ${}                     | Экранирование $ в тексте                        |
+| edge    | Пустые {{}}             | Не ломает шаблонный литерал                     |
+| edge    | Переменная с точкой     | Скобочный синтаксис `['user.name']`             |
+| edge    | Backticks + {{var}}     | Смешанное экранирование                         |

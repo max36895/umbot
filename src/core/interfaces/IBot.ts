@@ -323,9 +323,9 @@ export interface IPlatformAdapter<TQuery = unknown> extends IPlugin {
      *
      * @example
      * ```ts
-     * // Telegram проверяет наличие заголовка 'X-Telegram-Bot-API-Secret-Token'
-     * isPlatformOnQuery(query, headers) {
-     *   return headers?.['x-telegram-bot-api-secret-token'] === this.secret;
+     * // Telegram узнаёт свой апдейт по полю update_id; секрет вебхука проверяет isCorrectQuery
+     * isPlatformOnQuery(query) {
+     *   return typeof query === 'object' && query !== null && 'update_id' in query;
      * }
      * ```
      */
@@ -346,7 +346,10 @@ export interface IPlatformAdapter<TQuery = unknown> extends IPlugin {
      * ```ts
      * isCorrectQuery(query, headers, parsedQuery) {
      *   const body = (parsedQuery ?? (typeof query === 'string' ? JSON.parse(query) : query)) as { secret?: string };
-     *   return body.secret === this.secret;
+     *   const got = Buffer.from(body.secret ?? '');
+     *   const expected = Buffer.from(this.secret);
+     *   // timingSafeEqual из node:crypto — сравнение секрета за постоянное время
+     *   return got.length === expected.length && timingSafeEqual(got, expected);
      * }
      * ```
      */
@@ -483,7 +486,6 @@ export interface IPlatformAdapter<TQuery = unknown> extends IPlugin {
      * @param userId Ид пользователя, которому нужно отправить сообщение
      * @param controllerOrText Контроллер приложения или текст. Если необходимо отправить просто текст, можно передать строку, в случае, если необходимо передать картинку звук и тд, то необходимо корректно заполнить контроллер.
      */
-    // TODO: тип возврата unknown | boolean вырождается в unknown — стоит упростить до unknown
     send(userId: string | number, controllerOrText: BotController | string): unknown | boolean;
 
     /**

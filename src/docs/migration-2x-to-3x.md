@@ -140,10 +140,10 @@ const bot = new Bot();
 bot.use(new FileAdapter()); // Подключаем файловую бд
 bot.use(
     new MongoAdapter({
-        host: process.env.DB_HOST,
+        host: process.env.DB_HOST ?? 'mongodb://localhost:27017',
         user: process.env.DB_USER,
         pass: process.env.DB_PASSWORD,
-        database: process.env.DB_NAME,
+        database: process.env.DB_NAME ?? 'umbot',
     }),
 ); // Подключаем MongoDb
 ```

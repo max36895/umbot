@@ -77,6 +77,39 @@ bot.setAppConfig({
 bot.start('localhost', 3000); // Запуск приложения
 ```
 
+### Авто-определение платформы
+
+`Bot` сам определяет, от какой платформы пришёл запрос — по телу запроса и заголовкам. Вам ничего настраивать не нужно:
+один webhook-эндпоинт принимает запросы от всех платформ.
+
+Если авто-определение не справляется (редкий случай, обычно при проксировании через свой шлюз), его можно
+переопределить:
+
+```ts
+bot.setPlatformResolver((query, headers, detect) => {
+    // detect() запускает стандартное авто-определение
+    if (headers?.['x-my-routing'] === 'alice') return 'alisa';
+    return detect ? detect(query, headers) : null;
+});
+```
+
+### Лимиты: что адаптер делает сам
+
+У каждой платформы свои лимиты на длину текста, число кнопок, размер карточки и state. Адаптеры приводят ответ к
+допустимому виду сами, поэтому код остаётся одинаковым для всех платформ:
+
+- **Кнопки сверх лимита** отбрасываются с предупреждением в лог. Лимиты адаптеров: Алиса, Маруся и VK — 10 кнопок,
+  SmartApp — 8, Viber — 6, MAX — 30, Telegram — 40. Лишние кнопки в ряду (`buttons.row()`) переносятся на следующую
+  строку.
+- **Текст длиннее лимита** обрезается: Алиса и Маруся — 1024 символа, Telegram и VK — 4096, MAX — 4000, Viber —
+  7000, SmartApp — 250 в «пузыре».
+- **Payload кнопки больше лимита** — кнопка пропускается с предупреждением; данные не обрезаются и не переписываются.
+- **State больше лимита** (Алиса — 1 КБ, Маруся — 3584 байта) не отправляется, ошибка пишется в лог.
+- **Устройство без экрана** (колонка) — кнопки и карточки не отправляются.
+
+Обрезать бизнес-логику фреймворк не может: время ответа голосовым платформам — ваша зона ответственности. Фреймворк
+пишет предупреждение после 2 с обработки и ошибку после 2,9 с; медиа загружайте заранее через `Preload`.
+
 ### Приём обновлений: вебхук или long polling
 
 По умолчанию платформа сама присылает запрос на ваш HTTPS-адрес — вебхук (`bot.start()`, `webhookHandle`,
@@ -614,38 +647,33 @@ class MyAdapter extends BasePlatformAdapter {
      * @param controller - Контроллер приложения
      */
     setQueryData(query: unknown, controller: BotController): boolean | Promise<boolean> {
-        if (this.appContext) {
-            if (query) {
-                let content: Record<string, unknown>;
-                if (typeof query === 'string') {
-                    content = JSON.parse(query);
-                } else {
-                    content = query as Record<string, unknown>;
-                }
-
-                const data = content.data as Record<string, unknown> | undefined;
-
-                controller.requestObject = content;
-                controller.userId = content.userId as string;
-                controller.userCommand = ((data?.text as string) || '').toLowerCase();
-                controller.originalUserCommand = (data?.text as string) || '';
-                controller.messageId = data?.messageCount as number;
-
-                if (content.store) {
-                    controller.state = content.store as Record<string, unknown>;
-                }
-
-                controller.isScreen = false;
-
-                return true;
-            } else {
-                controller.platformOptions.error = 'MyAdapter:init(): Отправлен пустой запрос!';
-            }
-        } else {
+        if (!query) {
             // ошибки адаптера пишите через логгер контекста, а не в console напрямую
-            this.appContext?.logError('MyAdapter:init(): Не указан контекст приложения!');
+            controller.appContext.logError('MyAdapter.setQueryData(): отправлен пустой запрос');
+            return false;
         }
-        return false;
+        let content: Record<string, unknown>;
+        if (typeof query === 'string') {
+            content = JSON.parse(query);
+        } else {
+            content = query as Record<string, unknown>;
+        }
+
+        const data = content.data as Record<string, unknown> | undefined;
+
+        controller.requestObject = content;
+        controller.userId = content.userId as string;
+        controller.userCommand = ((data?.text as string) || '').toLowerCase();
+        controller.originalUserCommand = (data?.text as string) || '';
+        controller.messageId = data?.messageCount as number;
+
+        if (content.store) {
+            controller.state = content.store as Record<string, unknown>;
+        }
+
+        controller.isScreen = false;
+
+        return true;
     }
 
     /**
@@ -683,6 +711,46 @@ class MyAdapter extends BasePlatformAdapter {
     }
 }
 ```
+
+## Возможности платформ: сводная таблица
+
+| Свойство                                 | Алиса | Маруся | SmartApp         | Telegram | VK  | Viber    | Max |
+| ---------------------------------------- | ----- | ------ | ---------------- | -------- | --- | -------- | --- |
+| Голосовая (TTS native)                   | ✅    | ✅     | ✅               | ❌       | ❌  | ❌       | ❌  |
+| Локальное хранилище                      | ✅    | ✅     | ✅ (внешнее API) | ❌       | ❌  | ❌       | ❌  |
+| Проактивная отправка (`bot.send`)        | ❌    | ❌     | ❌               | ✅       | ✅  | ✅       | ✅  |
+| Загрузка изображений                     | ✅    | ✅     | ❌ (URL)         | ✅       | ✅  | ❌ (URL) | ✅  |
+| Загрузка файлов звуков                   | ✅    | ✅     | ❌               | ✅       | ✅  | ❌       | ✅  |
+| Стандартные звуки (S_AUDIO_*)            | ✅    | ✅     | ❌               | ❌       | ❌  | ❌       | ❌  |
+| Эффекты `S_EFFECT_*`                     | ✅    | ❌     | ❌               | ❌       | ❌  | ❌       | ❌  |
+| TTS через SpeechKit (`speech_kit_token`) | ❌    | ❌     | ❌               | ✅       | ✅  | ❌       | ✅  |
+| Проверка подписи webhook                 | ❌    | ❌     | ❌               | ✅*      | ✅* | ✅       | ✅* |
+| Эмоции / appeal                          | ❌    | ❌     | ✅               | ❌       | ❌  | ❌       | ❌  |
+
+> Где `❌` — фича не поддерживается платформой, фреймворк просто молча проигнорирует соответствующие поля в `controller`.
+> Код не сломается.
+
+> ⚠️ **Про «Проверка подписи webhook»:**
+>
+> - Алиса, SmartApp, Маруся — подписи запросов **нет вообще**: всё содержимое payload (включая `user_id`) контролирует
+>   отправитель. Не интерполируйте эти данные в URL или query без экранирования и не считайте такой запрос
+>   аутентифицированным.
+> - Viber — подпись проверяется автоматически всегда (`x-viber-content-signature`).
+> - Telegram — проверка включается заданием секрета (`tokens.telegram.webhookSecret` → заголовок
+>   `x-telegram-bot-api-secret-token`); без секрета проверка отключена.
+> - VK — проверка включается только если задан `tokens.vk.secret_key` (сверяется с полем `secret` в теле запроса);
+>   без секрета — пропускается.
+> - MAX — проверка включается заданием `tokens.max_app.webhookSecret` (заголовок `x-max-bot-api-secret`).
+
+> ℹ️ **Про звуки:**
+>
+> - **Голосовые платформы** (Алиса, Маруся) подставляют звуки как `<speaker audio="...">` в TTS.
+> - **Алиса и Маруся** умеют загружать ваши аудиофайлы (хелперы `getSoundInDB` из `Alisa/Sound` и `Marusia/Sound`
+>   — внутри используют `YandexSoundRequest` / `MarusiaRequest`);
+>   у Маруси стандартные звуки подставляются из фиксированного набора `marusia-sounds/*`.
+> - **Чат-платформы** (Telegram, VK, MAX) загружают аудиофайл и отправляют его как голосовое/аудио сообщение;
+>   текстовая часть TTS при заданном `speech_kit_token` синтезируется через Yandex SpeechKit.
+> - **Viber и SmartApp** маркеры звуков из TTS вычищают (в Viber `soundProcessing` возвращает `null`).
 
 ## Подводные камни по платформам
 
@@ -738,6 +806,7 @@ class MyAdapter extends BasePlatformAdapter {
 - **Webhook-reply (opt-in).** `new TelegramAdapter('TOKEN', { telegram_webhook_reply: true })`: простой текстовый ответ уходит телом webhook-ответа (`{method: 'sendMessage', ...}`) — Telegram выполнит его сам, экономится один исходящий POST на запрос. По образцу grammy: opt-in (по умолчанию выключено), не применяется к callback/inline-запросам и ответам с карточками/звуками — они уходят штатным путём. Учтите: ошибки отправки при этом недиагностируемы (Telegram подтверждает webhook раньше реального выполнения метода).
 
 ```ts
+import { Bot } from 'umbot';
 import { TelegramAdapter, T_FORMAT_MARKDOWN, escapeMarkdownV2 } from 'umbot/plugins';
 
 // Вариант 1: обычный текст без parse_mode
@@ -757,10 +826,11 @@ const botWebhookReply = new Bot().use(
     }),
 );
 
-// Безопасная вставка пользовательского ввода в MarkdownV2 (внутри обработчика
-// команды/события; ctx — BotController)
-const userName = escapeMarkdownV2('Иван. Петров');
-ctx.text = `*Пользователь:* ${userName}`;
+// Безопасная вставка пользовательского ввода в MarkdownV2
+botMd.addCommand('whoami', ['кто я'], (_, ctx) => {
+    const userName = escapeMarkdownV2(ctx.originalUserCommand ?? '');
+    ctx.text = `*Вы написали:* ${userName}`;
+});
 ```
 
 ### VK
@@ -771,7 +841,8 @@ ctx.text = `*Пользователь:* ${userName}`;
 - **Имя пользователя берётся из кэша.** Результат `users.get` (имя для `nlu.getUserName()`) кэшируется в памяти процесса на 1 час (до 5000 записей; ошибки API не кэшируются). Отключить загрузку можно опцией адаптера `new VkAdapter(token, { vk_load_user_info: false })` — тогда `getUserName()` вернёт `null`, зато на ответ уходит один запрос к VK вместо двух. Сбросить кэш (тесты, смена имени) — `clearVkUserCache()` из `umbot/plugins`.
 - **Callback-кнопки подтверждаются через `messages.sendMessageEventAnswer`.** На нажатие callback-кнопки (`message_event`) адаптер подтверждает событие (`sendMessageEvent` без `event_data` — у пользователя пропадает индикатор загрузки на кнопке), а ответ обработчика отправляет обычным сообщением (`messages.send`). Если бизнес-логика завершилась ошибкой, вместо сообщения показывается snackbar с текстом ошибки. Чтобы показать свой snackbar, вызовите `controller.api.answerCallback(text)`. ID события хранится в `platformOptions.requestData.vk.eventId` (с fallback в `platformOptions.eventId`).
 - **Payload callback-кнопок нормализуется.** Строка `'buy'` или JSON `{"command":"buy"}` в payload попадает в `userCommand` как `buy` и срабатывает как обычная команда — без ручного разбора `requestObject`.
-- **Группировка кнопок.** Кнопки с одинаковым `options._group` окажутся в одной строке.
+- **Раскладка кнопок.** `buttons.row()` завершает ряд (до 5 кнопок; `location`/`vkpay`/`open_app` занимают ряд
+  целиком); кнопки с одинаковым `options._group` (строка или число) тоже встают в один ряд.
 - **Цвет кнопок.** `options.color: 'primary' | 'secondary' | 'positive' | 'negative'`.
 
 ### Viber
@@ -780,7 +851,8 @@ ctx.text = `*Пользователь:* ${userName}`;
 - **Версия API — 7 по умолчанию.** Если пользователь не передал версию явно, адаптер
   отправляет `min_api_version: 7` (`VIBER_DEFAULT_API_VERSION`). Версия 7 нужна для
   rich_media (карточек); на старых клиентах карточки не отобразятся.
-- **Звуки не поддерживаются.** `controller.tts` игнорируется.
+- **Звуки не поддерживаются.** Кастомные звуки не отправляются; `controller.tts` при пустом `text` уходит обычным
+  текстом (без звуковой разметки), при заполненном `text` — не используется.
 - **Нет локального хранилища.** При `isLocalStorage: true` без DB-адаптера `userData` хранится в памяти процесса (`memorySession`): шаги работают, но данные теряются при перезапуске и не разделяются между процессами и репликами. Для надёжного хранения подключите БД.
 - **Служебные события.** Адаптер обрабатывает события `subscribed`/`unsubscribed` (логируются),
   `delivered`/`seen`/`failed` (подтверждаются без ошибки), `conversation_started` и событие
