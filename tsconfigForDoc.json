@@ -1,10 +1,10 @@
 {
     "compilerOptions": {
-        "module": "commonjs",
+        "module": "Node16",
         "target": "es2023",
         "lib": ["es2023", "dom"],
         "useDefineForClassFields": true,
-        "moduleResolution": "node",
+        "moduleResolution": "Node16",
         "removeComments": false,
         "sourceMap": false,
         "allowJs": true,
@@ -16,8 +16,8 @@
         "noFallthroughCasesInSwitch": true,
         "resolveJsonModule": true,
         "isolatedModules": true,
-        "outDir": "dist",
-        "baseUrl": ".",
+        "rootDir": "./src",
+        "outDir": "./dist",
         "paths": {
             "*": ["node_modules/*", "src/types/*"]
         },
