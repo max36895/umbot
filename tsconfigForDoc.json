@@ -25,5 +25,16 @@
         "typeRoots": ["node_modules/@types"]
     },
     "includes": ["src/**/*", "cli/**/*"],
-    "exclude": ["node_modules", "cli/template/**/*", "tests/**/*", "examples/**/*"]
+    "exclude": [
+        "node_modules",
+        "dist",
+        "cli",
+        "examples",
+        "benchmark",
+        "tests",
+        "eslint.config.js",
+        "jest.config.js",
+        "**/*.test.ts",
+        "**/node_modules/**"
+    ]
 }
