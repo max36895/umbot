@@ -97,11 +97,16 @@
         "prettier": "~3.6.2",
         "shx": "~0.4.0",
         "ts-jest": "~29.4.4",
-        "typedoc": "~0.28.14",
-        "typescript": "^5.8.3"
+        "typedoc": "^0.28.20",
     },
     "peerDependencies": {
-        "mongodb": "^6.20.0"
+        "mongodb": "^6.20.0",
+        "typescript": ">=5.0.0"
+    },
+    "peerDependenciesMeta": {
+        "typescript": {
+            "optional": true
+        }
     },
     "files": [
         "dist",
