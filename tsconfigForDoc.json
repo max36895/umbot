@@ -1,10 +1,10 @@
 {
     "compilerOptions": {
-        "module": "Node16",
+        "module": "commonjs",
         "target": "es2023",
         "lib": ["es2023", "dom"],
         "useDefineForClassFields": true,
-        "moduleResolution": "Node16",
+        "moduleResolution": "node",
         "removeComments": false,
         "sourceMap": false,
         "allowJs": true,
@@ -16,8 +16,8 @@
         "noFallthroughCasesInSwitch": true,
         "resolveJsonModule": true,
         "isolatedModules": true,
-        "rootDir": "./src",
-        "outDir": "./dist",
+        "outDir": "dist",
+        "baseUrl": ".",
         "paths": {
             "*": ["node_modules/*", "src/types/*"]
         },
@@ -25,16 +25,5 @@
         "typeRoots": ["node_modules/@types"]
     },
     "includes": ["src/**/*", "cli/**/*"],
-    "exclude": [
-        "node_modules",
-        "dist",
-        "cli",
-        "examples",
-        "benchmark",
-        "tests",
-        "eslint.config.js",
-        "jest.config.js",
-        "**/*.test.ts",
-        "**/node_modules/**"
-    ]
+    "exclude": ["node_modules", "cli/template/**/*", "tests/**/*", "examples/**/*"]
 }
