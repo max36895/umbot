@@ -58,7 +58,10 @@ test('{{Name}}DbAdapter: обновление меняет только пере
 test('{{Name}}DbAdapter: отсутствие записи — не ошибка', async () => {
     const db = new {{Name}}DbAdapter();
     const key = { userId: 'missing', platform: 'telegram' };
-    assert.equal((await db.select(usersQuery(null), key, true)).status, false);
+    const res = await db.select(usersQuery(null), key, true);
+    assert.equal(res.status, false);
+    // error — признак сбоя базы: с ним фреймворк не сохранит данные нового пользователя
+    assert.equal(res.error, undefined);
     assert.equal(await db.update(usersQuery(key, { data: 'x' })), true);
     assert.equal(await db.remove(usersQuery(key)), true);
 });

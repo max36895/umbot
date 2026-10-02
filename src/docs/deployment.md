@@ -233,7 +233,9 @@ export const handler = async (event: Record<string, unknown>) => {
 
 > В serverless `isLocalStorage: true` надёжно хранит данные только на Алисе, SmartApp и Марусе (состояние приходит в
 > запросе). На Telegram/VK/MAX/Viber без DB-адаптера `userData` живёт в памяти экземпляра функции и теряется, когда
-> вызов попадает в новый экземпляр, — для шагов диалога на чат-платформах подключите БД (например, `MongoAdapter`).
+> вызов попадает в новый экземпляр, — для шагов диалога на чат-платформах подключите БД. В Cloud Functions удобнее
+> всего [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter): YDB в режиме Serverless, вход по
+> сервисному аккаунту функции без паролей, таблицы адаптер создаёт сам.
 
 Готовые рецепты — в разделе [Рецепты](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/recipes).
 
@@ -271,16 +273,18 @@ pm2 start dist/index.js -i max
 
 Единственное жёсткое требование — **общая база данных**:
 
-| Конфигурация                      | Несколько процессов |
-| --------------------------------- | ------------------- |
-| `MongoAdapter` (или свой адаптер) | ✅ Да               |
-| `FileAdapter`                     | ❌ Нет              |
+| Конфигурация                                                       | Несколько процессов |
+| ------------------------------------------------------------------ | ------------------- |
+| `MongoAdapter`, `umbot-knex-adapter`, `umbot-ydb-adapter` или свой | ✅ Да               |
+| `FileAdapter`                                                      | ❌ Нет              |
 
 `FileAdapter` читает и пишет JSON-файлы без блокировок и рассчитан строго на один
 процесс — это задокументированное ограничение, а не баг. При нескольких процессах
 каждый инстанс будет видеть свою копию данных, и записи начнут теряться. Поэтому
-в multi-process и multi-server конфигурациях используйте `MongoAdapter` или свой
-адаптер (PostgreSQL, Redis — см. [адаптеры БД](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/dbAdapter)).
+в multi-process и multi-server конфигурациях используйте `MongoAdapter`, внешние адаптеры
+[umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter) (PostgreSQL, MySQL, SQLite) и
+[umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter) (YDB) или свой
+(см. [адаптеры БД](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/dbAdapter)).
 
 Кэши токенов медиа (`ImageTokens`, `SoundTokens`) хранятся в той же БД, поэтому
 все инстансы используют общие токены и не пере-загружают картинки и звуки

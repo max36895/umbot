@@ -261,8 +261,11 @@ export class RedisAdapter extends BaseDbAdapter<IRedisDbInfo> {
     ): Promise<IModelRes> {
         try {
             // транслировать where (с операторами) в запрос вашей БД
-            // вернуть { status: true, data: [...] }
-            return { status: true, data: [] };
+            const rows: Record<string, unknown>[] = [];
+            if (!rows.length) {
+                return { status: false }; // не найдено — без error
+            }
+            return { status: true, data: isOne ? rows[0] : rows };
         } catch (e) {
             return { status: false, error: (e as Error).message };
         }
@@ -339,13 +342,34 @@ const bot = new Bot()
 - [ ] Тесты с моками проходят, покрытие ключевых веток.
 - [ ] `npm run build` и `npm run lint` чистые.
 - [ ] README с примером подключения.
+- [ ] Учтены подводные камни из раздела 6 (`ensureSchema` в serverless, ключ в `UPDATE`, типы условий).
 
-## 6. Приоритетные адаптеры для реализации
+## 6. Подводные камни
 
-| Адаптер    | Пакет                    | Драйвер                    | Приоритет            |
-| ---------- | ------------------------ | -------------------------- | -------------------- |
-| Redis      | `umbot-redis-adapter`    | `ioredis`                  | высокий (кэш/сессии) |
-| PostgreSQL | `umbot-postgres-adapter` | `pg`                       | высокий (production) |
-| SQLite     | `umbot-sqlite-adapter`   | `better-sqlite3`           | средний (embedded)   |
-| MySQL      | `umbot-mysql-adapter`    | `mysql2`                   | средний              |
-| DynamoDB   | `umbot-dynamodb-adapter` | `@aws-sdk/client-dynamodb` | низкий               |
+Выявлены при разработке `umbot-knex-adapter` и `umbot-ydb-adapter`.
+
+- **`ensureSchema` на каждом холодном старте.** Фреймворк вызывает метод после каждого `connect()`, а в serverless
+  (Cloud Functions) это каждый новый экземпляр функции. Сначала проверьте схему одним дешёвым запросом (например,
+  `SELECT <все колонки> FROM <таблица> LIMIT 0`) и выполняйте DDL, только если он упал.
+- **Колонки ключа приходят и в данных `UPDATE`.** `Model.update()` и `save()` убирают из `data` только
+  `primaryKeyName`, поля `uniqueKeys` (`platform` у `UsersData`) остаются и в `data`, и в `query`. Если база не
+  разрешает менять колонки первичного ключа (YDB), уберите их из `SET`.
+- **Числа в строковых условиях.** `getQueryData` превращает числовые строки в числа (`` `userId`=123 `` → `123`),
+  а `userId` хранится строкой. Строго типизированной базе нужно приводить значение к типу колонки, иначе запрос
+  упадёт на несовпадении типов.
+- **Драйвер только в ESM.** Пакет в CommonJS может подключить такой драйвер через `require()` на Node.js ≥ 20.19
+  (минимальная версия umbot): соберите его с `"module": "Node20"` (TypeScript ≥ 5.9). Jest в режиме CommonJS такие
+  модули не загружает — подменяйте драйвер фабриками `jest.mock()`.
+- **`host` и `database` в `IAppDB` обязательны.** Если база умеет подключаться по переменным окружения, примите в
+  конструкторе свой тип параметров с необязательными полями и передайте в `super()` пустые строки.
+- **Вторичные индексы.** Не все базы выбирают индекс сами (YDB использует его только при явном `VIEW`). Поиск
+  `ImageTokens`/`SoundTokens` идёт по `(platform, path)`, а не по ключу — без индекса он читает таблицу целиком.
+
+## 7. Готовые и нужные адаптеры
+
+| Адаптер                   | Пакет                                                                | Статус                |
+| ------------------------- | -------------------------------------------------------------------- | --------------------- |
+| PostgreSQL, MySQL, SQLite | [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter) | готов (через Knex.js) |
+| YDB (Yandex Database)     | [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter)   | готов                 |
+| Redis                     | `umbot-redis-adapter` (`ioredis`)                                    | нужен (кэш/сессии)    |
+| DynamoDB                  | `umbot-dynamodb-adapter` (`@aws-sdk/client-dynamodb`)                | низкий приоритет      |

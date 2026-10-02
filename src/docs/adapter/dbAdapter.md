@@ -43,8 +43,10 @@
 
 - **Хранилища без схемы** (`FileAdapter`, MongoDB) создают их сами: файл или коллекция появляются при первой записи.
   `MongoAdapter` в `ensureSchema` дополнительно создаёт индексы.
-- **Базы со схемой** (PostgreSQL, MySQL, SQLite) — таблицы создаёт **адаптер** в `ensureSchema`. Без этого первый же
-  запрос упадёт с ошибкой «таблица не существует».
+- **Базы со схемой** (PostgreSQL, MySQL, SQLite, YDB) — таблицы создаёт **адаптер** в `ensureSchema`. Без этого
+  первый же запрос упадёт с ошибкой «таблица не существует». Готовые реализации, на которые можно опереться, —
+  внешние пакеты [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter) (SQL через Knex.js) и
+  [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter) (YDB).
 
 `ensureSchema` получает `DB_TABLES_SCHEMA` (экспортируется из `umbot`): имя таблицы, первичный ключ, `uniqueKeys`,
 поля с типами (`string` с `maxLength` / `text`) и наборы полей для индексов. Метод должен быть идемпотентным
@@ -96,9 +98,9 @@
 То, что вы обязаны вернуть из метода `_select`.
 
 ```ts
-// Успех: записи нашлись
+// Успех: записи нашлись (isOne — сама запись, иначе массив)
 { status: true, data: { userId: '123', name: 'John' } }
-{ status: true, data: [] }
+{ status: true, data: [{ userId: '123' }, { userId: '456' }] }
 
 // Запись не найдена (пустая выборка) — тоже status: false
 { status: false }
@@ -246,10 +248,11 @@ export class MyCustomDbAdapter extends BaseDbAdapter {
             const sqlQuery = this.buildSelectQuery(selectData.tableName, where, isOne);
 
             // 2. Выполняем запрос
-            const result = await pool.execute(sqlQuery);
+            const rows = await pool.execute(sqlQuery);
 
-            // 3. Возвращаем в формате IModelRes
-            return { status: true, data: result };
+            // 3. Возвращаем в формате IModelRes: пустая выборка — status: false без error
+            if (!rows.length) return { status: false };
+            return { status: true, data: isOne ? rows[0] : rows };
         } catch (err) {
             // Не бросаем исключение, а возвращаем статус false
             return { status: false, error: (err as Error).message };

@@ -142,10 +142,11 @@ VK — без переписывания или существенных дор�
 Отдельные npm-пакеты, которые подключаются одной строкой через `bot.use()`. Ядро остаётся лёгким: драйверы СУБД и
 API сторонних платформ ставятся только тем, кому они нужны.
 
-| Пакет                                                                    | Назначение                                                             |
-| :----------------------------------------------------------------------- | :--------------------------------------------------------------------- |
-| [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter)     | Реляционные БД через Knex.js: PostgreSQL, MySQL/MariaDB, SQLite, MSSQL |
-| [umbot-wechat-adapter](https://github.com/max36895/umbot-wechat-adapter) | WeChat Official Account (Weixin)                                       |
+| Пакет                                                                    | Назначение                                                                                            |
+| :----------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
+| [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter)     | Реляционные БД через Knex.js: PostgreSQL, MySQL/MariaDB, SQLite, MSSQL                                |
+| [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter)       | YDB (Yandex Database): хранилище для навыков и ботов в Yandex Cloud Functions, таблицы создаются сами |
+| [umbot-wechat-adapter](https://github.com/max36895/umbot-wechat-adapter) | WeChat Official Account (Weixin)                                                                      |
 
 ```bash
 npm install umbot umbot-knex-adapter knex pg

@@ -53,6 +53,7 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    scripts/ # Build/maintenance helpers used by npm scripts (clean, fix-doc, audit-load, link-skills) and i18n-docs.js (docs translation).
    i18n/ # English docs: block translation cache (en/translations.json), glossary, config. Workflow — i18n/README.md. Not shipped.
    audit/ # Stored audit artifacts and reports. Not shipped.
+   adapters/ # External adapter packages (umbot-ydb-adapter, ...) staged here before they move to their own repo. Each has its own package.json, tests and lint; excluded from root lint/prettier, not shipped. Contract for DB adapters — src/docs/adapter/external-db-adapter-spec.md.
    Important: cli/ is a product surface, not a helper sandbox. It generates code that users run in production. Any audit
    or change that affects project creation, templates, generated TypeScript, generated Docker/Yandex Cloud config, or
    flow.json processing MUST inspect cli/ and tests/cli/.

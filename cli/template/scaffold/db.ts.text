@@ -48,14 +48,16 @@ export class {{Name}}DbAdapter extends BaseDbAdapter {
      * @param selectData Таблица и её ключи
      * @param where Условие; null — все записи
      * @param isOne Нужна одна запись (объект), а не массив
-     * @returns `{ status: true, data }`, если найдено, иначе `{ status: false }`
+     * @returns `{ status: true, data }`, если найдено; `{ status: false }` без `error`, если записей нет;
+     *   `{ status: false, error }` — только при сбое базы
      */
     _select(selectData: IQuery, where: IQueryData | null, isOne: boolean): IModelRes {
         const rows = [...this.#getTable(selectData.tableName).values()].filter((row) =>
             Object.entries(where ?? {}).every(([field, value]) => row[field] === value),
         );
         if (!rows.length) {
-            return { status: false, error: 'Записи не найдены' };
+            // Без error: с ним фреймворк примет «не найдено» за сбой и не сохранит нового пользователя
+            return { status: false };
         }
         return { status: true, data: isOne ? rows[0] : rows };
     }

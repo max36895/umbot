@@ -3,7 +3,7 @@
 Все значимые изменения в проекте `umbot` документируются в этом файле.
 Формат основан на [Keep a CHANGELOG](http://keepachangelog.com/).
 
-## [3.1.5] - 2026-10-04
+## [3.1.5] - 2026-10-03
 
 ### Добавлено
 
@@ -48,6 +48,9 @@
 
 ### Исправлено
 
+- **CLI `add db`**: каркас адаптера БД на пустой выборке возвращал `{ status: false, error: 'Записи не найдены' }`.
+  По `error` ядро считает, что база не ответила, — поэтому адаптер, написанный по каркасу, не сохранял данные ни
+  одного нового пользователя. Теперь «не найдено» — `{ status: false }` без `error`, тест каркаса это проверяет.
 - **CLI `validate`** проверял `flow.json` как конфиг команды `create`: файл без `name` отклонялся сообщением
   «Проект не создан» без списка ошибок, а битый JSON не доходил до валидатора. Теперь `validate` сам сообщает обо
   всех ошибках файла.
@@ -62,6 +65,18 @@
 
 ### Документация
 
+- **Внешний адаптер YDB.** [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter) — хранилище для
+  навыков и ботов в Yandex Cloud Functions — добавлен в README («Экосистема»), `deployment.md` (serverless и
+  несколько процессов) и `adapter/dbAdapter.md`. В `deployment.md` для нескольких процессов названы готовые
+  `umbot-knex-adapter` и `umbot-ydb-adapter` вместо «PostgreSQL, Redis — свой адаптер».
+- `adapter/external-db-adapter-spec.md`: раздел «Подводные камни» (`ensureSchema` на каждом холодном старте
+  serverless, колонки ключа в данных `UPDATE`, числа из строковых условий, драйверы только в ESM, вторичные индексы)
+  и таблица готовых адаптеров вместо списка «нужно написать», где PostgreSQL, MySQL и SQLite давно закрыты
+  `umbot-knex-adapter`.
+- JSDoc `BaseDbAdapter._select` противоречил контракту: «`status: true` даже если найдено 0 записей». Пустая
+  выборка — `{ status: false }` без `error`, сбой — `status: false` с `error`, как во встроенных адаптерах. Те же
+  ошибки в примерах, которые копируют в свои адаптеры: `{ status: true, data: [] }` под «записи нашлись» и
+  псевдокод `_select` в `adapter/dbAdapter.md`, шаблон `_select` в `adapter/external-db-adapter-spec.md`.
 - **Навигация по сайту документации.** Гайды открываются по читаемым адресам вида
   `https://www.maxim-m.ru/docs/umbot/v-3.1/guides/<раздел>` (`getting-started`, `adapter/platformAdapter`, …),
   ссылки между разделами и из README ведут на них, а старые адреса `documents/…` в тексте документации заменены.
