@@ -1,0 +1,172 @@
+import { BotController, Request, TEventType, Text } from 'umbot';
+import { BasePlatformAdapter, pUtils } from 'umbot/plugins';
+
+/**
+ * Входящий запрос (вебхук) платформы {{Name}}.
+ * TODO: опишите поля по документации платформы — ниже условный формат, чтобы каркас работал сразу.
+ */
+export interface I{{Name}}Query {
+    /** Тип события: сообщение, нажатие кнопки, служебное событие */
+    type?: string;
+    /** Идентификатор отправителя */
+    user_id?: string;
+    /** Чат, в который нужно ответить */
+    chat_id?: string;
+    /** Текст сообщения */
+    text?: string;
+    /** Порядковый номер сообщения в диалоге */
+    message_id?: number;
+}
+
+/** Данные текущего запроса, которые нужны при отправке ответа. */
+interface I{{Name}}RequestData extends Record<string, unknown> {
+    chatId?: string;
+}
+
+/** TODO: адрес метода отправки сообщения из документации платформы. */
+const SEND_MESSAGE_URL = 'https://api.example.com/bot/sendMessage';
+/** TODO: максимальная длина текста сообщения на платформе. */
+const TEXT_LIMIT = 4096;
+
+/**
+ * Адаптер платформы {{Name}}: разбирает вебхук в контроллер и отправляет ответ через API платформы.
+ *
+ * Разбор каждого метода и необязательные точки расширения (подпись вебхука, long polling,
+ * кнопки, карточки, дедупликация доставок):
+ * https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/platformAdapter
+ *
+ * @example
+ * ```ts
+ * import { loadEnvFile } from 'umbot/utils';
+ * import { {{Name}}Adapter } from './platforms/{{Name}}Adapter';
+ *
+ * // Своих платформ фреймворк в .env не ищет — токен передаётся в конструктор.
+ * const token = process.env.{{ENV_NAME}}_TOKEN || loadEnvFile('./.env').data?.{{ENV_NAME}}_TOKEN;
+ * bot.use(new {{Name}}Adapter(token));
+ * ```
+ */
+export class {{Name}}Adapter extends BasePlatformAdapter<I{{Name}}Query> {
+    platformName = '{{platformName}}';
+    // Чат-платформа: ответ уходит запросом в API, а не телом вебхука. Голосовой платформе нужен true.
+    isVoice = false;
+    // TODO: лимит платформы, запросов в секунду (его использует middleware rateLimiter); null — без ограничения.
+    limit: number | null = null;
+    // TODO: добавьте события, которые адаптер выставляет в controller.eventType ('callback', 'photo', ...).
+    supportedEvents: readonly TEventType[] = ['message'];
+    // TODO: если платформа подписывает вебхук — имя заголовка с подписью (раздел «Проверка безопасности»).
+    // signatureName = 'x-{{platformName}}-signature';
+
+    /**
+     * Определяет, что запрос пришёл от этой платформы.
+     * @param query Тело запроса
+     * @returns true, если запрос принадлежит платформе
+     */
+    isPlatformOnQuery(query: I{{Name}}Query): boolean {
+        // TODO: признак, по которому запрос однозначно принадлежит платформе.
+        // Слишком общий признак перехватит запросы других подключённых адаптеров.
+        return typeof query?.type === 'string' && typeof query.user_id === 'string';
+    }
+
+    /**
+     * Заполняет контроллер данными запроса.
+     * @param query Тело запроса
+     * @param controller Контроллер приложения
+     * @returns true, если запрос разобран
+     */
+    setQueryData(query: I{{Name}}Query, controller: BotController): boolean {
+        controller.requestObject = query;
+        controller.userId = query.user_id ?? '';
+        if (query.chat_id) {
+            this.#getRequestData(controller).chatId = query.chat_id;
+        }
+        if (query.type !== 'message') {
+            // Событие без ответа всё равно должно получить HTTP 200, иначе платформа
+            // повторяет доставку. Поэтому true и skipAutoReply, а не false.
+            controller.skipAutoReply = true;
+            return true;
+        }
+        controller.eventType = 'message';
+        controller.originalUserCommand = (query.text ?? '').trim();
+        controller.userCommand = controller.originalUserCommand.toLowerCase();
+        controller.messageId = query.message_id ?? 0;
+        return true;
+    }
+
+    /**
+     * Отправляет ответ пользователю.
+     * @param controller Контроллер с готовым ответом
+     * @returns Тело ответа на вебхук
+     */
+    getContent(controller: BotController): string | Promise<string> {
+        // Служебные события и BotTest.simulate() ничего не отправляют.
+        return controller.skipAutoReply ? 'ok' : this.#send(controller);
+    }
+
+    /**
+     * Пример запроса платформы — по нему работают BotTest и тесты адаптера.
+     * @param query Текст пользователя
+     * @param userId Идентификатор пользователя
+     * @param count Номер сообщения
+     * @returns Тело запроса в формате платформы
+     */
+    getQueryExample(query: string, userId: string, count: number): Record<string, unknown> {
+        return {
+            type: 'message',
+            user_id: userId,
+            chat_id: userId,
+            text: query,
+            message_id: count,
+        };
+    }
+
+    /**
+     * Данные текущего запроса, отложенные до отправки ответа.
+     * @param controller Контроллер приложения
+     * @returns Объект данных запроса
+     */
+    #getRequestData(controller: BotController): I{{Name}}RequestData {
+        return pUtils.getPlatformRequestData<I{{Name}}RequestData>(
+            controller,
+            this.platformName,
+        );
+    }
+
+    /**
+     * Отправляет текст и кнопки в API платформы.
+     * @param controller Контроллер с готовым ответом
+     * @returns Тело ответа на вебхук
+     */
+    async #send(controller: BotController): Promise<string> {
+        // Токен из конструктора попадает в appConfig.tokens при bot.use().
+        const token = this.appContext?.appConfig.tokens[this.platformName]?.token;
+        const chatId = this.#getRequestData(controller).chatId ?? String(controller.userId ?? '');
+        if (!token || !chatId) {
+            controller.appContext.logWarn(
+                '{{Name}}Adapter: не задан токен или получатель, ответ не отправлен.',
+            );
+            return 'ok';
+        }
+        // TODO: формат кнопок из документации платформы.
+        const buttons = controller.isButtonsInit()
+            ? controller.buttons.getButtons((items) =>
+                  items.map((button) => ({ text: button.title ?? '', url: button.url ?? null })),
+              )
+            : null;
+        // Request ограничивает время ответа (maxTimeQuery, 2 с по умолчанию).
+        const request = new Request(controller.appContext);
+        // TODO: способ авторизации из документации платформы (заголовок, параметр URL).
+        request.header = { ...Request.HEADER_JSON, Authorization: `Bearer ${token}` };
+        request.post = {
+            chat_id: chatId,
+            text: Text.resize(pUtils.getChatText(controller.text, controller.tts), TEXT_LIMIT),
+            buttons,
+        };
+        const res = await request.send(SEND_MESSAGE_URL);
+        if (!res.status) {
+            controller.appContext.logError('{{Name}}Adapter: не удалось отправить ответ', {
+                error: res.err,
+            });
+        }
+        return 'ok';
+    }
+}

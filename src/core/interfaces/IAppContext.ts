@@ -91,19 +91,40 @@ export interface IDir {
 export type TAppType = string;
 
 /**
- * Константы для метрик
+ * Имена метрик, которые фреймворк передаёт в `logger.metric(name, value, labels)`.
+ * Значения — длительность в миллисекундах, кроме `START_WEBHOOK`.
+ *
+ * @example
+ * ```ts
+ * bot.setLogger({
+ *     metric: (name, value) => {
+ *         if (name === EMetric.END_WEBHOOK) histogram.observe(Number(value));
+ *     },
+ * });
+ * ```
  */
 export enum EMetric {
+    /** Исходящий HTTP-запрос к API платформы (внутри `Request`). */
     REQUEST = 'umbot_http_request_duration_ms',
+    /** Поиск интента из `platformParams.intents`. */
     GET_INTENT = 'umbot_get-intent_duration_ms',
+    /** Поиск команды среди зарегистрированных через `addCommand`. */
     GET_COMMAND = 'umbot_get-command_duration_ms',
+    /** Выполнение `action()` контроллера (обработчики команд и шагов сюда не входят). */
     ACTION = 'umbot_action_duration_ms',
+    /** Выполнение цепочки middleware. */
     MIDDLEWARE = 'umbot_middleware_duration_ms',
+    /** Начало обработки вебхука; значение — метка времени `Date.now()`, а не длительность. */
     START_WEBHOOK = 'umbot_request_start',
+    /** Полное время обработки входящего вебхука. */
     END_WEBHOOK = 'umbot_request_duration_ms',
+    /** Запрос UPDATE к базе данных. */
     DB_UPDATE = 'umbot_db_update_ms',
+    /** Запрос INSERT к базе данных. */
     DB_INSERT = 'umbot_db_insert_ms',
+    /** Запрос DELETE к базе данных. */
     DB_REMOVE = 'umbot_db_remove_ms',
+    /** Запрос SELECT к базе данных. */
     DB_SELECT = 'umbot_db_select_ms',
 }
 
@@ -246,6 +267,8 @@ export interface ITokenPlatform {
  *   env: '.env'
  * };
  * ```
+ *
+ * @group Основное
  */
 export interface IAppConfig {
     /**
@@ -324,6 +347,8 @@ export interface IAppConfig {
  *   ]
  * };
  * ```
+ *
+ * @group Основное
  */
 export interface IAppParam {
     /**

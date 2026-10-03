@@ -1,0 +1,75 @@
+// Тесты адаптера базы данных {{Name}} на встроенном node:test. Запуск после сборки:
+//   npm run build && node --test dist/db/{{Name}}DbAdapter.test.js
+// Тесты описывают ответы, которых ждёт фреймворк. Перевели адаптер на настоящую базу —
+// направьте тесты на тестовую базу: они должны остаться зелёными.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { IQuery } from 'umbot';
+import { {{Name}}DbAdapter } from './{{Name}}DbAdapter';
+
+/**
+ * Запрос к таблице пользователей в том виде, в каком его строит модель UsersData.
+ * @param query Условие
+ * @param data Данные записи
+ * @returns Описание запроса
+ */
+function usersQuery(query: IQuery['query'], data: IQuery['data'] = null): IQuery {
+    return {
+        tableName: 'UsersData',
+        primaryKeyName: 'userId',
+        uniqueKeys: ['platform'],
+        query,
+        data,
+        rules: [],
+    };
+}
+
+test('{{Name}}DbAdapter: добавленная запись находится по ключу', async () => {
+    const db = new {{Name}}DbAdapter();
+    const row = { userId: '1', platform: 'telegram', data: '{"step":1}' };
+    assert.equal(await db.insert(usersQuery(null, row)), true);
+
+    const res = await db.select(usersQuery(null), { userId: '1', platform: 'telegram' }, true);
+    assert.equal(res.status, true);
+    assert.deepEqual(res.data, row);
+});
+
+test('{{Name}}DbAdapter: один userId на разных платформах — разные записи', async () => {
+    const db = new {{Name}}DbAdapter();
+    await db.insert(usersQuery(null, { userId: '1', platform: 'telegram', data: 'tg' }));
+    await db.insert(usersQuery(null, { userId: '1', platform: 'vk', data: 'vk' }));
+
+    const tg = await db.select(usersQuery(null), { userId: '1', platform: 'telegram' }, true);
+    const all = await db.select(usersQuery(null), { userId: '1' }, false);
+    assert.equal((tg.data as { data: string }).data, 'tg');
+    assert.equal((all.data as unknown[]).length, 2);
+});
+
+test('{{Name}}DbAdapter: обновление меняет только переданные поля', async () => {
+    const db = new {{Name}}DbAdapter();
+    const key = { userId: '1', platform: 'telegram' };
+    await db.insert(usersQuery(null, { ...key, data: 'old', meta: 'keep' }));
+    assert.equal(await db.update(usersQuery(key, { data: 'new' })), true);
+
+    const res = await db.select(usersQuery(null), key, true);
+    assert.deepEqual(res.data, { ...key, data: 'new', meta: 'keep' });
+});
+
+test('{{Name}}DbAdapter: отсутствие записи — не ошибка', async () => {
+    const db = new {{Name}}DbAdapter();
+    const key = { userId: 'missing', platform: 'telegram' };
+    const res = await db.select(usersQuery(null), key, true);
+    assert.equal(res.status, false);
+    // error — признак сбоя базы: с ним фреймворк не сохранит данные нового пользователя
+    assert.equal(res.error, undefined);
+    assert.equal(await db.update(usersQuery(key, { data: 'x' })), true);
+    assert.equal(await db.remove(usersQuery(key)), true);
+});
+
+test('{{Name}}DbAdapter: удалённая запись больше не находится', async () => {
+    const db = new {{Name}}DbAdapter();
+    const key = { userId: '1', platform: 'telegram' };
+    await db.insert(usersQuery(null, { ...key, data: 'x' }));
+    assert.equal(await db.remove(usersQuery(key)), true);
+    assert.equal((await db.select(usersQuery(null), key, true)).status, false);
+});

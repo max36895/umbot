@@ -61,6 +61,8 @@ export type TKeys = string | string[];
  * // Выбор элемента по тексту
  * const selected = navigation.selectedElement(elements, 'Элемент 2', ['name']);
  * ```
+ *
+ * @group Ответ пользователю
  */
 export class Navigation<ElementType = TElementType> {
     /**

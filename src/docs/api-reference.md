@@ -1,7 +1,7 @@
 # Справочник API umbot
 
 Данный справочник содержит описание основных публичных классов, методов и интерфейсов фреймворка umbot. Для начала
-работы смотрите раздел [«Быстрый старт»](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_getting-started.html).
+работы смотрите раздел [«Быстрый старт»](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/getting-started).
 
 ## Основные классы
 
@@ -12,39 +12,40 @@
 
 #### Свойства
 
-| Свойство            | Тип                                                      | Описание                                                                                                                                        |
-| ------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| text                | string                                                   | Текст ответа пользователю                                                                                                                       |
-| tts                 | string \| null                                           | Текст для озвучки (на голосовых платформах, если `null` — может быть автоматически подставлен из `text`)                                        |
-| buttons             | Buttons                                                  | Компонент кнопок (инициализируется лениво через getter)                                                                                         |
-| card                | Card                                                     | Компонент карточек/галерей (инициализируется лениво через getter)                                                                               |
-| nlu                 | Nlu                                                      | Данные NLU (инициализируется лениво через getter)                                                                                               |
-| sound               | Sound                                                    | Звуковые эффекты (инициализируется лениво через getter)                                                                                         |
-| userId              | string \| number \| null                                 | Идентификатор пользователя                                                                                                                      |
-| userToken           | string \| null                                           | Токен авторизации пользователя (если платформа его предоставляет)                                                                               |
-| userMeta            | unknown \| null                                          | Доп. информация о пользователе (зависит от платформы)                                                                                           |
-| messageId           | number \| string \| null                                 | ID сообщения (часто используется для определения “первого” сообщения)                                                                           |
-| userCommand         | string \| null                                           | Команда пользователя в нижнем регистре                                                                                                          |
-| originalUserCommand | string \| null                                           | Оригинальная команда пользователя                                                                                                               |
-| payload             | Record\<string, unknown\> \| string \| null \| undefined | Дополнительные параметры запроса (payload)                                                                                                      |
-| eventType           | TEventType                                               | Универсальный тип события (`'message'`, `'photo'`, `'callback'`, `'start'`, …). Заполняется адаптером платформы; основа роутинга `bot.addEvent` |
-| match               | RegExpExecArray \| null                                  | Совпадение команды с регуляркой (лениво): группы в `match[1]`, `match.groups`. `null` для строковых команд                                      |
-| api                 | IControllerApi \| null                                   | API-фасад активной платформы: `sendPhoto/sendDocument/sendAudio/sendVideo/answerCallback/can`. Ленивый объект; `null` на голосовых платформах   |
-| userData            | TUserData                                                | Данные пользователя (БД или локальное хранилище, в зависимости от `setAppConfig`)                                                               |
-| state               | TPlatformState \| null                                   | Локальное хранилище платформы (если платформа поддерживает и включено `isLocalStorage`)                                                         |
-| isAuth              | boolean                                                  | Флаг “нужно запросить авторизацию” (поддержка зависит от платформы)                                                                             |
-| userEvents          | IUserEvent \| null                                       | События пользователя (авторизация/оценка), если платформа присылает                                                                             |
-| isScreen            | boolean                                                  | Есть ли экран у пользователя (если платформа сообщает)                                                                                          |
-| isEnd               | boolean                                                  | Завершить диалог/сессию (поддержка зависит от платформы)                                                                                        |
-| skipAutoReply       | boolean                                                  | Если `true`, фреймворк не будет пытаться “авто-отправить” ответ (актуально для платформ, где вы сами отправляете сообщения через API)           |
-| requestObject       | Record<string, unknown> \| string \| unknown \| null     | Оригинальный объект запроса от платформы                                                                                                        |
-| thisIntentName      | string \| null                                           | Имя шага/интента, которое нужно сохранить как “следующий шаг”                                                                                   |
-| oldIntentName       | string \| null                                           | Имя предыдущего шага/интента (из `userData.oldIntentName` или из `state.oldIntentName`)                                                         |
-| emotion             | string \| null                                           | Эмоция ответа (если платформа поддерживает)                                                                                                     |
-| appeal              | 'official' \| 'no_official' \| null                      | Стиль обращения (если платформа поддерживает)                                                                                                   |
-| isSendRating        | boolean                                                  | Запросить у пользователя оценку (если платформа поддерживает)                                                                                   |
-| appContext          | AppContext                                               | Контекст приложения (конфиг, реестры, логгер)                                                                                                   |
-| appType             | TAppType \| null                                         | Платформа, от которой получен запрос (заполняется фреймворком при обработке)                                                                    |
+| Свойство            | Тип                                                      | Описание                                                                                                                                                       |
+| ------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| text                | string                                                   | Текст ответа пользователю                                                                                                                                      |
+| tts                 | string \| null                                           | Текст для озвучки (на голосовых платформах, если `null` — может быть автоматически подставлен из `text`)                                                       |
+| buttons             | Buttons                                                  | Компонент кнопок (инициализируется лениво через getter)                                                                                                        |
+| card                | Card                                                     | Компонент карточек/галерей (инициализируется лениво через getter)                                                                                              |
+| nlu                 | Nlu                                                      | Данные NLU (инициализируется лениво через getter)                                                                                                              |
+| sound               | Sound                                                    | Звуковые эффекты (инициализируется лениво через getter)                                                                                                        |
+| userId              | string \| number \| null                                 | Идентификатор пользователя                                                                                                                                     |
+| userToken           | string \| null                                           | Токен авторизации пользователя (если платформа его предоставляет)                                                                                              |
+| userMeta            | unknown \| null                                          | Доп. информация о пользователе (зависит от платформы)                                                                                                          |
+| messageId           | number \| string \| null                                 | Номер сообщения. `0` — начало новой сессии на голосовых платформах (по нему подставляется welcome)                                                             |
+| userCommand         | string \| null                                           | Команда пользователя в нижнем регистре                                                                                                                         |
+| originalUserCommand | string \| null                                           | Оригинальная команда пользователя                                                                                                                              |
+| payload             | Record\<string, unknown\> \| string \| null \| undefined | Дополнительные параметры запроса (payload)                                                                                                                     |
+| eventType           | TEventType                                               | Универсальный тип события (`'message'`, `'photo'`, `'callback'`, `'start'`, …). Заполняется адаптером платформы; основа роутинга `bot.addEvent`                |
+| match               | RegExpExecArray \| null                                  | Совпадение команды с регуляркой (лениво): группы в `match[1]`, `match.groups`. `null` для строковых команд                                                     |
+| api                 | IControllerApi \| null                                   | API-фасад активной платформы: `sendPhoto/sendDocument/sendAudio/sendVideo/answerCallback/can`. Ленивый объект; `null` на голосовых платформах                  |
+| userData            | TUserData                                                | Данные пользователя (БД или локальное хранилище, в зависимости от `setAppConfig`)                                                                              |
+| state               | TPlatformState \| null                                   | Локальное хранилище платформы (если платформа поддерживает и включено `isLocalStorage`)                                                                        |
+| isAuth              | boolean                                                  | Запросить авторизацию пользователя (account linking; Алиса)                                                                                                    |
+| userEvents          | IUserEvent \| null                                       | События пользователя (авторизация/оценка), если платформа присылает                                                                                            |
+| isScreen            | boolean                                                  | Есть ли экран у пользователя (если платформа сообщает)                                                                                                         |
+| isEnd               | boolean                                                  | Завершить сессию. Читают голосовые платформы; чат-платформы флаг игнорируют                                                                                    |
+| skipAutoReply       | boolean                                                  | Если `true`, фреймворк не будет пытаться “авто-отправить” ответ (актуально для платформ, где вы сами отправляете сообщения через API)                          |
+| requestObject       | Record<string, unknown> \| string \| unknown \| null     | Оригинальный объект запроса от платформы                                                                                                                       |
+| thisIntentName      | string \| null                                           | Имя шага/интента, которое нужно сохранить как “следующий шаг”                                                                                                  |
+| oldIntentName       | string \| null                                           | Имя предыдущего шага/интента (из `userData.oldIntentName` или из `state.oldIntentName`)                                                                        |
+| emotion             | string \| null                                           | Эмоция ответа ассистента (SmartApp: `'radost'`, `'pechal'`, …)                                                                                                 |
+| appeal              | 'official' \| 'no_official' \| null                      | Стиль обращения (SmartApp; приходит в запросе)                                                                                                                 |
+| isSendRating        | boolean                                                  | Запросить оценку навыка (специальный ответ уходит только на SmartApp)                                                                                          |
+| appContext          | AppContext                                               | Контекст приложения (конфиг, реестры, логгер)                                                                                                                  |
+| appType             | TAppType \| null                                         | Платформа, от которой получен запрос (заполняется фреймворком при обработке)                                                                                   |
+| platformOptions     | IPlatformOptions                                         | Служебные данные запроса от адаптера, ядра и middleware: `clientIp`, `requestId`, `rateLimitOverflow` и др. Читайте; пишите только в своём адаптере/middleware |
 
 #### Методы
 
@@ -62,6 +63,19 @@
 ### Bot
 
 Основной класс-оркестратор. Управляет жизненным циклом, middleware, регистрацией команд и запуском сервера.
+
+```ts
+class Bot<
+    TUserData extends IUserData = IUserData,
+    TPlatformState extends IPlatformData = IPlatformData,
+> {
+    constructor(type?: TAppType, botController?: TBotControllerClass<TUserData, TPlatformState>);
+}
+```
+
+`type` — платформа по умолчанию (обычно не нужна: платформа определяется по запросу), `botController` — класс
+контроллера (то же, что `initBotController`). Все методы, кроме перечисленных ниже с другим возвращаемым значением,
+возвращают `this` — вызовы можно объединять в цепочку.
 
 #### Методы
 
@@ -95,8 +109,69 @@
 | webhookHandle            | req: IncomingMessage, res: ServerResponse, responseCb?: TBotResponseCb                                                                               | Promise\<void\>                | Обработчик HTTP-запроса (для Express/Fastify интеграции)                                                                                                                                                |
 | webhookEvent             | data: string \| object \| null, headers?: Record\<string, unknown\>, clientIp?: string                                                               | Promise\<IWebhookEventResult\> | Обработка события serverless-платформы (Yandex Cloud Functions, AWS Lambda) с проверкой подписи вебхука. Возвращает `{ statusCode, body }` для возврата из cloud-функции                                |
 | start                    | hostname?: string, port?: number, responseCb?: TBotResponseCb                                                                                        | Server                         | Запуск HTTP-сервера (возвращает экземпляр Server)                                                                                                                                                       |
-| close                    | -                                                                                                                                                    | Promise\<void\>                | Остановка HTTP-сервера и очистка ресурсов                                                                                                                                                               |
+| startPolling             | options?: IPollingOptions (`{ platforms?: TAppType[] }`)                                                                                             | Promise\<void\>                | Запуск long polling (Telegram, VK, MAX) вместо вебхука. Промис выполняется после остановки; отклоняется, если ни один адаптер не поддерживает polling                                                   |
+| stopPolling              | -                                                                                                                                                    | Promise\<void\>                | Остановка long polling: обрывает текущие запросы обновлений и ждёт обработки уже полученных                                                                                                             |
+| close                    | -                                                                                                                                                    | Promise\<void\>                | Остановка HTTP-сервера и long polling, очистка ресурсов                                                                                                                                                 |
 | send                     | userId: string \| number, controllerOrText: BotController \| string, platform: TAppType                                                              | Promise\<unknown \| boolean\>  | Отправка сообщения пользователю (для платформ с поддержкой)                                                                                                                                             |
+
+#### Минимальный набор для запуска
+
+```ts
+import { Bot } from 'umbot';
+import { fullPlatforms, FileAdapter } from 'umbot/plugins';
+
+const bot = new Bot();
+bot.setAppMode('strict_prod'); // 0. Режим продакшена — до регистрации команд и параметров
+bot.use(fullPlatforms); // 1. Зарегистрировать платформы
+bot.use(new FileAdapter()); // 2. Зарегистрировать БД (или isLocalStorage: true)
+bot.setAppConfig({
+    // 3. Передать конфиг
+    json: './data',
+    error_log: './errors',
+    isLocalStorage: false,
+});
+bot.setPlatformParams({
+    intents: [{ name: 'bye', slots: ['пока'] }], // обязательное поле (можно [])
+    welcome_text: 'Привет!',
+});
+bot.start('0.0.0.0', 3000); // 4. Запустить
+```
+
+> Контроллер (`initBotController`) и команды (`addCommand`) — **необязательны** для запуска. Без них бот будет отвечать
+> только `welcome_text` / `help_text` / `empty_text`. Это удобно для самого первого старта — убедиться, что вебхук
+> работает, а потом постепенно добавлять логику.
+
+#### Упрощённый запуск: `run()` из `umbot/build`
+
+Если хочется ещё короче — есть утилита `run`:
+
+```ts
+import { run } from 'umbot/build'; // TMode = 'dev' | 'dev-online' | 'prod'
+import { fullPlatforms, FileAdapter } from 'umbot/plugins';
+import { MyController } from './controller/MyController';
+
+run(
+    {
+        appConfig: { isLocalStorage: true },
+        appParam: { intents: [{ name: 'bye', slots: ['пока'] }] },
+        controller: MyController,
+        plugins: [fullPlatforms, new FileAdapter()],
+        logic: (bot) => {
+            bot.addCommand('ping', ['пинг'], (_, bc) => {
+                bc.text = 'понг';
+            });
+        },
+    },
+    'prod',
+    '0.0.0.0',
+    8080,
+);
+// run(config, mode: TMode = 'prod', hostname = 'localhost', port = 3000)
+//     → 'dev' (запускает BotTest.test()), 'dev-online' (сервер в dev-режиме), 'prod' (сервер в strict_prod)
+```
+
+Если `plugins` не передан, `run` подключает все платформы (`fullPlatforms`) и адаптер БД: `MongoAdapter`, когда
+задан адрес базы (`appConfig.db.host` или `DB_HOST`), иначе `FileAdapter`.
 
 ## Компоненты
 
@@ -273,7 +348,8 @@ const HELP_INTENT_NAME = 'help'; // Интент помощи
 const FALLBACK_COMMAND = '*'; // Команда-заглушка (вызывается при отсутствии совпадений)
 ```
 
-> ⚠️ `bot.addCommand(FALLBACK_COMMAND, [], cb)` работает, потому что fallback ищется конвейером отдельно (до интентов).
+> ⚠️ `bot.addCommand(FALLBACK_COMMAND, [], cb)` работает, потому что fallback ищется конвейером отдельно: после
+> команд и интентов из `setPlatformParams`, если ни один из них не подошёл.
 > Обычная команда с пустым массивом слотов **молча не зарегистрируется** — `addCommand('myCmd', [], cb)` не создаст
 > триггеров. Исключение — `welcome`/`help`, для которых фреймворк подставляет дефолтные слоты при пустом списке.
 
@@ -307,7 +383,8 @@ interface ICommandParam<TBotController extends BotController = BotController> {
 // Параметры шага (цепочки диалога)
 interface IStepParam<TBotController extends BotController = BotController> {
     stepName: string; // Уникальное имя шага
-    cb: (botController: TBotController) => void | Promise<void> | false;
+    // false — шаг не применим, поиск продолжится командами; строка — текст ответа
+    cb: (botController: TBotController) => void | false | string | Promise<void | false | string>;
 }
 
 // Тип слотов команды
@@ -457,7 +534,7 @@ bot.addAction('buy', async (_, ctx) => {
 
 Фасад — ленивый объект: создаётся при первом обращении к `ctx.api`, на голосовых платформах (Алиса, SmartApp, Маруся) равен `null` (их ответ формируется телом webhook — используйте `card`/`sound`). Неподдерживаемые методы логируют предупреждение и возвращают `null`; поддержка проверяется заранее через `can()`. У Viber `can()` возвращает `false` для всех методов — Bot API Viber требует URL и размер файла, поэтому фасад там недоступен.
 
-Фасад выбирается адаптером: метод `createApi(controller)` контракта `IPlatformAdapter` (базовая реализация `BasePlatform` возвращает `null`). Кастомная платформа подключает свой фасад переопределением этого метода — возвращает объект, реализующий `IControllerApi`; пример — в [platform-integration.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-integration.html), раздел «API платформы».
+Фасад выбирается адаптером: метод `createApi(controller)` контракта `IPlatformAdapter` (базовая реализация `BasePlatform` возвращает `null`). Кастомная платформа подключает свой фасад переопределением этого метода — возвращает объект, реализующий `IControllerApi`; пример — в [platform-integration.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration), раздел «API платформы».
 
 ### Формы (`addForm`)
 
@@ -741,7 +818,8 @@ class RatingController extends BotController {
 
 ### AppContext
 
-Контекст приложения — синглтон-хранилище конфигурации, реестров и подключенных модулей.
+Контекст приложения — хранилище конфигурации, реестров и подключенных модулей. У каждого экземпляра `Bot` свой
+контекст (`bot.getAppContext()`), поэтому несколько ботов в одном процессе не делят настройки.
 
 #### Основные свойства
 
@@ -828,6 +906,22 @@ await Promise.all(preload.loadImages(['./img.jpg'], [T_TELEGRAM], { telegramUseI
 ```
 
 > ⚠️ Загрузка выполняется только для платформ, у которых задан токен (`appConfig.tokens` или переменные окружения). Без настроенных токенов методы вернут пустой массив (без промисов) и загрузка молча не выполнится. Для неподдерживаемых платформ (Viber, SmartApp) промисы в массив не попадают вовсе.
+>
+> `options` у всех четырёх методов: `alisaSkillId` — id навыка (API ресурсов Алисы адресуется по навыку, а вне
+> запроса взять его неоткуда; без него Алиса пропускается и при загрузке, и при удалении); `telegramUseId` —
+> пользователь, которому Telegram отправит файл, чтобы получить его `file_id`.
+
+#### Как работает кэш
+
+1. При вызове `loadImages()` фреймворк проверяет, есть ли уже токен для этого файла в БД (`ImageTokens` модель).
+2. Если токен есть — используется кэшированное значение (загрузка не происходит).
+3. Если токена нет — файл загружается на сервер платформы, полученный токен сохраняется в БД.
+4. При следующем обращении к тому же файлу токен берётся из БД — без задержки на upload.
+
+#### Когда использовать
+
+- **Всегда**, если у вас в навыке есть изображения или звуки.
+- Особенно критично для голосовых платформ из-за практического лимита ~3 с (предупреждение — после 2 с).
 
 #### Методы Preload
 
@@ -835,8 +929,11 @@ await Promise.all(preload.loadImages(['./img.jpg'], [T_TELEGRAM], { telegramUseI
 | -------------- | ------------------------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `loadImages`   | `paths: string[]`, `platforms?: TAppType[]`, `options?` | `Promise<string \| null>[]` | Загрузить изображения (разрешается токеном изображения или `null` при ошибке)                                                |
 | `loadSounds`   | `paths: string[]`, `platforms?: TAppType[]`, `options?` | `Promise<string \| null>[]` | Загрузить звуки (разрешается токеном звука или `null` при ошибке)                                                            |
-| `removeImages` | `paths: string[]`, `platforms?: TAppType[]`             | `Promise<boolean>[]`        | Удалить изображения (реализация — только Алиса и Маруся; для остальных платформ промис завершается `true`, ничего не удаляя) |
-| `removeSounds` | `paths: string[]`, `platforms?: TAppType[]`             | `Promise<boolean>[]`        | Удалить звуки (реализация — только Алиса и Маруся; для остальных платформ промис завершается `true`, ничего не удаляя)       |
+| `removeImages` | `paths: string[]`, `platforms?: TAppType[]`, `options?` | `Promise<boolean>[]`        | Удалить изображения (реализация — только Алиса и Маруся; для остальных платформ промис завершается `true`, ничего не удаляя) |
+| `removeSounds` | `paths: string[]`, `platforms?: TAppType[]`, `options?` | `Promise<boolean>[]`        | Удалить звуки (реализация — только Алиса и Маруся; для остальных платформ промис завершается `true`, ничего не удаляя)       |
+
+Результат `loadImages`/`loadSounds` — токен загруженного медиа или `null`, если загрузка не удалась: проверяйте
+успех по `!== null`.
 
 ### ILogger
 
@@ -914,19 +1011,19 @@ interface IPluginFn {
 
 Фреймворк собирает метрики времени выполнения ключевых операций. Для включения реализуйте метод `metric()` в логгере.
 
-| Метрика              | Константа               | Что измеряет                                                   |
-| -------------------- | ----------------------- | -------------------------------------------------------------- |
-| Время запроса        | `EMetric.REQUEST`       | Время исходящего HTTP-запроса к API платформы (внутри Request) |
-| Начало webhook       | `EMetric.START_WEBHOOK` | Момент начала обработки запроса                                |
-| Время webhook        | `EMetric.END_WEBHOOK`   | Общее время обработки webhook (входящий запрос)                |
-| Поиск интента        | `EMetric.GET_INTENT`    | Время поиска подходящего интента                               |
-| Поиск команды        | `EMetric.GET_COMMAND`   | Время поиска подходящей команды                                |
-| Выполнение action    | `EMetric.ACTION`        | Время выполнения вашего `action()`                             |
-| Middleware           | `EMetric.MIDDLEWARE`    | Время выполнения middleware-цепочки                            |
-| Запрос к БД (SELECT) | `EMetric.DB_SELECT`     | Время выполнения SELECT                                        |
-| Запрос к БД (INSERT) | `EMetric.DB_INSERT`     | Время выполнения INSERT                                        |
-| Запрос к БД (UPDATE) | `EMetric.DB_UPDATE`     | Время выполнения UPDATE                                        |
-| Запрос к БД (REMOVE) | `EMetric.DB_REMOVE`     | Время выполнения DELETE                                        |
+| Метрика              | Константа               | Что измеряет                                                                       |
+| -------------------- | ----------------------- | ---------------------------------------------------------------------------------- |
+| Время запроса        | `EMetric.REQUEST`       | Время исходящего HTTP-запроса к API платформы (`url`, `method`, `status` в labels) |
+| Начало webhook       | `EMetric.START_WEBHOOK` | Момент начала обработки (значение — метка времени, не длительность)                |
+| Время webhook        | `EMetric.END_WEBHOOK`   | Общее время обработки webhook (входящий запрос)                                    |
+| Поиск интента        | `EMetric.GET_INTENT`    | Время поиска подходящего интента                                                   |
+| Поиск команды        | `EMetric.GET_COMMAND`   | Время поиска подходящей команды                                                    |
+| Выполнение action    | `EMetric.ACTION`        | Время выполнения `action()` контроллера                                            |
+| Middleware           | `EMetric.MIDDLEWARE`    | Время выполнения middleware-цепочки                                                |
+| Запрос к БД (SELECT) | `EMetric.DB_SELECT`     | Время выполнения SELECT                                                            |
+| Запрос к БД (INSERT) | `EMetric.DB_INSERT`     | Время выполнения INSERT                                                            |
+| Запрос к БД (UPDATE) | `EMetric.DB_UPDATE`     | Время выполнения UPDATE                                                            |
+| Запрос к БД (REMOVE) | `EMetric.DB_REMOVE`     | Время выполнения DELETE                                                            |
 
 Пример подключения:
 
@@ -936,6 +1033,13 @@ bot.setLogger({
         console.log(`[METRIC] ${name}: ${value}`, meta);
     },
 });
+```
+
+Пример вывода:
+
+```text
+[METRIC] umbot_get-command_duration_ms: 0.45 { commandName: 'weather', status: true }
+[METRIC] umbot_action_duration_ms: 12.3 { commandName: 'weather', platform: 'telegram', isCommand: true }
 ```
 
 ## Модели
@@ -977,6 +1081,21 @@ export class ScoreModel extends Model<IScoreState> {
 }
 ```
 
+Использование в контроллере:
+
+```ts
+const score = new ScoreModel(this.appContext);
+score.state.userId = String(this.userId);
+
+if (await score.whereOne({ userId: score.state.userId })) {
+    score.state.score = Number(score.state.score) + 1;
+    await score.update();
+} else {
+    score.state.score = 1;
+    await score.add();
+}
+```
+
 #### Методы Model
 
 | Метод                   | Описание                                       |
@@ -988,6 +1107,16 @@ export class ScoreModel extends Model<IScoreState> {
 | `where(where?, isOne?)` | Поиск записей по условиям                      |
 | `query(callback)`       | Сырой запрос к БД                              |
 | `save(isNew?)`          | Сохранение (add если isNew=true, иначе update) |
+
+Если первичный ключ уникален только в паре с другим полем (как `userId` у `UsersData` — в пределах платформы),
+переопределите защищённый метод `getUniqueKeys()`: модель добавит эти поля в условие select/update/remove и передаст
+их адаптеру в `IQuery.uniqueKeys`.
+
+```ts
+protected getUniqueKeys(): string[] {
+    return ['platform'];
+}
+```
 
 ### UsersData
 
@@ -1022,7 +1151,7 @@ export class ScoreModel extends Model<IScoreState> {
 `DB_TABLES_SCHEMA` и после подключения передаётся DB-адаптеру в `ensureSchema()`: `FileAdapter` создаёт файлы сам,
 `MongoAdapter` создаёт индексы (`{ userId, platform }`, `{ platform, path }`; коллекции MongoDB создаёт при первой
 записи), SQL-адаптер обязан создать таблицы (см.
-[спецификацию внешних адаптеров](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_adapter_external-db-adapter-spec.html)).
+[спецификацию внешних адаптеров](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/external-db-adapter-spec)).
 
 ### Таблица: `ImageTokens`
 
@@ -1093,4 +1222,166 @@ class MyTable extends Model<IMyState> {
 | **FileAdapter**  | Простой JSON-файл в `./json`. Не потокобезопасен, только для разработки/локальных тестов.                                        |
 | **MongoAdapter** | Production-ready. Использует официальный драйвер `mongodb` v7 (Stable API v1) — совместим с актуальными версиями MongoDB Server. |
 
-Все таблицы создаются автоматически на первом запросе.
+Таблицы, коллекции и индексы создаются автоматически: сразу после подключения к базе фреймворк вызывает
+`ensureSchema()` адаптера, до первого запроса.
+
+---
+
+## Точки входа и импорты
+
+`umbot` предоставляет корневой экспорт, а также отдельные пути импорта для специфичных задач:
+
+```ts
+// Главный модуль — основная часть API
+import {
+    Bot,
+    BotController,
+    BaseBotController,
+    AppContext,
+    WELCOME_INTENT_NAME,
+    HELP_INTENT_NAME,
+    FALLBACK_COMMAND,
+    IUserData,
+    IPlatformData,
+    IUserEvent,
+    TStatus,
+    IAppConfig,
+    IAppParam,
+    IAppIntent,
+    IAppDB,
+    ITokenPlatform,
+    ILogger,
+    TAppType,
+    TAppMode,
+    EMetric,
+    Buttons,
+    Card,
+    Sound,
+    Nlu,
+    Navigation,
+    SoundConstants,
+    IButton,
+    IButtonType,
+    IButtonOptions,
+    TButton,
+    IImageType,
+    IImageParams,
+    getImage,
+    ISound,
+    IEffect,
+    INlu,
+    INluFIO,
+    INluGeo,
+    INluDateTime,
+    INluThisUser,
+    INluIntents,
+    INluResult,
+    Model,
+    UsersData,
+    ImageTokens,
+    SoundTokens,
+    IModelRes,
+    IQuery,
+    IQueryData,
+    IModelRules,
+    IPlugin,
+    IPluginFn,
+    createPlugin,
+    Text,
+    getRegExp,
+    isRegex,
+    rand,
+    keysCount,
+    httpBuildQuery,
+    isPromise,
+    fread,
+    fwrite,
+    isFile,
+    saveData,
+    ICommandParam,
+    IStepParam,
+    TSlots,
+    TCommandResolver,
+    TBotControllerClass,
+    MiddlewareFn,
+    MiddlewareNext,
+} from 'umbot';
+
+// Платформы и БД-адаптеры
+import {
+    fullPlatforms,
+    voicePlatforms,
+    botPlatforms,
+    adapters,
+    AlisaAdapter,
+    TelegramAdapter,
+    VkAdapter,
+    ViberAdapter,
+    MaxAdapter,
+    MarusiaAdapter,
+    SmartAppAdapter,
+    FileAdapter,
+    MongoAdapter,
+    BaseDbAdapter,
+    BasePlatformAdapter,
+    TContent,
+    IAdapterOptions,
+    T_ALISA,
+    T_MARUSIA,
+    T_SMART_APP,
+    T_TELEGRAM,
+    T_VK,
+    T_VIBER,
+    T_MAX_APP,
+    AlisaConstants,
+    MarusiaConstants,
+    SmartAppConstants,
+    YandexRequest,
+    YandexImageRequest,
+    YandexSoundRequest,
+    YandexSpeechKit,
+    TelegramRequest,
+    VkRequest,
+    ViberRequest,
+    MaxRequest,
+    MarusiaRequest,
+} from 'umbot/plugins';
+
+// Middleware
+import {
+    rateLimiter,
+    destroyRateLimiter,
+    RateLimitQueueOverflowError,
+    authGuard,
+    requestId,
+    maintenance,
+    ipFilter,
+} from 'umbot/middleware';
+
+// Утилиты (Text доступен и из 'umbot')
+import { loadEnvFile } from 'umbot/utils';
+
+// Локальное тестирование
+import { BotTest, IBotTestParams } from 'umbot/test';
+
+// Предзагрузка медиа
+import { Preload, IOptions as IPreloadOptions } from 'umbot/preload';
+
+// Утилита упрощённого запуска
+import { run, IConfig, TMode } from 'umbot/build';
+```
+
+### Константы платформ и интентов
+
+| Константа             | Значение      | Назначение                                |
+| --------------------- | ------------- | ----------------------------------------- |
+| `WELCOME_INTENT_NAME` | `'welcome'`   | Имя интента приветствия (messageId === 0) |
+| `HELP_INTENT_NAME`    | `'help'`      | Имя интента помощи                        |
+| `FALLBACK_COMMAND`    | `'*'`         | Имя fallback-команды                      |
+| `T_ALISA`             | `'alisa'`     | Идентификатор платформы Алиса             |
+| `T_MARUSIA`           | `'marusia'`   | Маруся                                    |
+| `T_SMART_APP`         | `'smart_app'` | Сбер SmartApp                             |
+| `T_TELEGRAM`          | `'telegram'`  | Telegram                                  |
+| `T_VK`                | `'vk'`        | ВКонтакте                                 |
+| `T_VIBER`             | `'viber'`     | Viber                                     |
+| `T_MAX_APP`           | `'max_app'`   | MAX                                       |

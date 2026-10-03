@@ -68,6 +68,8 @@ export interface IImageModelState extends IModelState {
  *     console.log('Запись сохранена:', saved);
  * }
  * ```
+ *
+ * @group Хранение данных
  */
 export class ImageTokens extends Model<IImageModelState> {
     /**

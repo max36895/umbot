@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { computeLogStats, generateEnv, main } from '../../cli/controllers/ConsoleController.js';
 
 /**
@@ -456,5 +457,41 @@ describe('CLI stats (computeLogStats)', () => {
         logSpy.mockRestore();
         warnSpy.mockRestore();
         errorSpy.mockRestore();
+    });
+});
+
+describe('CLI umbot.js: разбор аргументов', () => {
+    const tmpDir = path.join(__dirname, '__umbot_entry_tmp__');
+    const cliPath = path.join(__dirname, '..', '..', 'cli', 'umbot.js');
+
+    beforeEach(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        fs.mkdirSync(tmpDir, { recursive: true });
+    });
+    afterEach(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('validate сам сообщает об ошибках flow.json, а не как create об «имени проекта»', () => {
+        const flowPath = path.join(tmpDir, 'flow.json');
+        fs.writeFileSync(flowPath, JSON.stringify({ nodes: [{ type: 'command' }] }));
+        const result = spawnSync(process.execPath, [cliPath, 'validate', flowPath], {
+            encoding: 'utf8',
+        });
+        expect(result.status).toBe(1);
+        expect(result.stderr).not.toContain('Проект не создан');
+        expect(result.stderr).toContain('`name`');
+        expect(result.stderr).toContain('`id`');
+    });
+
+    it('validate показывает ошибку разбора битого JSON', () => {
+        const flowPath = path.join(tmpDir, 'broken.json');
+        fs.writeFileSync(flowPath, '{ "name": ');
+        const result = spawnSync(process.execPath, [cliPath, 'validate', flowPath], {
+            encoding: 'utf8',
+        });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('Найдены ошибки');
+        expect(result.stderr).toContain('Не удалось прочитать');
     });
 });

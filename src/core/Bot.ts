@@ -6,6 +6,7 @@ import {
     IPlatformAdapter,
     IPlugin,
     IPluginFn,
+    IPollingOptions,
     TBotAuth,
     TBotContent,
     TBotResponseCb,
@@ -34,8 +35,6 @@ import {
 } from './constants';
 import { UsersData, DB_TABLES_SCHEMA } from '../models';
 import { ILogger } from './interfaces/ILogger';
-// Из листовых модулей, а не из барреля: реэкспорт через баррель в CommonJS —
-// цепочка геттеров на горячем пути (см. BotController).
 import { Text } from '../utils/standard/Text';
 import { isPromise } from '../utils/isPromise';
 import { keysCount } from '../utils/standard/util';
@@ -134,6 +133,21 @@ const DELIVERY_WAIT_LIMIT = 30_000;
 const DB_RETRY_MIN_DELAY = 5000;
 /** Максимальная пауза перед повторным подключением к недоступной БД, мс. */
 const DB_RETRY_MAX_DELAY = 60000;
+
+/** Пауза перед первым повтором запроса обновлений после ошибки (long polling), мс. */
+const POLLING_RETRY_MIN_DELAY = 1000;
+/** Максимальная пауза между повторами запроса обновлений, мс. */
+const POLLING_RETRY_MAX_DELAY = 30_000;
+/**
+ * Минимальный интервал между пустыми ответами адаптера на запрос обновлений, мс.
+ * Защищает от холостого цикла, если адаптер отвечает сразу, не дожидаясь обновлений.
+ */
+const POLLING_MIN_EMPTY_INTERVAL = 500;
+/**
+ * Сколько обновлений одной пачки long polling обрабатывается одновременно: пачка
+ * до 1000 событий (MAX) не должна запускать 1000 обработчиков разом.
+ */
+const POLLING_CONCURRENCY = 32;
 
 /**
  * Функция для обработки следующего шага в цепочке промежуточных функций
@@ -256,6 +270,32 @@ function waitWithLimit<T>(promise: Promise<T>, ms: number): Promise<T | undefine
  */
 function hashBody(body: string | object): string {
     return hash('sha1', typeof body === 'string' ? body : JSON.stringify(body), 'base64');
+}
+
+/**
+ * Пауза, которая завершается досрочно при остановке по сигналу.
+ * Таймер без `unref()`: пауза между запросами обновлений должна держать процесс,
+ * как держит его сам запрос long polling.
+ * @param ms Длительность паузы, мс
+ * @param signal Сигнал остановки
+ * @returns Промис, выполненный по истечении паузы или при остановке
+ */
+function delayUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+        if (signal.aborted) {
+            resolve();
+            return;
+        }
+        const onAbort = (): void => {
+            clearTimeout(timer);
+            resolve();
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
 }
 
 /**
@@ -543,8 +583,9 @@ export interface IAddFormOptions<TBotController extends BotController = BotContr
  * @template TUserData - Тип пользовательских данных, по умолчанию {@link IUserData}.
  * @template TPlatformState - Тип данных в локальном хранилище платформы, по умолчанию {@link IPlatformData}.
  * @see BotController
+ *
+ * @group Основное
  */
-
 export class Bot<
     TUserData extends IUserData = IUserData,
     TPlatformState extends IPlatformData = IPlatformData,
@@ -559,6 +600,16 @@ export class Bot<
      */
     #sigtermHandler: (() => void) | null = null;
     #sigintHandler: (() => void) | null = null;
+
+    /**
+     * Остановка запущенного long polling; `null` — polling не запущен.
+     */
+    #pollingAbort: AbortController | null = null;
+
+    /**
+     * Завершение всех циклов long polling (см. {@link startPolling}).
+     */
+    #pollingDone: Promise<void> | null = null;
 
     /**
      * Полученный запрос от пользователя.
@@ -1198,7 +1249,8 @@ export class Bot<
      *
      * @param stepName — Уникальное имя шага (например, `'enter_email'`).
      * @param handler — Функция, вызываемая при получении сообщения в этом шаге.
-     *                  Может вернуть `false`, чтобы пропустить шаг и передать управление командам.
+     *                  Может вернуть `false`, чтобы пропустить шаг и передать управление командам,
+     *                  или строку — она станет текстом ответа, как у `addCommand`.
      * @returns Текущий экземпляр `Bot` (для цепочки вызовов).
      *
      * @example
@@ -3432,8 +3484,17 @@ export class Bot<
         this.#serverInst.listen(port, hostname, () => {
             this.#appContext.log(`Server running at http://${hostname}:${port}/`);
         });
-        // Если завершили процесс, то закрываем все подключения и чистим ресурсы.
-        // Удаляем старые обработчики, если start() вызывается повторно
+        this.#setShutdownHandlers();
+
+        return this.#serverInst;
+    }
+
+    /**
+     * Подписывает graceful shutdown на SIGTERM/SIGINT: при завершении процесса
+     * закрываются подключения и освобождаются ресурсы. Прежние обработчики
+     * снимаются — повторный start() или startPolling() не копит подписки.
+     */
+    #setShutdownHandlers(): void {
         if (this.#sigtermHandler) {
             process.removeListener('SIGTERM', this.#sigtermHandler);
         }
@@ -3448,8 +3509,209 @@ export class Bot<
         };
         process.once('SIGTERM', this.#sigtermHandler);
         process.once('SIGINT', this.#sigintHandler);
+    }
 
-        return this.#serverInst;
+    /**
+     * Запускает long polling: бот сам запрашивает обновления у платформ вместо
+     * приёма вебхука. Публичный HTTPS-адрес и туннель (ngrok) не нужны — удобно для
+     * локальной разработки и серверов без HTTPS.
+     *
+     * Polling работает на платформах, адаптер которых реализует `getUpdates`: Telegram,
+     * VK и MAX. Алиса, Маруся, SmartApp и Viber присылают запросы только вебхуком.
+     * Обновление проходит тот же конвейер, что и вебхук (middleware, команды, очередь
+     * пользователя), кроме проверки подписи: оно получено от API по токену бота.
+     * Обновления одной пачки выполняются параллельно, запросы одного пользователя — по очереди.
+     *
+     * У Telegram polling не работает, пока у бота зарегистрирован вебхук: удалите его
+     * (`deleteWebhook`) или используйте для разработки другой токен. Для VK включите
+     * Bots Long Poll API в настройках сообщества («Работа с API» → «Long Poll API») и
+     * отметьте нужные типы событий.
+     *
+     * Можно совмещать с {@link start}: например, VK через вебхук, Telegram через polling.
+     * Повторный вызов при запущенном polling возвращает тот же промис.
+     *
+     * @param options Параметры запуска: `platforms` — для каких платформ запустить polling
+     *   (по умолчанию — все подключённые адаптеры с поддержкой polling).
+     * @returns Промис, который выполняется, когда polling остановлен: {@link stopPolling},
+     *   {@link close}, сигнал SIGINT/SIGTERM или отказ всех платформ (причина — в логе).
+     *   Отклоняется, если ни один выбранный адаптер не поддерживает polling.
+     *
+     * @example
+     * ```ts
+     * import { Bot } from 'umbot';
+     * import { TelegramAdapter } from 'umbot/plugins';
+     *
+     * const bot = new Bot();
+     * bot.use(new TelegramAdapter(process.env.TELEGRAM_TOKEN));
+     * bot.addCommand('hello', ['привет'], (_text, ctx) => {
+     *     ctx.text = 'Привет!';
+     * });
+     *
+     * // Вместо bot.start(): вебхук и HTTPS не нужны
+     * await bot.startPolling();
+     *
+     * // Только Telegram; остальные платформы — через вебхук
+     * bot.start('0.0.0.0', 3000);
+     * await bot.startPolling({ platforms: ['telegram'] });
+     * ```
+     */
+    public startPolling(options: IPollingOptions = {}): Promise<void> {
+        const platforms = options.platforms;
+        if (this.#pollingDone) {
+            this.#appContext.logWarn('Bot:startPolling(): long polling уже запущен.');
+            return this.#pollingDone;
+        }
+        const adapters = Object.values(this.#appContext.platforms).filter(
+            (adapter) =>
+                typeof adapter.getUpdates === 'function' &&
+                (!platforms || platforms.includes(adapter.platformName)),
+        );
+        if (adapters.length === 0) {
+            const msg =
+                'Bot:startPolling(): нет подключённых адаптеров с поддержкой long polling' +
+                (platforms ? ` среди платформ: ${platforms.join(', ')}` : '') +
+                '. Polling поддерживают Telegram, VK и MAX; остальные платформы работают через вебхук (bot.start()).';
+            this.#appContext.logError(msg);
+            return Promise.reject(new Error(msg));
+        }
+        const abort = new AbortController();
+        this.#pollingAbort = abort;
+        this.#setShutdownHandlers();
+        this.#appContext.log(
+            `Bot: long polling запущен (${adapters.map((a) => a.platformName).join(', ')}).`,
+        );
+        const done = Promise.all(
+            adapters.map((adapter) => this.#pollLoop(adapter, abort.signal)),
+        ).then(() => {
+            if (this.#pollingAbort === abort) {
+                this.#pollingAbort = null;
+                this.#pollingDone = null;
+            }
+        });
+        this.#pollingDone = done;
+        return done;
+    }
+
+    /**
+     * Останавливает long polling, запущенный {@link startPolling}: обрывает текущие
+     * запросы за обновлениями и ждёт, пока обработаются уже полученные.
+     * Без запущенного polling ничего не делает. {@link close} вызывает метод сам.
+     * @returns Промис, выполненный после остановки всех циклов polling
+     *
+     * @example
+     * ```ts
+     * const polling = bot.startPolling();
+     * // ...
+     * await bot.stopPolling();
+     * await polling; // уже выполнен
+     * ```
+     */
+    public async stopPolling(): Promise<void> {
+        const abort = this.#pollingAbort;
+        const done = this.#pollingDone;
+        if (!abort || !done) {
+            return;
+        }
+        // Состояние сбрасывается сразу: startPolling() во время остановки запускает
+        // новый polling, а не возвращает промис останавливаемого.
+        this.#pollingAbort = null;
+        this.#pollingDone = null;
+        abort.abort();
+        await done;
+        this.#appContext.log('Bot: long polling остановлен.');
+    }
+
+    /**
+     * Цикл long polling одной платформы: запрос обновлений, обработка пачки, повтор.
+     * Ошибка запроса — повтор с растущей паузой; `null` от адаптера — остановка цикла.
+     * Не бросает исключений: промис всех циклов в {@link startPolling} не отклоняется.
+     * @param adapter Адаптер платформы с `getUpdates`
+     * @param signal Сигнал остановки
+     */
+    async #pollLoop(adapter: IPlatformAdapter, signal: AbortSignal): Promise<void> {
+        let failures = 0;
+        while (!signal.aborted) {
+            const startedAt = Date.now();
+            let updates: unknown[] | null;
+            try {
+                updates = (await adapter.getUpdates?.(signal)) ?? null;
+            } catch (error) {
+                if (signal.aborted) {
+                    break;
+                }
+                failures++;
+                const delay = Math.min(
+                    POLLING_RETRY_MIN_DELAY * 2 ** (failures - 1),
+                    POLLING_RETRY_MAX_DELAY,
+                );
+                this.#appContext.logError(
+                    `Bot: не удалось получить обновления "${adapter.platformName}" (long polling): ${
+                        error instanceof Error ? error.message : String(error)
+                    }. Повтор через ${delay} мс.`,
+                    { error },
+                );
+                await delayUnlessAborted(delay, signal);
+                continue;
+            }
+            if (updates === null) {
+                if (!signal.aborted) {
+                    this.#appContext.logError(
+                        `Bot: long polling "${adapter.platformName}" остановлен: адаптер не может получать обновления (причина — выше в логе).`,
+                    );
+                }
+                break;
+            }
+            failures = 0;
+            if (updates.length > 0) {
+                // Полученную пачку обрабатываем и при остановке: иначе обновления потерялись бы.
+                await this.#runPolledBatch(adapter, updates);
+            } else if (Date.now() - startedAt < POLLING_MIN_EMPTY_INTERVAL) {
+                await delayUnlessAborted(POLLING_MIN_EMPTY_INTERVAL, signal);
+            }
+        }
+    }
+
+    /**
+     * Обрабатывает пачку обновлений не более чем {@link POLLING_CONCURRENCY} одновременно.
+     * Обработка начинается в порядке пачки, поэтому очередь пользователя сохраняет
+     * порядок его обновлений.
+     * @param adapter Адаптер платформы
+     * @param updates Обновления пачки
+     */
+    async #runPolledBatch(adapter: IPlatformAdapter, updates: unknown[]): Promise<void> {
+        let next = 0;
+        const worker = async (): Promise<void> => {
+            while (next < updates.length) {
+                const update = updates[next++];
+                await this.#runPolledUpdate(adapter, update);
+            }
+        };
+        const workers = Math.min(POLLING_CONCURRENCY, updates.length);
+        await Promise.all(Array.from({ length: workers }, worker));
+    }
+
+    /**
+     * Обрабатывает одно обновление, полученное long polling. Ошибка обработки
+     * не останавливает polling: она пишется в лог, как 500 у вебхука.
+     * Дедупликации доставок здесь нет: платформа не повторяет обновление, пока адаптер
+     * не отступит назад позицией чтения, а позиция только растёт.
+     * @param adapter Адаптер платформы
+     * @param update Обновление в формате тела вебхука
+     */
+    async #runPolledUpdate(adapter: IPlatformAdapter, update: unknown): Promise<void> {
+        try {
+            await this.run(adapter.platformName, update as object);
+        } catch (error) {
+            // Некорректное обновление run() уже записал в лог.
+            if (!(error instanceof BotBadRequestError)) {
+                this.#appContext.logError(
+                    `Bot: ошибка обработки обновления "${adapter.platformName}" (long polling): ${
+                        error instanceof Error ? error.message : String(error)
+                    }`,
+                    { error },
+                );
+            }
+        }
     }
 
     /**
@@ -3616,7 +3878,8 @@ export class Bot<
     }
 
     /**
-     * Корректно завершает работу встроенного HTTP-сервера (если он был запущен через {@link start}).
+     * Корректно завершает работу встроенного HTTP-сервера (если он был запущен через {@link start})
+     * и long polling (если он был запущен через {@link startPolling}).
      * Ожидает завершения всех текущих запросов, освобождает сетевые ресурсы и отменяет
      * все активные асинхронные операции, связанные с жизненным циклом приложения.
      *
@@ -3634,15 +3897,20 @@ export class Bot<
      * ```
      */
     public async close(): Promise<void> {
+        let serverClosed: Promise<void> | undefined;
         if (this.#serverInst) {
             const server = this.#serverInst;
             this.#serverInst = undefined;
-            // Дожидаемся завершения активных запросов — иначе процесс может
-            // завершиться до того, как сервер отпустит сокеты.
-            await new Promise<void>((resolve) => {
+            // server.close() вызывается синхронно, до первого await: сервер перестаёт
+            // принимать соединения сразу, даже если вызывающий не ждёт close().
+            serverClosed = new Promise<void>((resolve) => {
                 server.close(() => resolve());
             });
         }
+        await this.stopPolling();
+        // Дожидаемся завершения активных запросов — иначе процесс может
+        // завершиться до того, как сервер отпустит сокеты.
+        await serverClosed;
         // Удаляем обработчики сигналов
         if (this.#sigtermHandler) {
             process.removeListener('SIGTERM', this.#sigtermHandler);

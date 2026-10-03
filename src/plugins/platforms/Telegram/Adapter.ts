@@ -1,4 +1,4 @@
-import { AppContext, BotController, Text } from '../../../index';
+import { AppContext, BotController, Request, Text } from '../../../index';
 import type { IControllerApi } from '../../../controller';
 import type { TEventType } from '../../../core/events';
 import { BasePlatform, EMPTY_QUERY_ERROR } from '../Base/Base';
@@ -23,7 +23,20 @@ import {
     tryParse,
     shouldProcessChatSound,
 } from '../Base/utils';
+import { POLLING_REQUEST_MARGIN, describePollingError } from '../Base/polling';
 import { timingSafeEqual } from 'crypto';
+
+/** Адрес Bot API (токен дописывается следом). */
+const TELEGRAM_API_URL = 'https://api.telegram.org/bot';
+
+/** Сколько секунд Telegram держит запрос getUpdates, если обновлений нет. */
+const TELEGRAM_POLLING_TIMEOUT = 25;
+
+/**
+ * Ответы getUpdates, после которых повтор бесполезен: 401/404 — неверный токен,
+ * 409 — у бота активен вебхук или обновления читает другой процесс.
+ */
+const TELEGRAM_POLLING_FATAL_STATUSES = new Set([401, 404, 409]);
 
 type ITelegramRequestData = Record<string, unknown> & {
     callbackQueryId?: string;
@@ -69,6 +82,8 @@ type ITelegramRequestData = Record<string, unknown> & {
  * @see Bot
  * @see BotController
  * @see BasePlatform
+ *
+ * @group Адаптеры платформ
  */
 export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
     /**
@@ -101,6 +116,27 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
      */
     limit = 30;
     signatureName = 'x-telegram-bot-api-secret-token';
+
+    /**
+     * `update_id`, с которого запрашивать обновления long polling; `null` — с начала очереди.
+     */
+    #pollingOffset: number | null = null;
+
+    /**
+     * Обновления приходят через long polling: ответ телом вебхука (webhook-reply)
+     * доставить некому, поэтому всё отправляется через API.
+     */
+    #isPolling = false;
+
+    /**
+     * Сигнал текущего сеанса polling: по его остановке адаптер возвращается к ответам вебхука.
+     */
+    #pollingSignal: AbortSignal | null = null;
+
+    /**
+     * Вебхук уже снят опцией `telegram_delete_webhook` — снимается один раз, при первом запросе.
+     */
+    #webhookDeleted = false;
 
     /**
      * API-фасад Telegram для `controller.api` (отправка медиа, ответ на
@@ -210,6 +246,137 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
             return null;
         }
         return typeof query?.update_id === 'number' ? String(query.update_id) : null;
+    }
+
+    /**
+     * Long polling: запрашивает новые обновления методом `getUpdates`.
+     * Telegram держит запрос до 25 секунд, если обновлений нет. Следующий вызов
+     * передаёт `offset` — так Telegram считает прежние обновления полученными.
+     *
+     * Пока у бота есть вебхук, Telegram отвечает 409 и polling останавливается: вебхук
+     * не снимается молча, ведь токен может принадлежать production-боту. Снять его при
+     * первом запросе можно явно — опцией адаптера `telegram_delete_webhook: true`.
+     * @param signal Сигнал остановки polling
+     * @returns Обновления, `null` — polling невозможен (нет токена, неверный токен,
+     *   активен вебхук или обновления читает другой процесс)
+     * @example
+     * ```ts
+     * bot.use(new TelegramAdapter(process.env.TELEGRAM_TOKEN));
+     * await bot.startPolling(); // ядро вызывает getUpdates в цикле
+     *
+     * // Снять вебхук перед polling (только для бота разработки!)
+     * bot.use(new TelegramAdapter(process.env.TELEGRAM_TOKEN, { telegram_delete_webhook: true }));
+     * ```
+     */
+    async getUpdates(signal: AbortSignal): Promise<unknown[] | null> {
+        const appContext = this.appContext;
+        const token = appContext?.appConfig.tokens[this.platformName]?.token;
+        if (!appContext || !token) {
+            appContext?.logError(
+                'TelegramAdapter.getUpdates(): не задан токен бота (TELEGRAM_TOKEN) — long polling невозможен.',
+            );
+            return null;
+        }
+        this.#trackPollingSession(signal);
+        if (this._platformOptions?.telegram_delete_webhook === true && !this.#webhookDeleted) {
+            const deleted = await this.#deleteWebhook(appContext as AppContext, token, signal);
+            if (!deleted) {
+                return null;
+            }
+        }
+        const request = new Request(appContext as AppContext);
+        request.maxTimeQuery = TELEGRAM_POLLING_TIMEOUT * 1000 + POLLING_REQUEST_MARGIN;
+        request.signal = signal;
+        request.header = Request.HEADER_JSON;
+        request.post = {
+            timeout: TELEGRAM_POLLING_TIMEOUT,
+            ...(this.#pollingOffset === null ? {} : { offset: this.#pollingOffset }),
+        };
+        const res = await request.send<{ ok?: boolean; result?: ITelegramContent[] }>(
+            `${TELEGRAM_API_URL}${token}/getUpdates`,
+        );
+        if (!res.status || res.data?.ok !== true) {
+            const reason = describePollingError(res);
+            if (
+                res.httpStatus !== undefined &&
+                TELEGRAM_POLLING_FATAL_STATUSES.has(res.httpStatus)
+            ) {
+                appContext.logError(
+                    `TelegramAdapter.getUpdates(): Telegram отклонил getUpdates (${reason}). ` +
+                        (res.httpStatus === 409
+                            ? 'Polling не работает, пока у бота есть вебхук: удалите его (deleteWebhook или опция адаптера telegram_delete_webhook) либо возьмите для разработки другой токен. ' +
+                              'Та же ошибка бывает, когда обновления уже читает другой запущенный экземпляр бота.'
+                            : 'Проверьте токен бота (TELEGRAM_TOKEN).'),
+                );
+                return null;
+            }
+            throw new Error(reason);
+        }
+        const updates = Array.isArray(res.data.result) ? res.data.result : [];
+        const lastId = updates[updates.length - 1]?.update_id;
+        if (typeof lastId === 'number') {
+            this.#pollingOffset = lastId + 1;
+        }
+        return updates;
+    }
+
+    /**
+     * Отмечает сеанс polling: пока он идёт, webhook-reply выключен. Подписка на сигнал —
+     * одна на сеанс, а не на каждый запрос обновлений.
+     * @param signal Сигнал сеанса polling
+     */
+    #trackPollingSession(signal: AbortSignal): void {
+        if (this.#pollingSignal === signal) {
+            return;
+        }
+        this.#pollingSignal = signal;
+        this.#isPolling = true;
+        signal.addEventListener(
+            'abort',
+            () => {
+                if (this.#pollingSignal === signal) {
+                    this.#pollingSignal = null;
+                    this.#isPolling = false;
+                }
+            },
+            { once: true },
+        );
+    }
+
+    /**
+     * Снимает вебхук бота перед long polling (опция `telegram_delete_webhook`).
+     * @param appContext Контекст приложения
+     * @param token Токен бота
+     * @param signal Сигнал остановки polling
+     * @returns `true` — вебхук снят; `false` — токен отклонён (причина в логе)
+     */
+    async #deleteWebhook(
+        appContext: AppContext,
+        token: string,
+        signal: AbortSignal,
+    ): Promise<boolean> {
+        const request = new Request(appContext);
+        request.maxTimeQuery = POLLING_REQUEST_MARGIN;
+        request.signal = signal;
+        const res = await request.send<{ ok?: boolean }>(
+            `${TELEGRAM_API_URL}${token}/deleteWebhook`,
+        );
+        if (!res.status || res.data?.ok !== true) {
+            const reason = describePollingError(res);
+            if (res.httpStatus === 401 || res.httpStatus === 404) {
+                appContext.logError(
+                    `TelegramAdapter.getUpdates(): Telegram отклонил deleteWebhook (${reason}). Проверьте токен бота (TELEGRAM_TOKEN).`,
+                );
+                return false;
+            }
+            throw new Error(reason);
+        }
+        this.#webhookDeleted = true;
+        appContext.logWarn(
+            'TelegramAdapter.getUpdates(): вебхук бота снят (опция telegram_delete_webhook). ' +
+                'Чтобы вернуть его, зарегистрируйте заново: npx umbot webhook telegram <https-url>.',
+        );
+        return true;
     }
 
     #setCallbackQuery(query: ITelegramContent, controller: BotController): boolean {
@@ -657,7 +824,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         controller: BotController,
         requestData: ITelegramRequestData,
     ): Record<string, unknown> | null {
-        if (this._platformOptions?.telegram_webhook_reply !== true) {
+        if (this._platformOptions?.telegram_webhook_reply !== true || this.#isPolling) {
             return null;
         }
         // Callback-запросы требуют answerCallbackQuery — Telegram сам их не

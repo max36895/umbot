@@ -26,18 +26,20 @@ my-bot/
 
 ## Файлы
 
-| Файл                               | Назначение                                                                                                                                            |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flowGenerator.js`                 | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.                              |
-| `umbot.js`                         | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                                                |
-| `controllers/ConsoleController.js` | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                                         |
-| `controllers/CreateController.js`  | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                                        |
-| `controllers/WebhookController.js` | Команда `webhook`: регистрирует вебхук Telegram/MAX с секретом и пишет секрет в `.env` только после успеха.                                           |
-| `utils.js`, `index.ts`             | Файловые хелперы CLI и TS-обёртка.                                                                                                                    |
-| `template/`                        | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`, `gitignore.text`. |
+| Файл                                | Назначение                                                                                                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flowGenerator.js`                  | Основной генератор `from-flow`. Читает JSON, генерирует `src/index.ts`, `src/utils.ts`, `package.json`, `tsconfig.json`.                                |
+| `umbot.js`                          | Точка входа CLI: разбор `argv`, чтение конфиг-JSON. В JSDoc-шапке — ручной `@version`.                                                                  |
+| `controllers/ConsoleController.js`  | Диспетчер всех команд и текст справки (`infoText`). Меняешь команду или флаг — правь справку.                                                           |
+| `controllers/CreateController.js`   | Шаблонный `create`: генерация проекта из `template/`, Dockerfile, файл деплоя.                                                                          |
+| `controllers/WebhookController.js`  | Команда `webhook`: регистрирует вебхук Telegram/MAX с секретом и пишет секрет в `.env` только после успеха.                                             |
+| `controllers/DoctorController.js`   | Команда `doctor`: Node.js, umbot в node_modules, `.env`/`.gitignore`, токены платформ по API, состояние вебхуков. Токены не выводит, код 1 при ошибках. |
+| `controllers/ScaffoldController.js` | Команды `add platform\|db\|middleware <name>`: каркас модуля и теста на `node:test` из `template/scaffold/` в `src/` проекта.                           |
+| `utils.js`, `index.ts`              | Файловые хелперы CLI и TS-обёртка.                                                                                                                      |
+| `template/`                         | Шаблоны генерируемого проекта: восемь вариантов `index*.ts.text`, `package.json.text` (ручной пин версии `umbot`), `tsconfig.json`, `gitignore.text`.   |
 
 Тесты: каталог `tests/cli/` (Jest) — `flowGenerator`, `flowGeneratorUserScenario`, `flowUtilsIsEqual`,
-`createController`, `consoleController`, `deploySanitize`. При изменении генератора или шаблонов добавляй проверку
+`createController`, `consoleController`, `deploySanitize`, `webhookController`, `doctorController`, `scaffoldController`. При изменении генератора или шаблонов добавляй проверку
 именно того кода/файла, который получит пользователь.
 
 Воркфлоу правок в `cli/` (что проверить, что обновить, чем верифицировать) — скилл `umbot-cli-change`.
@@ -48,25 +50,29 @@ my-bot/
 
 ### Ключевые функции
 
-| Функция                                        | Назначение                                                                   |
-| ---------------------------------------------- | ---------------------------------------------------------------------------- |
-| `escapeStr(s)`                                 | Экранирует строки (кавычки, бэктики, $, переносы).                           |
-| `isValidJSIdentifier(name)`                    | Проверяет, является ли строка валидным JS-идентификатором.                   |
-| `userDataAccess(name)`                         | Безопасное обращение к userData: `ctrl.userData.x` или `ctrl.userData['x']`. |
-| `textExpr(text)`                               | Конвертирует `{{var}}` → `` `${ctrl.userData.var}` `` (template literal).    |
-| `collectVarNames(doc)`                         | Собирает имена переменных из всех узлов.                                     |
-| `parseArithmeticExpression(expr, varNames)`    | Разбирает ограниченную арифметику flow без исполнения произвольного кода.    |
-| `generateActionFunc(block, varNames, indent)`  | Генерирует код действия (set_variable, random_number, http_request).         |
-| `generateConditionFunc(cond, ...)`             | Генерирует `if/else` из условия (7 параметров).                              |
-| `generateButtonCode(buttons, indent, shuffle)` | Генерирует `addBtn()` / `addLink()`.                                         |
-| `generateCardCode(card, indent)`               | Генерирует `card.addImage()`.                                                |
-| `generateBlockFunc(block, ...)`                | Генерирует функцию `__name(ctrl)` из блока (5 параметров).                   |
-| `findNextNonBlockNode(doc, fromId)`            | Ищет следующий command/step в цепочке (лимит 20).                            |
-| `generateIndexTs(doc)`                         | Главная функция. Генерирует полный `src/index.ts`.                           |
-| `generateUtils()`                              | Генерирует `src/utils.ts` с setText/setTTS/fetchWithTimeout.                 |
-| `generatePackageJson(doc)`                     | Генерирует `package.json`.                                                   |
-| `generateTsConfig()`                           | Генерирует `tsconfig.json`.                                                  |
-| `generateFromFlow(flowJsonPath, outputPath)`   | Точка входа: читает JSON, вызывает все генераторы, записывает файлы.         |
+| Функция                                        | Назначение                                                                                                                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `escapeStr(s)`                                 | Экранирует строки (кавычки, бэктики, $, переносы).                                                                                                                 |
+| `isValidJSIdentifier(name)`                    | Проверяет, является ли строка валидным JS-идентификатором.                                                                                                         |
+| `userDataAccess(name)`                         | Безопасное обращение к userData: `ctrl.userData.x` или `ctrl.userData['x']`.                                                                                       |
+| `textExpr(text, options?)`                     | `{{var}}` → `` `${ctrl.userData.var}` ``; `options.env` — `{{env.NAME}}` → `env('NAME')` (только http_request), `options.encodeVars` — `encodeURIComponent` (URL). |
+| `extractHttpSecrets(doc)`                      | До генерации переносит секреты http_request (заголовки, параметры URL, ключи JSON-тела) в `.env` как `HTTP_*`, в doc — `{{env.HTTP_*}}`.                           |
+| `getUrlOriginError(url)`                       | Ошибка `validate`, если переменная сценария стоит в адресе сервера URL (SSRF).                                                                                     |
+| `httpHeadersExpr(headers)`                     | Литерал заголовков с шаблонами значений.                                                                                                                           |
+| `collectVarNames(doc)`                         | Собирает имена переменных из всех узлов.                                                                                                                           |
+| `parseArithmeticExpression(expr, varNames)`    | Разбирает ограниченную арифметику flow без исполнения произвольного кода.                                                                                          |
+| `generateActionFunc(block, varNames, indent)`  | Генерирует код действия (set_variable, random_number, http_request).                                                                                               |
+| `generateConditionFunc(cond, ...)`             | Генерирует `if/else` из условия (7 параметров).                                                                                                                    |
+| `slotLiteral(slot, isPattern)`                 | Литерал слота команды: строковый слот — в нижнем регистре, слот-регулярка — как есть.                                                                              |
+| `generateButtonCode(buttons, indent, shuffle)` | Генерирует `addBtn()` / `addLink()`.                                                                                                                               |
+| `generateCardCode(card, indent)`               | Генерирует `card.addImage()`.                                                                                                                                      |
+| `generateBlockFunc(block, ...)`                | Генерирует функцию `__name(ctrl)` из блока (5 параметров).                                                                                                         |
+| `findNextNonBlockNode(doc, fromId)`            | Ищет следующий command/step в цепочке (лимит 20).                                                                                                                  |
+| `generateIndexTs(doc)`                         | Главная функция. Генерирует полный `src/index.ts`.                                                                                                                 |
+| `generateUtils(options?)`                      | Генерирует `src/utils.ts` с setText/setTTS/fetchWithTimeout; `needsEnv` — хелпер `env()` поверх `loadEnvFile`.                                                     |
+| `generatePackageJson(doc)`                     | Генерирует `package.json`.                                                                                                                                         |
+| `generateTsConfig()`                           | Генерирует `tsconfig.json`.                                                                                                                                        |
+| `generateFromFlow(flowJsonPath, outputPath)`   | Точка входа: читает JSON, вызывает все генераторы, записывает файлы.                                                                                               |
 
 ### Поток генерации
 
@@ -113,11 +119,23 @@ generateFromFlow(jsonPath, outputPath)
 13. **JSON body** — переменные `{{var}}` внутри JSON body нельзя подставлять через `JSON.parse(template)`: значения
     пользователя должны безопасно сериализоваться через объект и `JSON.stringify`.
 14. **Secrets** — реальные токены из `flow.json` нельзя писать в `serverless.yml`, `package.json`, исходники или README.
-    В commit-prone файлах используй ссылки на env-переменные.
-15. **Output safety** — генератор не должен молча перезаписывать непустую папку. Перезапись разрешена только через
+    В commit-prone файлах используй ссылки на env-переменные. Секреты http_request (в том числе в URL, который
+    попадает и в JSDoc-комментарий действия) выносит `extractHttpSecrets` — до генерации любого файла.
+    `{{env.NAME}}` раскрывается только в полях http_request, в текстах ответа — никогда.
+15. **URL http_request** — переменные сценария кодируются `encodeURIComponent` и допустимы только после адреса
+    сервера (`URL_ORIGIN_PATTERN`); адрес сервера — литерал или `{{env.NAME}}`. `{{env.NAME}}` не кодируется.
+16. **Output safety** — генератор не должен молча перезаписывать непустую папку. Перезапись разрешена только через
     явный `--force`/`options.force` и должна быть покрыта тестом.
-16. **Docker** — production Docker template должен собирать TypeScript с devDependencies в builder-stage, а runtime
+17. **Docker** — production Docker template должен собирать TypeScript с devDependencies в builder-stage, а runtime
     stage оставлять production-only.
+18. **Слоты** — строковые слоты команд и welcome генерируются в нижнем регистре (`slotLiteral`): `userCommand`
+    фреймворка уже в нижнем. Слоты-регулярки (`isPattern`) регистр не меняют — `\D` ≠ `\d`.
+19. **Каркасы `add platform|db|middleware`** — шаблоны `template/scaffold/*.text` с подстановками `{{Name}}`,
+    `{{name}}`, `{{platformName}}`, `{{ENV_NAME}}`. Сгенерированный каркас обязан компилироваться с tsconfig шаблона
+    `create` и проходить свой тест сразу после генерации — `scaffoldController.test.ts` собирает его против dist/ и
+    запускает `node --test`. Меняется контракт `BasePlatformAdapter`/`BaseDbAdapter`/middleware — правь шаблон.
+    `src/index.ts` пользователя CLI не трогает, пара файлов пишется целиком или не пишется (без `--force`).
+    В тестах каркаса нельзя использовать `@internal`-API (`getBotController()`): его нет в `.d.ts` пакета.
 
 ### Исправленные баги
 
@@ -133,6 +151,10 @@ generateFromFlow(jsonPath, outputPath)
 - **HTTP headers** — передаются в fetch через fetchOpts.
 - **HTTP timeout** — generated HTTP использует `fetchWithTimeout`.
 - **HTTP body** — JSON body с `{{var}}` сериализуется безопасно без `JSON.parse(template)`.
+- **Секреты http_request в исходнике** — `Authorization`, `api_key` и т.п. из flow.json писались открытым текстом в
+  `src/index.ts` (и URL с ключом — в комментарий действия). Теперь они уходят в `.env` (`extractHttpSecrets`).
+- **URL http_request без подстановок** — `{{var}}` в адресе вставлялся литералом. Теперь подставляется с
+  `encodeURIComponent`, а переменная в адресе сервера отклоняется `validate`.
 - **serverless.yml** — хранит ссылки вида `${env:TOKEN_NAME}`, а не значения токенов.
 - **outputPath** — непустая папка защищена от случайной перезаписи без `force`.
 - **Dockerfile** — builder устанавливает devDependencies перед `npm run build`.
@@ -154,6 +176,19 @@ generateFromFlow(jsonPath, outputPath)
 - **mode** — без поля `mode` генерируется `strict_prod`; `setAppMode` стоит сразу после `new Bot()`, до регистрации
   команд (strict_prod проверяет регулярки при регистрации). В шаблонах `create` — тот же порядок.
 - **Dockerfile** — каталоги `/app/json` и `/app/logs` создаются и отдаются пользователю `umbot` до `USER`.
+- **`validate` и JSON-конфиг `create`** — `umbot.js` читал любой второй аргумент `*.json` как конфиг `create`:
+  `validate flow.json` без `name` падал с «Проект не создан», битый JSON не доходил до валидатора. Конфиг читается
+  только для `create`; тест запускает `umbot.js validate` дочерним процессом.
+- **Поля-массивы узла** — `validateFlowSchema` проверяет, что `actions`, `conditions`, `buttons`, `slots` — массивы
+  (элементы первых трёх — объекты): иначе `validate` отвечал «валиден», а генерация падала с «is not iterable».
+- **HTTP headers + body** — свои `headers` заменяли `Content-Type: application/json`, и тело уходило как
+  `text/plain`. Теперь `Content-Type` добавляется, если в `headers` нет своего (без учёта регистра). `headers`
+  принимаются JSON-строкой или объектом (`parseHttpHeaders`), некорректные пропускаются с предупреждением.
+- **Каркас `add db`: «не найдено» с `error`** — `_select` шаблона возвращал на пустой выборке
+  `{ status: false, error }`, и ядро принимало это за сбой БД: `userData` новых пользователей не сохранялся. Пустая
+  выборка — `{ status: false }` без `error`; тест каркаса проверяет `res.error === undefined`.
+- **Регистр слотов** — слот «Погода» из редактора генерировался как есть и не совпадал ни с одной репликой
+  (`userCommand` в нижнем регистре). Строковые слоты приводятся к нижнему регистру, регулярки — нет.
 
 ## Тесты
 
@@ -163,39 +198,40 @@ npx jest tests/cli
 
 ### Покрытые паттерны
 
-| #       | Паттерн                 | Что проверяется                                |
-| ------- | ----------------------- | ---------------------------------------------- |
-| 1       | Простая команда         | `addCommand`, `setText`                        |
-| 2       | Кнопки                  | `addBtn`, `addLink`                            |
-| 3       | Шаг с saveTo            | `saveTo`, `userCommand`                        |
-| 4       | Инлайн action (rand)    | `rand()`, импорт                               |
-| 5       | Условие (блок)          | Функция `__check(ctrl)`                        |
-| 6       | Навигация               | `thisIntentName`                               |
-| 7       | Полный цикл             | command → action → step → condition            |
-| 8       | Карточка                | `card.addImage`                                |
-| 9       | TTS                     | `setTTS`                                       |
-| 10      | HTTP                    | `async fetchWithTimeout`                       |
-| 11      | Response блок           | `__help(ctrl)` вызов                           |
-| 12      | Карточка в response     | Много изображений                              |
-| 13      | isEnd                   | `ctrl.isEnd = true`                            |
-| 14      | set_variable expression | ограниченная арифметика и `Number(userData)`   |
-| 15      | isEmpty                 | `!ctrl.userData.x`                             |
-| 16      | saveAs lowercase        | `toLowerCase()`                                |
-| 17      | Мульти-шаг цепочка      | 3 шага подряд                                  |
-| 18      | Операторы               | gt, lt, contains, neq                          |
-| 19      | Inline condition        | if/else в command                              |
-| 20      | Кнопки в шаге           | `addBtn` в addStep                             |
-| 21      | Ошибки                  | Missing file, invalid JSON, missing name/nodes |
-| 22      | Welcome/fallback        | Тексты приветствия                             |
-| 23      | set_variable текст      | 'Hello world' → 'Hello world' (в кавычках)     |
-| 24      | isNotEmpty              | `!!condVar && condVar !== ''`                  |
-| 25      | helpText vs fallback    | helpText.text имеет приоритет                  |
-| 26      | Branch → step           | thisIntentName вместо \_\_name(ctrl)           |
-| db      | FileAdapter             | Импорт и использование                         |
-| dbmongo | MongoAdapter            | Импорт и использование                         |
-| dbnone  | Без адаптера            | Нет импорта                                    |
-| edge    | Backticks               | Экранирование `` ` `` в тексте                 |
-| edge    | ${}                     | Экранирование $ в тексте                       |
-| edge    | Пустые {{}}             | Не ломает шаблонный литерал                    |
-| edge    | Переменная с точкой     | Скобочный синтаксис `['user.name']`            |
-| edge    | Backticks + {{var}}     | Смешанное экранирование                        |
+| #       | Паттерн                 | Что проверяется                                 |
+| ------- | ----------------------- | ----------------------------------------------- |
+| 1       | Простая команда         | `addCommand`, `setText`                         |
+| 2       | Кнопки                  | `addBtn`, `addLink`                             |
+| 3       | Шаг с saveTo            | `saveTo`, `userCommand`                         |
+| 4       | Инлайн action (rand)    | `rand()`, импорт                                |
+| 5       | Условие (блок)          | Функция `__check(ctrl)`                         |
+| 6       | Навигация               | `thisIntentName`                                |
+| 7       | Полный цикл             | command → action → step → condition             |
+| 8       | Карточка                | `card.addImage`                                 |
+| 9       | TTS                     | `setTTS`                                        |
+| 10      | HTTP                    | `async fetchWithTimeout`                        |
+| 11      | Response блок           | `__help(ctrl)` вызов                            |
+| 12      | Карточка в response     | Много изображений                               |
+| 13      | isEnd                   | `ctrl.isEnd = true`                             |
+| 14      | set_variable expression | ограниченная арифметика и `Number(userData)`    |
+| 15      | isEmpty                 | `!ctrl.userData.x`                              |
+| 16      | saveAs lowercase        | `toLowerCase()`                                 |
+| 17      | Мульти-шаг цепочка      | 3 шага подряд                                   |
+| 18      | Операторы               | gt, lt, contains, neq                           |
+| 19      | Inline condition        | if/else в command                               |
+| 20      | Кнопки в шаге           | `addBtn` в addStep                              |
+| 21      | Ошибки                  | Missing file, invalid JSON, missing name/nodes  |
+| 22      | Welcome/fallback        | Тексты приветствия                              |
+| 23      | set_variable текст      | 'Hello world' → 'Hello world' (в кавычках)      |
+| 24      | isNotEmpty              | `!!condVar && condVar !== ''`                   |
+| 25      | helpText vs fallback    | helpText.text имеет приоритет                   |
+| 26      | Branch → step           | thisIntentName вместо \_\_name(ctrl)            |
+| 27      | Регистр слотов          | строки → нижний регистр, `isPattern` — как есть |
+| db      | FileAdapter             | Импорт и использование                          |
+| dbmongo | MongoAdapter            | Импорт и использование                          |
+| dbnone  | Без адаптера            | Нет импорта                                     |
+| edge    | Backticks               | Экранирование `` ` `` в тексте                  |
+| edge    | ${}                     | Экранирование $ в тексте                        |
+| edge    | Пустые {{}}             | Не ломает шаблонный литерал                     |
+| edge    | Переменная с точкой     | Скобочный синтаксис `['user.name']`             |
+| edge    | Backticks + {{var}}     | Смешанное экранирование                         |

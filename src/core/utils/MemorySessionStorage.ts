@@ -63,6 +63,8 @@ interface IMemorySessionEntry<T> {
  * storage.set('telegram:1', { step: 'ask_name' });
  * storage.get('telegram:1'); // { step: 'ask_name' }
  * ```
+ *
+ * @group Хранение данных
  */
 export class MemorySessionStorage<T> {
     readonly #entries = new Map<string, IMemorySessionEntry<T>>();

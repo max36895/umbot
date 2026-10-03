@@ -4,6 +4,10 @@
 `BotController`. Ваша задача: распарсить входящие данные, наполнить контроллер, обработать UI-компоненты (кнопки,
 картинки, звуки) и сформировать ответ строго по контракту конкретной платформы.
 
+> Начать удобнее с каркаса: `npx umbot add platform <Name>` в корне проекта создаёт
+> `src/platforms/<Name>Adapter.ts` и тест к нему. Каркас компилируется и проходит тест сразу, места под API платформы
+> отмечены `TODO` (подробнее — в [описании CLI](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README)).
+
 Адаптер наследуется от базового класса `BasePlatformAdapter<TQuery>` из `umbot/plugins` (в исходниках фреймворка
 класс называется `BasePlatform` — `BasePlatformAdapter` это его публичный алиас при реэкспорте). Для примеров ниже
 подключите всё необходимое одним блоком:
@@ -34,6 +38,7 @@ import { BotController, Text } from 'umbot'; // BotController и Text экспо
 | `isSignatureSupported()`                                 | нет                  | `true`, если задан `signatureName` или переопределён `isSignatureCheckEnabled` | Есть ли у платформы механизм подписи вебхука; платформы без него не попадают в предупреждение при старте          |
 | `getDeliveryId(query)`                                   | нет                  | не задан (дедупликации нет)                                                    | ID доставки вебхука для дедупликации повторов (см. «Дедупликация повторных доставок»)                             |
 | `getResponseTimeout()`                                   | нет                  | `null` (срока нет)                                                             | Сколько платформа ждёт ответа, мс (см. «Срок ответа платформы»)                                                   |
+| `getUpdates(signal)`                                     | нет                  | не задан (polling недоступен)                                                  | Один запрос long polling за новыми обновлениями (см. «Long polling»)                                              |
 | `limit`                                                  | нет                  | `null`                                                                         | Лимит запросов/сек для middleware `rateLimiter`                                                                   |
 | `isLocalStorage` / `getLocalStorage` / `setLocalStorage` | нет                  | `false` / `null` / пусто                                                       | Хранилище состояния на стороне платформы                                                                          |
 | `getQueryExample(query, userId, count, state)`           | нет                  | generic-заглушка                                                               | Пример запроса платформы для `BotTest`                                                                            |
@@ -131,9 +136,15 @@ isPlatformOnQuery(query: unknown, headers?: Record<string, unknown>): boolean {
 `parsedQuery`: повторный `JSON.parse` тела на каждом запросе — лишние микросекунды.
 
 ```ts
+import { timingSafeEqual } from 'node:crypto';
+
+// ...внутри класса адаптера
 isCorrectQuery(query: string | IMyQuery, headers?: Record<string, unknown>, parsedQuery?: unknown): boolean {
     const body = (parsedQuery ?? (typeof query === 'string' ? JSON.parse(query) : query)) as IMyQuery;
-    return body.secret === this.secret;
+    const got = Buffer.from(String(body.secret ?? ''));
+    const expected = Buffer.from(this.secret);
+    // Сравнение за постоянное время: обычное === по времени ответа выдаёт, сколько символов секрета совпало
+    return got.length === expected.length && timingSafeEqual(got, expected);
 }
 ```
 
@@ -215,6 +226,47 @@ getDeliveryId(query: IMyUpdate): string | null {
 class MyVoiceAdapter extends BasePlatform {
     getResponseTimeout(): number | null {
         return this.MAX_TIME_REQUEST;
+    }
+}
+```
+
+### Long polling (`getUpdates`)
+
+Если платформа отдаёт обновления по запросу, реализуйте `getUpdates(signal)` — тогда бота можно запустить
+`bot.startPolling()` без публичного адреса. Ядро вызывает метод в цикле и обрабатывает каждое обновление как
+запрос вебхука (`setQueryData`, middleware, команды), но без `isCorrectQuery`: обновление получено от API по токену.
+
+- Позицию чтения (`offset`, `marker`, `ts`) храните в адаптере: следующий вызов возвращает обновления после отданных.
+- Запрос обязан завершаться по `signal`, иначе `bot.stopPolling()` и `bot.close()` ждут окончания долгого запроса.
+  Передавайте его через `request.signal` встроенного `Request`, а не `AbortSignal.any([signal, ...])`: сигнал
+  живёт весь сеанс polling, и в Node 20 `AbortSignal.any()` копит на нём память с каждым запросом.
+- Временную ошибку (сеть, 5xx) бросайте исключением — ядро повторит вызов с паузой от 1 до 30 секунд. Если polling
+  невозможен (неверный токен, конфликт с вебхуком), запишите причину в лог и верните `null`: ядро остановит цикл.
+- Ответ пользователю в режиме polling уходит только через API платформы: тело `getContent` никто не получит.
+
+```ts
+class MyAdapter extends BasePlatform {
+    #offset = 0;
+
+    async getUpdates(signal: AbortSignal): Promise<unknown[] | null> {
+        const request = new Request(this.appContext as AppContext);
+        request.maxTimeQuery = 35_000; // дольше, чем платформа держит запрос (25 с)
+        request.signal = signal;
+        const res = await request.send<{ id: number }[]>(
+            `https://api.example.com/updates?offset=${this.#offset}&timeout=25`,
+        );
+        if (res.httpStatus === 401) {
+            this.appContext?.logError('MyAdapter: неверный токен, polling остановлен.');
+            return null;
+        }
+        if (!res.status || !res.data) {
+            throw new Error(`HTTP ${res.httpStatus ?? 'нет ответа'}`);
+        }
+        const updates = res.data;
+        if (updates.length) {
+            this.#offset = updates[updates.length - 1].id + 1;
+        }
+        return updates;
     }
 }
 ```

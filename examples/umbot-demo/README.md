@@ -110,7 +110,7 @@ npm run dev
 
 ## Документация
 
-- Руководство: [`src/docs/GUIDE.md`](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_GUIDE.html)
-- Справочник API: [`src/docs/api-reference.md`](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_api-reference.html)
-- Тестирование: [`src/docs/testing.md`](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_testing.html)
+- Руководство: [`src/docs/GUIDE.md`](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/GUIDE)
+- Справочник API: [`src/docs/api-reference.md`](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference)
+- Тестирование: [`src/docs/testing.md`](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/testing)
 - Сгенерированная TypeDoc-документация: папка [`docs/`](../../docs) в корне репозитория

@@ -61,6 +61,8 @@ import {
  * @see Bot
  * @see BotController
  * @see BasePlatform
+ *
+ * @group Адаптеры платформ
  */
 export class SmartAppAdapter extends BasePlatform<string | ISberSmartAppWebhookRequest> {
     /**

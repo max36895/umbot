@@ -161,7 +161,7 @@ export function prepareTelegramMessageText(
  * await telegram.sendMessage(12345,
  *   '*Жирный текст* и _курсив_\n' +
  *   '[Ссылка](http://localhost)\n' +
- *   '`code` и ```pre```',
+ *   '`inline code`',
  *   { parse_mode: 'MarkdownV2' }
  * );
  *
@@ -187,6 +187,8 @@ export function prepareTelegramMessageText(
  *   performer: 'Исполнитель'
  * });
  * ```
+ *
+ * @group API платформ
  */
 export class TelegramRequest {
     /**

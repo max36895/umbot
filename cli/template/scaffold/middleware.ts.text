@@ -1,0 +1,46 @@
+import { BotController, MiddlewareNext } from 'umbot';
+
+/**
+ * Настройки middleware {{name}}.
+ * TODO: замените пример (блокировка пользователей) на настройки своей middleware.
+ */
+export interface I{{Name}}Options {
+    /** Пользователи, запросы которых не доходят до команд */
+    blockedUserIds?: readonly (string | number)[];
+    /** Ответ заблокированному пользователю */
+    message?: string;
+}
+
+/**
+ * Middleware {{name}}: вызывается до команд и может остановить обработку запроса.
+ *
+ * Правила: вызовите `await next()`, чтобы запрос дошёл до команд, или задайте ответ
+ * (`ctx.text`) и выйдите без `next()`. Ответ команды после `await next()` ещё не сформирован.
+ * Подробнее: https://www.maxim-m.ru/docs/umbot/v-3.1/guides/middleware
+ *
+ * @example
+ * ```ts
+ * import { {{name}} } from './middleware/{{name}}';
+ *
+ * bot.use({{name}}({ blockedUserIds: ['42'] }));
+ * ```
+ *
+ * @param options Настройки
+ * @returns Middleware для `bot.use()`
+ */
+export function {{name}}(
+    options: I{{Name}}Options = {},
+): (ctx: BotController, next: MiddlewareNext) => Promise<void> {
+    // Настройки разбираются один раз при создании, а не на каждом запросе.
+    const blocked = new Set((options.blockedUserIds ?? []).map(String));
+    const message = options.message ?? 'Доступ ограничен.';
+    return async (ctx: BotController, next: MiddlewareNext): Promise<void> => {
+        // TODO: логика middleware.
+        if (blocked.has(String(ctx.userId))) {
+            ctx.text = message;
+            // next() не вызывается — команды не запустятся.
+            return;
+        }
+        await next();
+    };
+}

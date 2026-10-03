@@ -31,7 +31,7 @@ npm start
 > Шаблоны `default`/`quiz` через CLI hot-reload тоже не дают (запуск там тот же: `npm run build && npm start`),
 > но при создании с режимом `dev` точка входа использует `BotTest` — интерактивную консольную отладку без HTTP-сервера.
 
-Подробнее о CLI: [документация umbot CLI](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.cli_README.html)
+Подробнее о CLI: [документация umbot CLI](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README)
 
 ---
 
@@ -121,13 +121,18 @@ npm start
 | `type`       | `"command"`     | да          | Тип узла                                                        |
 | `id`         | string          | да          | Уникальный ID                                                   |
 | `name`       | string          | да          | Имя команды (в генерируемом коде)                               |
-| `slots`      | string[]        | да          | Слова-триггеры (без учёта регистра)                             |
-| `isPattern`  | boolean         | нет         | Если `true`, слоты — регулярные выражения                       |
+| `slots`      | string[]        | да          | Слова-триггеры (без учёта регистра, см. ниже)                   |
+| `isPattern`  | boolean         | нет         | Если `true`, слоты — регулярные выражения (регистр учитывается) |
 | `saveTo`     | string          | нет         | Сохранить ввод в userData                                       |
 | `varComment` | string          | нет         | Комментарий к переменной (поле редактора, генератор игнорирует) |
 | `actions`    | ActionBlock[]   | нет         | Инлайн-действия                                                 |
 | `conditions` | FlowCondition[] | нет         | Инлайн-условия                                                  |
 | `response`   | FlowResponse    | да          | Настройки ответа                                                |
+
+**Регистр слотов.** Фреймворк сравнивает слоты с репликой пользователя, уже приведённой к нижнему регистру, поэтому
+генератор переводит строковые слоты в нижний регистр: «Погода» из редактора в коде станет `'погода'` и сработает на
+«погода», «Погода» и «ПОГОДА». Слоты-регулярки (`isPattern: true`) остаются как есть — у `\D` и `\d` разный смысл.
+Пишите их под текст в нижнем регистре: `^код\d+$`, а не `^Код\d+$`.
 
 ### Step Node
 
@@ -361,19 +366,19 @@ npm start
 { "type": "http_request", "url": "https://api.com", "method": "GET", "headers": "{ \"Auth\": \"token\" }", "body": "{\"key\": \"{{var}}\"}", "saveResponseTo": "data" }
 ```
 
-| Поле             | Тип    | Описание                                                                             |
-| ---------------- | ------ | ------------------------------------------------------------------------------------ |
-| `type`           | string | `"set_variable"` / `"random_number"` / `"http_request"`                              |
-| `field`          | string | Имя переменной в userData                                                            |
-| `fieldComment`   | string | Комментарий к переменной (поле редактора, генератор игнорирует)                      |
-| `value`          | string | Выражение для set_variable (поддерживает `{{var}}`)                                  |
-| `min`            | number | Минимум для random_number (по умолчанию 1)                                           |
-| `max`            | number | Максимум для random_number (по умолчанию 10)                                         |
-| `url`            | string | URL для http_request (вставляется литералом, без `{{var}}`)                          |
-| `method`         | string | HTTP метод: `"GET"`, `"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`, `"HEAD"`, `"OPTIONS"` |
-| `headers`        | string | Заголовки как JSON строка                                                            |
-| `body`           | string | Тело запроса как JSON строка (поддерживает `{{var}}`)                                |
-| `saveResponseTo` | string | Сохранить ответ в userData                                                           |
+| Поле             | Тип              | Описание                                                                                      |
+| ---------------- | ---------------- | --------------------------------------------------------------------------------------------- |
+| `type`           | string           | `"set_variable"` / `"random_number"` / `"http_request"`                                       |
+| `field`          | string           | Имя переменной в userData                                                                     |
+| `fieldComment`   | string           | Комментарий к переменной (поле редактора, генератор игнорирует)                               |
+| `value`          | string           | Выражение для set_variable (поддерживает `{{var}}`)                                           |
+| `min`            | number           | Минимум для random_number (по умолчанию 1)                                                    |
+| `max`            | number           | Максимум для random_number (по умолчанию 10)                                                  |
+| `url`            | string           | URL для http_request: `{{var}}` в пути и параметрах (кодируется), `{{env.NAME}}` — где угодно |
+| `method`         | string           | HTTP метод: `"GET"`, `"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`, `"HEAD"`, `"OPTIONS"`          |
+| `headers`        | string \| object | Заголовки: JSON-строка или объект; значения поддерживают `{{var}}` и `{{env.NAME}}`           |
+| `body`           | string \| object | Тело запроса: JSON-строка или объект; строки поддерживают `{{var}}` и `{{env.NAME}}`          |
+| `saveResponseTo` | string           | Сохранить ответ в userData                                                                    |
 
 ### FlowCondition
 
@@ -447,7 +452,8 @@ Command → Condition (next) — генерируется по одному из
 > Подстановка `{{var}}` работает во всех текстовых полях, которые проходят через textExpr: `text` (response, prompt,
 > fallback, welcome, helpText) и тексты action-блоков. В `value` (set_variable) значение с `{{}}` тоже подставляется
 > как шаблонная строка; арифметика типа `num1 + num2` (имена без `{{}}`) вычисляется отдельным парсером выражений.
-> В URL `http_request` подстановка НЕ выполняется — адрес вставляется литералом.
+> Правила для `url`, `headers` и `body` запроса `http_request` — в разделе «HTTP-запросы: переменные и секреты».
+> `{{env.NAME}}` в текстах ответа не раскрывается: переменная окружения не должна уйти пользователю.
 
 ---
 
@@ -801,7 +807,7 @@ function __show_help(ctrl: BotController): void {
 const response = await fetchWithTimeout('https://api.com', {
     method: 'POST',
     body: JSON.stringify({ user: `${ctrl.userData.userName}`, score: `${ctrl.userData.score}` }),
-    headers: { 'Content-Type': 'application/json' }, // при теле — всегда добавляются
+    headers: { 'Content-Type': 'application/json' }, // при теле добавляется, если в headers нет своего Content-Type
 });
 // Ответ читается как текст и парсится с fallback на сырую строку при невалидном JSON
 const responseText = await response.text();
@@ -812,6 +818,44 @@ try {
     data = responseText;
 }
 ctrl.userData.result = data; // тип unknown, не Promise
+```
+
+### HTTP-запросы: переменные и секреты
+
+В `url`, `headers` и `body` запроса `http_request` работают две подстановки:
+
+- `{{var}}` — переменная сценария (или системная `{{__currentDate}}`). В `url` значение кодируется
+  `encodeURIComponent`, поэтому ввод пользователя не добавит в запрос свой путь или параметр. Переменная сценария
+  допустима только **после адреса сервера** — в пути и параметрах: `https://api.example.com/weather/{{city}}`.
+  `https://{{host}}/…` или `{{url}}` — ошибка `validate`: иначе пользователь бота выбирал бы сервер, к которому
+  ходит бот.
+- `{{env.NAME}}` — переменная окружения (имя: латиница, цифры, `_`). Значение подставляется как есть, в том числе в
+  адрес сервера: `{{env.API_BASE}}/items/{{id}}`. В коде это `env('NAME')` из `./utils`: сначала окружение процесса
+  (Docker, serverless), затем `.env` проекта. Переменная добавляется в `.env` пустой строкой, если её там нет.
+
+**Секреты не попадают в код.** Если значение заголовка, параметра URL или ключа JSON-тела с «секретным» именем
+(`Authorization`, `Cookie`, `token`, `secret`, `password`, `api_key`, `X-Api-Key`, `key` и т.п.) записано в
+flow.json открытым текстом, генератор переносит его в `.env` как `HTTP_<ИМЯ>` (`HTTP_AUTHORIZATION`,
+`HTTP_API_KEY`), а в `src/index.ts` пишет `env('HTTP_…')` — с предупреждением в консоли. Одинаковые значения
+получают одну переменную, разные — суффикс `_2`, `_3`. Секрет в теле не-JSON не распознаётся — используйте
+`{{env.NAME}}` явно.
+
+```json
+{
+    "type": "http_request",
+    "url": "https://api.example.com/weather/{{city}}?key={{env.WEATHER_KEY}}",
+    "method": "GET",
+    "headers": { "Authorization": "Bearer sk-live-123" },
+    "saveResponseTo": "weather"
+}
+```
+
+```typescript
+// .env: HTTP_AUTHORIZATION=Bearer sk-live-123, WEATHER_KEY=
+const response = await fetchWithTimeout(
+    `https://api.example.com/weather/${encodeURIComponent(String(ctrl.userData.city ?? ''))}?key=${env('WEATHER_KEY')}`,
+    { headers: { Authorization: `${env('HTTP_AUTHORIZATION')}` } },
+);
 ```
 
 ---
@@ -826,19 +870,20 @@ import { setText, setTTS, fetchWithTimeout } from './utils'; // условно
 import { FileAdapter, MongoAdapter } from 'umbot/plugins'; // по database.type
 ```
 
-| Условие                          | Импорт                                                            |
-| -------------------------------- | ----------------------------------------------------------------- |
-| Есть TTS у любого узла           | `import { setText, setTTS } from './utils'`                       |
-| Нет TTS                          | `import { setText } from './utils'`                               |
-| Есть http_request действия       | `import { fetchWithTimeout } from './utils'` (генерируется cli)   |
-| Есть isSayTrue/isSayFalse/isUrl  | `import { Text } from 'umbot'`                                    |
-| Есть random_number действия      | `import { rand } from 'umbot/utils'`                              |
-| database.type === 'file'         | `import { FileAdapter } from 'umbot/plugins'`                     |
-| database.type === 'mongo'        | `import { MongoAdapter } from 'umbot/plugins'`                    |
-| Все 7 платформ (или список пуст) | `import { fullPlatforms } from 'umbot/plugins'`                   |
-| Только голосовые платформы       | `import { voicePlatforms } from 'umbot/plugins'`                  |
-| Только чат-платформы             | `import { botPlatforms } from 'umbot/plugins'`                    |
-| Смешанный набор платформ         | `import { TelegramAdapter, VkAdapter, ... } from 'umbot/plugins'` |
+| Условие                           | Импорт                                                            |
+| --------------------------------- | ----------------------------------------------------------------- |
+| Есть TTS у любого узла            | `import { setText, setTTS } from './utils'`                       |
+| Нет TTS                           | `import { setText } from './utils'`                               |
+| Есть http_request действия        | `import { fetchWithTimeout } from './utils'` (генерируется cli)   |
+| Запросы используют `{{env.NAME}}` | `import { env } from './utils'` (читает окружение и `.env`)       |
+| Есть isSayTrue/isSayFalse/isUrl   | `import { Text } from 'umbot'`                                    |
+| Есть random_number действия       | `import { rand } from 'umbot/utils'`                              |
+| database.type === 'file'          | `import { FileAdapter } from 'umbot/plugins'`                     |
+| database.type === 'mongo'         | `import { MongoAdapter } from 'umbot/plugins'`                    |
+| Все 7 платформ (или список пуст)  | `import { fullPlatforms } from 'umbot/plugins'`                   |
+| Только голосовые платформы        | `import { voicePlatforms } from 'umbot/plugins'`                  |
+| Только чат-платформы              | `import { botPlatforms } from 'umbot/plugins'`                    |
+| Смешанный набор платформ          | `import { TelegramAdapter, VkAdapter, ... } from 'umbot/plugins'` |
 
 ---
 

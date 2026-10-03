@@ -48,6 +48,8 @@ export interface ITTSResult {
  *   console.error('Ошибка синтеза речи:', error);
  * }
  * ```
+ *
+ * @group API платформ
  */
 export class YandexSpeechKit extends YandexRequest {
     /**

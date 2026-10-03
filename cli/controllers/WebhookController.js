@@ -61,7 +61,9 @@ const PLATFORMS = {
 };
 
 /**
- * Читает переменные из .env (формат ИМЯ=значение, строки с # — комментарии).
+ * Читает переменные из .env так же, как `loadEnvFile` фреймворка: строки с `#` —
+ * комментарии, « #» вне кавычек начинает комментарий в конце строки, кавычки вокруг
+ * значения снимаются. Иначе CLI видел бы другой токен, чем запущенный бот.
  * @param {string} envPath Путь к .env
  * @returns {Record<string, string>} Переменные файла (пусто, если файла нет)
  */
@@ -76,10 +78,17 @@ function readEnv(envPath) {
         if (!trimmed || trimmed.startsWith('#') || eq === -1) {
             continue;
         }
-        result[trimmed.slice(0, eq).trim()] = trimmed
-            .slice(eq + 1)
-            .trim()
-            .replace(/^["']|["']$/g, '');
+        let value = trimmed.slice(eq + 1).trim();
+        const comment = /(?:^|\s)#/.exec(value);
+        if (comment) {
+            const before = value.slice(0, comment.index);
+            const singleQuotes = (before.match(/'/g) || []).length;
+            const doubleQuotes = (before.match(/"/g) || []).length;
+            if (singleQuotes % 2 === 0 && doubleQuotes % 2 === 0) {
+                value = before.trim();
+            }
+        }
+        result[trimmed.slice(0, eq).trim()] = value.replace(/^["']|["']$/g, '');
     }
     return result;
 }
@@ -180,4 +189,4 @@ async function setupWebhook({ platform, url, envPath = '.env', fetchImpl = fetch
     return { secretCreated: !existingSecret };
 }
 
-module.exports = { setupWebhook };
+module.exports = { setupWebhook, readEnv };

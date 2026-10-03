@@ -2,6 +2,11 @@
 
 Фреймворк umbot не знает, используете вы SQL, NoSQL или файловую систему. Он оперирует абстрактными объектами IQuery и IQueryData. Ваша задача как разработчика адаптера — написать "транслятор", который превращает эти абстракции в реальные запросы к вашей СУБД.
 
+> Начать удобнее с каркаса: `npx umbot add db <Name>` создаёт `src/db/<Name>DbAdapter.ts` — рабочий адаптер,
+> который хранит данные в памяти процесса, — и тест к нему. Методы по одному заменяются вызовами драйвера своей базы;
+> тест проверяет ответы, которых ждёт фреймворк (подробнее — в
+> [описании CLI](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README)).
+
 ## Архитектура: Template Method
 
 Базовый класс `BaseDbAdapter` (из `umbot/plugins`) берет на себя рутину:
@@ -38,14 +43,16 @@
 
 - **Хранилища без схемы** (`FileAdapter`, MongoDB) создают их сами: файл или коллекция появляются при первой записи.
   `MongoAdapter` в `ensureSchema` дополнительно создаёт индексы.
-- **Базы со схемой** (PostgreSQL, MySQL, SQLite) — таблицы создаёт **адаптер** в `ensureSchema`. Без этого первый же
-  запрос упадёт с ошибкой «таблица не существует».
+- **Базы со схемой** (PostgreSQL, MySQL, SQLite, YDB) — таблицы создаёт **адаптер** в `ensureSchema`. Без этого
+  первый же запрос упадёт с ошибкой «таблица не существует». Готовые реализации, на которые можно опереться, —
+  внешние пакеты [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter) (SQL через Knex.js) и
+  [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter) (YDB).
 
 `ensureSchema` получает `DB_TABLES_SCHEMA` (экспортируется из `umbot`): имя таблицы, первичный ключ, `uniqueKeys`,
 поля с типами (`string` с `maxLength` / `text`) и наборы полей для индексов. Метод должен быть идемпотентным
 (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`); при сбое верните `false` или бросьте исключение —
 фреймворк запишет ошибку в лог и продолжит работу. Полный пример для PostgreSQL — в
-[спецификации внешних адаптеров](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_adapter_external-db-adapter-spec.html).
+[спецификации внешних адаптеров](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/external-db-adapter-spec).
 
 ## Форматы данных (Шпаргалка):
 
@@ -91,9 +98,9 @@
 То, что вы обязаны вернуть из метода `_select`.
 
 ```ts
-// Успех: записи нашлись
+// Успех: записи нашлись (isOne — сама запись, иначе массив)
 { status: true, data: { userId: '123', name: 'John' } }
-{ status: true, data: [] }
+{ status: true, data: [{ userId: '123' }, { userId: '456' }] }
 
 // Запись не найдена (пустая выборка) — тоже status: false
 { status: false }
@@ -174,7 +181,8 @@ _Зачем тогда в `IQuery` передаются `rules`?_
 
 ### 2. Хранение подключения (Connection Pool)
 
-Чтобы не создавать новое подключение к БД на каждый запрос, фреймворк предоставляет синглтон-хранилище.
+Чтобы не создавать новое подключение к БД на каждый запрос, пул хранится в контексте приложения — одном на экземпляр
+`Bot`.
 К моменту вызова `connect()` базовый класс уже привязал `appContext` и создал пустой `databaseInfo`
 (это делает `init()` в `Base/Base.ts`), поэтому конвенция проста: сохраняйте ваш пул/клиент в
 `this._appContext.database.databaseInfo` — оттуда его читают `_select/_insert` и внешние `model.query(callback)`.
@@ -240,10 +248,11 @@ export class MyCustomDbAdapter extends BaseDbAdapter {
             const sqlQuery = this.buildSelectQuery(selectData.tableName, where, isOne);
 
             // 2. Выполняем запрос
-            const result = await pool.execute(sqlQuery);
+            const rows = await pool.execute(sqlQuery);
 
-            // 3. Возвращаем в формате IModelRes
-            return { status: true, data: result };
+            // 3. Возвращаем в формате IModelRes: пустая выборка — status: false без error
+            if (!rows.length) return { status: false };
+            return { status: true, data: isOne ? rows[0] : rows };
         } catch (err) {
             // Не бросаем исключение, а возвращаем статус false
             return { status: false, error: (err as Error).message };

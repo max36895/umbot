@@ -79,6 +79,10 @@ Bot.webhookHandle() → #acceptDelivery() (дедупликация) → Bot.run
 1. **FileAdapter**: конкурентные записи, целостность данных при shutdown, файловые локи (документирован как single-process — локи не добавлять)
 2. **MongoAdapter**: жизненный цикл коннекта, восстановление после ошибок, заполнение `databaseInfo`
 3. **Базовый адаптер**: поток save/update/insert, корректность escapeString
+4. **Контракт `_select` во всех реализациях** — встроенных, каркасе `cli/template/scaffold/db.ts.text`, примерах в
+   `src/docs/adapter/`: пустая выборка — `{ status: false }` без `error`, сбой — с `error`. По `error` ядро не
+   сохраняет `userData`, поэтому «не найдено» с `error` молча ломает сохранение новых пользователей (так было в
+   каркасе `add db` до 3.1.5). Подводные камни внешних адаптеров — `external-db-adapter-spec.md`, раздел 6.
 
 ### Приоритет 4: всё остальное
 

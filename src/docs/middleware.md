@@ -43,6 +43,9 @@ bot.use(T_ALISA, async (ctx, next) => {
 
 ## Кастомная middleware
 
+Каркас middleware-фабрики с настройками и тестом создаёт `npx umbot add middleware <name>` — файл
+`src/middleware/<name>.ts` (подробнее — в [описании CLI](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README)).
+
 ### Пример: логирование всех запросов
 
 ```ts
@@ -128,7 +131,13 @@ bot.use(rateLimiter(100, 60_000, (ctx) => ctx.appType ?? ''));
 - Читает `appContext.platforms[platform].limit` (TG/VK/Viber/MAX = 30 по умолчанию; `0`/`null` — без ограничений).
 - Поддерживает фиксированное 1-секундное окно per `{platform, userId}`: счётчик запросов сбрасывается каждую секунду.
 - При превышении — ставит в очередь (до `maxQueueSize`).
-- Переполнение очереди → бросает исключение.
+- Переполнение очереди → запрос отклоняется: middleware выставляет `ctx.platformOptions.rateLimitOverflow = true` и
+  бросает `RateLimitQueueOverflowError` (экспорт из `umbot/middleware`). Ядро пишет ошибку в лог и не запускает
+  обработку команд, платформа получает 200 — повторной доставки не будет. Флаг и класс ошибки позволяют отличить
+  отказ по перегрузке от ошибки в бизнес-логике (например, в `responseCb` у `bot.start()`).
+- `destroyRateLimiter()` (тоже из `umbot/middleware`) останавливает таймеры очистки и отклоняет ожидающие в очереди
+  запросы всех созданных лимитеров — для hot-reload и тестов; при обычном завершении процесса вызывать не нужно,
+  таймеры не держат процесс.
 - Хранит до 10 000 ключей: новый ключ сверх лимита вытесняет самый давно неактивный (без очереди и идущей
   обработки). Вытеснение и очистка неактивных записей (`inactivityTimeout`) — O(1) на запись: поток запросов с
   новыми `userId` (на Алисе и Марусе его задаёт отправитель) не превращает каждый запрос в обход всех ключей.
@@ -263,7 +272,8 @@ bot.use(
 - **Неизвестный IP** (`bot.run()`/`BotTest`, `webhookEvent()` без `clientIp`): по умолчанию запрос пропускается без
   фильтрации (одно предупреждение в лог), чтобы бот не ломался в dev/test окружении. Опция `rejectWithoutIp: true`
   отклоняет такие запросы — включайте её в продакшене вместе с `whitelist`, иначе забытый `clientIp` молча отключает
-  фильтр.
+  фильтр. У long polling (`bot.startPolling()`) IP клиента нет вовсе: с `rejectWithoutIp: true` отклоняются все
+  обновления, а сам фильтр для polling не нужен.
 - За reverse proxy все запросы приходят с IP прокси: `X-Forwarded-For` не используется, потому что клиент может его
   подделать. За прокси ограничивайте доступ на уровне самого прокси.
 
@@ -276,15 +286,15 @@ bot.use(
 ```ts
 import { MiddlewareNext, BotController } from 'umbot';
 
-export function myMiddleware(options?: {...}) {
+export function myMiddleware(options: { skip?: boolean } = {}) {
     return async (ctx: BotController, next: MiddlewareNext): Promise<void> => {
         try {
             // ваша логика ДО обработки запроса
         } catch (e) {
-            ctx.appContext.logError('myMiddleware error', {error: e});
+            ctx.appContext.logError('myMiddleware error', { error: e });
             // Решите: скрыть ошибку (continue) или блокировать (return без next)
         }
-        await next();  // обязательно, чтобы дальше шла обработка командами/шагами
+        await next(); // обязательно, чтобы дальше шла обработка командами/шагами
         // ваша логика ПОСЛЕ обработки (например, замеры времени, логирование ответа)
     };
 }
@@ -293,6 +303,7 @@ export function myMiddleware(options?: {...}) {
 **Правила:**
 
 1. **Всегда** вызывайте `next()` или осознанно завершайте ответ через `ctx.text = ...` (без `next()`).
-2. **Всегда** оборачивайте рисковые операции в try/catch — иначе исключение убьёт pipeline.
+2. **Всегда** оборачивайте рисковые операции в try/catch: необработанное исключение ядро запишет в лог и ответит
+   платформе 200, но команды не выполнятся и пользователь останется без ответа.
 3. Middleware вызываются в порядке регистрации (`bot.use(mw1); bot.use(mw2);` → сначала mw1).
 4. Если middleware платформо-специфично — используйте `bot.use(T_TELEGRAM, mw)`.

@@ -4,6 +4,8 @@ const CreateController = require(path.join(__dirname, 'CreateController.js')).cr
 const utils = require(path.join(__dirname, '..', 'utils.js')).utils;
 const flowGenerator = require(path.join(__dirname, '..', 'flowGenerator.js'));
 const { setupWebhook } = require(path.join(__dirname, 'WebhookController.js'));
+const { runDoctor } = require(path.join(__dirname, 'DoctorController.js'));
+const { runAddScaffold } = require(path.join(__dirname, 'ScaffoldController.js'));
 const fs = require('node:fs');
 
 const VERSION = require(path.join(__dirname, '..', '..', 'package.json')).version;
@@ -108,7 +110,7 @@ function generateEnv(force = false, fileName = '.env') {
 
 /**
  * Консольный контроллер CLI: маршрутизирует команды create (в т.ч. from-flow), validate,
- * stats, generateEnv, add и version.
+ * stats, doctor, webhook, generateEnv, add (docker, deploy, env, platform, db, middleware) и version.
  * @param param
  * @param argv
  */
@@ -126,11 +128,17 @@ async function main(
         '\n - validate <flow.json> - Проверить корректность flow.json перед генерацией' +
         '\n - stats --log <path> - Агрегировать метрики из лога (число строк/ошибок/предупреждений, топ команд, p50/p95/p99 latency)' +
         '\n - generateEnv - Сгенерировать файл .env' +
+        '\n - doctor [--env <path>] [--offline] - Проверить проект: версию Node.js, установленный umbot, .env и .gitignore, токены платформ (запросом к API) и состояние вебхуков. Токены в вывод не попадают' +
+        '\n\t --env      Путь к .env (по умолчанию ./.env)' +
+        '\n\t --offline  Не обращаться к API платформ' +
         '\n - webhook <telegram|max> <https-url> - Зарегистрировать вебхук с секретом. Секрет генерируется, сохраняется в .env (TELEGRAM_WEBHOOK_SECRET / MAX_WEBHOOK_SECRET) и включает проверку подписи. Токен берётся из .env' +
         '\n - add <feature> - Добавляет данные в проект. Доступные типы: ' +
         '\n\t docker  Добавляет Dockerfile и .dockerignore' +
         '\n\t deploy  Добавляет файл для деплоя на сервер' +
         '\n\t env     Добавляет файл .env' +
+        '\n\t platform <Name>    Каркас адаптера своей платформы с тестом: src/platforms/<Name>Adapter.ts' +
+        '\n\t db <Name>          Каркас адаптера базы данных с тестом: src/db/<Name>DbAdapter.ts' +
+        '\n\t middleware <name>  Каркас middleware с тестом: src/middleware/<name>.ts' +
         '\n\t --force    Перезаписать существующие файлы/непустую директорию' +
         '\n - version | -v - Вывести версию CLI';
     if (param && param.command) {
@@ -408,6 +416,23 @@ async function main(
                 break;
             }
 
+            case 'doctor': {
+                const envIdx = argv.indexOf('--env');
+                try {
+                    const { errors } = await runDoctor({
+                        envPath: envIdx !== -1 ? argv[envIdx + 1] : undefined,
+                        offline: argv.includes('--offline'),
+                    });
+                    if (errors > 0) {
+                        process.exitCode = 1;
+                    }
+                } catch (e) {
+                    console.error(`Ошибка: ${e.message}`);
+                    process.exitCode = 1;
+                }
+                break;
+            }
+
             case 'generateenv':
                 generateEnv(argv.includes('--force'));
                 break;
@@ -442,6 +467,11 @@ async function main(
                         break;
                     case 'env':
                         generateEnv(argv.includes('--force'));
+                        break;
+                    case 'platform':
+                    case 'db':
+                    case 'middleware':
+                        runAddScaffold(argv[3], argv);
                         break;
                     default:
                         console.log(infoText);

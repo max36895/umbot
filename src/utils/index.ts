@@ -92,3 +92,4 @@ export * from './standard/util';
 export * from './standard/Text';
 export * from './standard/RegExp';
 export * from './isPromise';
+export * from './EnvConfig';

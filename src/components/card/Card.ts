@@ -14,6 +14,8 @@ import { AppContext, TCardProcessing } from '../../core';
  * - Поддержки галерей изображений
  *
  * Ограничения платформ обрабатываются самими адаптерами
+ *
+ * @group Ответ пользователю
  */
 export class Card {
     /**

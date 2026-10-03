@@ -43,6 +43,7 @@ npx umbot create from-flow <flow.json> [--output ./dir] [--usecloud] [--force]
 npx umbot validate <flow.json>
 npx umbot stats --log <path>
 npx umbot add docker | deploy | env [--force]
+npx umbot add platform | db | middleware <name> [--force]
 npx umbot generateenv [--force]
 npx umbot version | -v
 ```
@@ -73,6 +74,12 @@ npx umbot version | -v
 4. **Секреты не в commit-prone файлах.** Реальные токены из `flow.json` не пишутся в `serverless.yml`, `package.json`, `README.md` и исходники — только ссылки на env-переменные. Токены идут в `.env`, который не коммитится.
 5. **Без молчаливой перезаписи.** Непустая выходная директория перезаписывается только при явном `--force`/`options.force`, и это покрыто тестом.
 6. **Сгенерированный проект обязан компилироваться** под своим сгенерированным `tsconfig.json` — с теми зависимостями, которые генератор прописал в `package.json`.
+7. **Секрет не попадает в генерат ни в каком виде** — ни в код, ни в JSDoc-комментарий (туда уходят URL и тексты
+   из flow.json). Секреты `http_request` выносит `extractHttpSecrets` до генерации любого файла; `{{env.NAME}}`
+   раскрывается только в полях `http_request`.
+8. **Ввод пользователя бота в URL** — только после адреса сервера и через `encodeURIComponent` (`getUrlOriginError`).
+9. **CLI читает `.env` так же, как фреймворк** (`loadEnvFile`: « #» — комментарий, кавычки снимаются). Команды
+   `webhook` и `doctor` используют `readEnv` из `WebhookController.js` — меняешь разбор, меняй в одном месте.
 
 ### Шаг 4: проверь оба пути генерации
 
@@ -99,6 +106,9 @@ cd audit/tmp-bot && npm install && npm run build
 `audit/` и `tmp-surgery/` — игнорируемые песочницы, генерируй туда, не в корень репозитория.
 
 ⚠️ `npm install` в сгенерированном проекте упадёт с E404, если пин `umbot` указывает на версию, ещё не опубликованную в npm. Это ожидаемо на ветке до релиза — ставь зависимость из локального tarball (`npm pack` в корне, затем `npm i ../../umbot-X.Y.Z.tgz`), а не правь пин «чтобы собралось».
+
+Последний шаг верификации — самопроверка диффа по `umbot-code-review` (AGENTS.md, шаг 3.6.5): для CLI особенно
+пункты про секреты (35) и разбор конфигурации (36).
 
 ### Шаг 6: версии
 

@@ -274,6 +274,14 @@ API ✅). Фреймворк: `ViberRequest.call()` — успех `data.status 
    docs: `{file}`), рантайм-проверки корректны; `IYandexRequestDownloadImage.origUrl/createdAt` —
    camelCase, поля не читаются.
 
+## 9. Long polling (Telegram, VK, MAX)
+
+| Платформа | Официальный контракт                                                                                                     | Что отправляет фреймворк (`getUpdates` адаптера)                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Telegram  | `getUpdates`: `offset`, `timeout`; не работает при активном вебхуке (409)                                                | `POST getUpdates {timeout: 25, offset: последний update_id + 1}`; 401/404/409 — остановка polling с причиной, остальные ошибки — повтор; `deleteWebhook` — только по опции `telegram_delete_webhook` |
+| VK        | `groups.getLongPollServer(group_id)` → `{server, key, ts}`; `a_check` с `key`, `ts`, `wait`; `failed` 1/2/3              | ID сообщества — `groups.getById`; `GET {server}?act=a_check&key&ts&wait=25`; `failed: 1` — новый `ts`, `2` — новый ключ, `3` — новые ключ и `ts`                                                     |
+| MAX       | `GET /updates`: `limit` 1–1000, `timeout` 0–90 с, `marker`; `Authorization: <token>`; для продакшена рекомендован вебхук | `GET /updates?timeout=30[&marker]`, `marker` из ответа — в следующий запрос; 401 — остановка polling                                                                                                 |
+
 ## Итог сверки
 
 1. **Нарушений контракта не найдено.** Все обязательные параметры, типы и вложенность

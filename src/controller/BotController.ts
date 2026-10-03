@@ -19,11 +19,6 @@ import { __$usedRe2, type TPatternRegExp } from '../utils/standard/RegExp';
  * Оптимизация производительности:
  * Если напрямую использовать переменные из другого модуля (например FALLBACK_COMMAND), то производительность может проседать.
  * За счет данного хака мы решаем эту проблему, добавляя локальную глобальную переменную, благодаря чему v8 не нужно делать доп расчеты.
- *
- * ВАЖНО: константы импортируются из листового модуля `../core/constants`, а НЕ из барреля `../core`.
- * Баррель `core` реэкспортирует `Bot` раньше констант, и при циклической загрузке
- * (core → Bot → controller → core) константы из барреля ещё `undefined`. Листовой модуль
- * без импортов всегда полностью инициализирован, поэтому захват значений безопасен.
  */
 const DEFAULT_FALLBACK_COMMAND = FALLBACK_COMMAND;
 const DEFAULT_HELP_INTENT_NAME = HELP_INTENT_NAME;
@@ -429,6 +424,8 @@ export interface IControllerApi {
  * ```
  * @see {@link action} – переопределите этот метод, чтобы добавить свою логику.
  * @see см. класс Bot в umbot — основной класс приложения, управляющий адаптерами и контроллерами.
+ *
+ * @group Основное
  */
 export abstract class BotController<
     TUserData extends IUserData = IUserData,
@@ -886,9 +883,18 @@ export abstract class BotController<
     public appType: TAppType | null = null;
 
     /**
-     * Дополнительные опции платформы.
-     * ⚠️ Внутреннее свойство. Заполняется адаптером платформы.
-     * Не предназначено для прямого использования в пользовательском коде.
+     * Служебные данные запроса: их заполняют адаптер платформы, ядро и middleware.
+     * Из пользовательского кода их читают (`clientIp`, `requestId`, `rateLimitOverflow`);
+     * записывать стоит только в своём адаптере или middleware — остальные поля адаптер
+     * использует при формировании ответа.
+     *
+     * @example
+     * ```ts
+     * bot.use((ctx, next) => {
+     *     ctx.appContext.log('IP клиента:', ctx.platformOptions.clientIp);
+     *     return next();
+     * });
+     * ```
      */
     public platformOptions: IPlatformOptions = {};
 
@@ -1434,7 +1440,7 @@ export abstract class BotController<
      * Извлекает нужную команду из запроса.
      *
      * Порядок: кастомный резолвер → точное совпадение (хэш-таблица) → план
-     * поиска (индекс подстрок и префильтр регулярок, см. {@link CommandReg.getSearchPlan}).
+     * поиска (индекс подстрок и префильтр регулярок, см. `CommandReg.getSearchPlan()`).
      * При любом пути побеждает команда, зарегистрированная раньше других.
      *
      * @returns {void | null | Promise<void | null>} результат выполнения обработчика

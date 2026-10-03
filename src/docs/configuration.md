@@ -57,6 +57,22 @@ DB_NAME=umbot
 > и дозаполнить ими токены — это позволяет передавать токены через `docker run -e` или
 > окружение serverless-функции без `env: 'local'`. Уже заданные токены при этом не перезаписываются.
 
+### Свои переменные в том же `.env`
+
+Ключи своих интеграций (API погоды, CRM) удобно держать в том же `.env`. Фреймворк читает из него только свои
+переменные, а свои можно прочитать тем же разбором — функцией `loadEnvFile` из `umbot/utils`: те же правила
+комментариев (« #» вне кавычек), кавычек и пустых значений, что у фреймворка.
+
+```ts
+import { loadEnvFile } from 'umbot/utils';
+
+const envFile = loadEnvFile('./.env').data ?? {};
+const weatherKey = process.env['WEATHER_KEY'] || envFile['WEATHER_KEY'] || '';
+```
+
+Проекты из `umbot create from-flow` генерируют для этого хелпер `env('NAME')` в `src/utils.ts` (см. json-format,
+«HTTP-запросы: переменные и секреты»).
+
 ### Вариант 2: Прямая передача в коде
 
 ```ts
@@ -119,6 +135,30 @@ bot.setAppConfig({
 | `env`            | `string`                        | Путь к `.env` файлу ИЛИ строка `'local'` для process.env                                                                                                                      |
 | `tokens`         | `ITokenPlatform`                | Токены платформ (для адаптеров, если не переданы через конструктор)                                                                                                           |
 
+Вложенные типы:
+
+```ts
+interface IAppDB {
+    host: string; // например, 'mongodb://localhost:27017'
+    user?: string;
+    pass?: string; // Обратите внимание: поле называется pass, а не password
+    database: string;
+    options?: Record<string, unknown>;
+}
+
+interface ITokenPlatform {
+    [platform: string]: {
+        token?: string;
+        // speech_kit_token — для TTS на Telegram/VK/Max
+        // (передаётся через индексную сигнатуру ниже, явно в интерфейсе не объявлен)
+        [key: string]: string | number | undefined;
+    };
+}
+```
+
+> **Важно.** `speech_kit_token` не объявлен явно в `ITokenPlatform` — он передаётся через индексную сигнатуру. На уровне
+> TypeScript это работает: `appConfig.tokens.telegram.speech_kit_token` имеет тип `string | number | undefined`.
+
 ### Пример полной конфигурации
 
 ```ts
@@ -154,6 +194,16 @@ bot.setAppConfig({
 | `isAuthUser`   | `boolean`              | Требуется ли авторизация пользователя                                                                                                                                         |
 | `utm_text`     | `string \| null`       | UTM-метки для ссылок (при `null` к кнопкам-ссылкам без UTM автоматически добавляется `utm_source=umbot&utm_medium=cpc&utm_campaign=phone`; строка заменяет эти метки целиком) |
 
+Интент:
+
+```ts
+interface IAppIntent {
+    name: string;
+    slots: (string | RegExp)[]; // строка → подстрока; RegExp → .test()
+    is_pattern?: boolean; // трактовать строки как regex (по умолчанию false)
+}
+```
+
 ### Пример
 
 ```ts
@@ -170,6 +220,25 @@ bot.setPlatformParams({
 ```
 
 > **Важно:** поле `intents` обязательно даже если оно пустое: `intents: []`. Без него TypeScript выдаст ошибку типа.
+
+---
+
+## Доступ к контексту в рантайме
+
+```ts
+const ctx = bot.getAppContext();
+
+ctx.appConfig; // заполненный IAppConfig (со всеми дефолтами)
+ctx.platformParams; // IAppParam
+ctx.platforms; // реестр платформ { alisa: AlisaAdapter, telegram: ... }
+ctx.database.adapter; // активный DB-адаптер
+ctx.command; // CommandReg (реестр команд)
+ctx.httpClient; // функция fetch (можно переопределить)
+ctx.log('...'); // лог
+ctx.logError('msg', { error: 'details' });
+ctx.logWarn('msg', { warning: 'details' });
+ctx.logMetric('name', value, { platform: 'telegram' });
+```
 
 ---
 
@@ -287,7 +356,7 @@ bot.use(new MaxAdapter('YOUR_MAX_TOKEN', { secret: 'YOUR_SECRET' }));
 - для чувствительных данных вводите собственную верификацию пользователя (PIN-код, привязка внешнего аккаунта);
 - не храните в `userData` голосовых платформ данные, потеря или подмена которых критична.
 
-Дополнительный слой для любых платформ — `ipFilter` (см. [middleware.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_middleware.html)): ограничение входящих
+Дополнительный слой для любых платформ — `ipFilter` (см. [middleware.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/middleware)): ограничение входящих
 запросов по диапазонам IP платформ (например, только для Telegram: `149.154.160.0/20`, `91.108.4.0/22`).
 
 ---
@@ -341,4 +410,4 @@ npm install re2
 
 ---
 
-Подробнее о конфигурации (`IAppConfig`, `IAppParam`), приоритете токенов и содержимом `.env` — в разделе [Конфигурация: IAppConfig и IAppParam](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_GUIDE.html#конфигурация-iappconfig-и-iappparam).
+Подробнее о конфигурации (`IAppConfig`, `IAppParam`), приоритете токенов и содержимом `.env` — в разделе [Конфигурация: IAppConfig и IAppParam](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/GUIDE#конфигурация-iappconfig-и-iappparam).

@@ -75,6 +75,8 @@ export const EMPTY_CONTEXT_ERROR =
  *
  * @see Bot
  * @see BotController
+ *
+ * @group Свой адаптер
  */
 export abstract class BasePlatform<TQuery = unknown>
     extends BasePlugin
@@ -90,7 +92,14 @@ export abstract class BasePlatform<TQuery = unknown>
      */
     protected MAX_TIME_REQUEST = 2900;
 
+    /**
+     * Токен из конструктора адаптера (`new MyAdapter(token)`). Во время работы берите токен из
+     * `appContext.appConfig.tokens`: туда он попадает при `bot.use()` и может быть перезаписан из `.env`.
+     */
     protected _token?: string;
+    /**
+     * Опции из второго аргумента конструктора (`new TelegramAdapter(token, { telegram_parse_mode })`).
+     */
     protected _platformOptions?: IOptions;
 
     /**
@@ -241,11 +250,11 @@ export abstract class BasePlatform<TQuery = unknown>
     /**
      * Возвращает признак того, соответствует ли запрос текущей платформе или нет
      *
-     * @example Пример кастомной платформы (не поведение встроенного TelegramAdapter,
-     * который определяет запрос по полю update_id в теле)
+     * @example Кастомная платформа, которая помечает запросы своим заголовком. Здесь только
+     * распознаётся формат; подпись запроса проверяет `isCorrectQuery`.
      * ```ts
      * isPlatformOnQuery(query, headers) {
-     *   return headers?.['x-telegram-bot-api-secret-token'] === this._token;
+     *   return headers?.['x-my-platform-event'] !== undefined;
      * }
      * ```
      *

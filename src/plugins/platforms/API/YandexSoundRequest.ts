@@ -21,6 +21,8 @@ const STANDARD_URL = 'https://dialogs.yandex.net/api/v1/';
  * @see https://yandex.ru/dev/dialogs/alice/doc/resource-sounds-upload-docpage/ Документация API Яндекс.Диалогов
  *
  * @class YandexSoundRequest
+ *
+ * @group API платформ
  */
 export class YandexSoundRequest extends YandexRequest {
     /**

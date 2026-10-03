@@ -15,6 +15,8 @@ import { adapters } from './adapters';
  * const bot = new Bot();
  * bot.use(botPlatforms); // подключает Telegram, VK, Viber, Max
  * ```
+ *
+ * @group Подключение платформ
  */
 function botPlatforms(appContext: AppContext): void {
     adapters.forEach((adapter) => {

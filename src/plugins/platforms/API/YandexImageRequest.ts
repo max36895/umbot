@@ -23,6 +23,8 @@ const ALLOWED_IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
  * @see https://yandex.ru/dev/dialogs/alice/doc/resource-upload-docpage/
  *
  * @class YandexImageRequest
+ *
+ * @group API платформ
  */
 export class YandexImageRequest extends YandexRequest {
     /**

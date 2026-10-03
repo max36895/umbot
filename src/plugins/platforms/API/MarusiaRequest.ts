@@ -60,6 +60,8 @@ import { getErrorMsg } from './constants';
  *   return null;
  * }
  * ```
+ *
+ * @group API платформ
  */
 export class MarusiaRequest extends VkRequest {
     /**

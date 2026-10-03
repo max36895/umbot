@@ -3,7 +3,7 @@
 /**
  * cli универсального фреймворка umbot для создания голосовых навыков и чат-ботов для различных платформ.
  * Скрипт позволяет создавать готовые шаблоны для вашего приложения.
- * @version 3.1.4
+ * @version 3.1.5
  * @author Maxim-M maximco36895@yandex.ru
  * @module
  */
@@ -20,7 +20,9 @@ if (argv[2]) {
     param.hostname = '0.0.0.0';
     param.port = 3000;
     if (argv[3]) {
-        if (argv[3].endsWith('.json')) {
+        // JSON-конфиг проекта читает только create: validate и другие команды получают
+        // свой .json (flow.json) и сами сообщают об ошибках в нём.
+        if (param.command === 'create' && argv[3].endsWith('.json')) {
             if (utils.isFile(argv[3])) {
                 try {
                     const jsonParam = JSON.parse(utils.read(argv[3]));

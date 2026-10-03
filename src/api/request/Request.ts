@@ -98,6 +98,20 @@ export class Request {
     public isBinaryResponse: boolean = false;
 
     /**
+     * Внешний сигнал отмены запроса — действует вместе с таймаутом `maxTimeQuery`.
+     * Настройка одного вызова: после `send()` сбрасывается. Нужен долгим запросам
+     * (long polling), которые должны обрываться при остановке бота, а не ждать таймаута.
+     * @example
+     * ```ts
+     * const controller = new AbortController();
+     * request.signal = controller.signal;
+     * const pending = request.send('https://api.example.com/updates');
+     * controller.abort(); // запрос завершится с ошибкой AbortError
+     * ```
+     */
+    public signal: AbortSignal | null = null;
+
+    /**
      * Ошибка (Error, строка или null)
      */
     #error: Error | string | null;
@@ -107,6 +121,11 @@ export class Request {
      */
     #httpStatus: number | null = null;
     #errorBody: string | null = null;
+
+    /**
+     * Отписка текущего запроса от внешнего `signal`; снимается после завершения запроса.
+     */
+    #unlinkSignal: (() => void) | null = null;
 
     /**
      * Контекст приложения
@@ -150,7 +169,7 @@ export class Request {
     /**
      * Отправляет HTTP-запрос
      *
-     * После вызова инстанс сбрасывает attach/post/postInString/get/customRequest/header
+     * После вызова инстанс сбрасывает attach/post/postInString/get/customRequest/header/signal
      * и связанные флаги — инстанс переиспользуется, и настройки одного вызова
      * не должны попадать в следующий. `maxTimeQuery` сохраняется — это настройка
      * клиента, а не одного вызова.
@@ -197,6 +216,7 @@ export class Request {
         this.header = null;
         this.isConvertJson = true;
         this.isBinaryResponse = false;
+        this.signal = null;
         if (this.#error) {
             return {
                 status: false,
@@ -279,6 +299,9 @@ export class Request {
                 // нормализации строковое исключение маскировалось бы под Error
                 // и превращалось в undefined в логах.
                 this.#error = e instanceof Error ? e : String(e);
+            } finally {
+                this.#unlinkSignal?.();
+                this.#unlinkSignal = null;
             }
         } else {
             this.#error = 'Не указан url!';
@@ -380,7 +403,9 @@ export class Request {
         // запроса, что для фиксированных endpoint'ов корректно.
         options.redirect = 'manual';
 
-        if (this.maxTimeQuery) {
+        if (this.signal) {
+            options.signal = this.#linkSignal(this.signal);
+        } else if (this.maxTimeQuery) {
             options.signal = AbortSignal.timeout(this.maxTimeQuery);
         }
 
@@ -432,6 +457,31 @@ export class Request {
         }
 
         return options;
+    }
+
+    /**
+     * Сигнал запроса, который срабатывает от внешнего `signal` или по таймауту `maxTimeQuery`.
+     * Не `AbortSignal.any()`: в Node 20 он копит память на долгоживущем внешнем сигнале
+     * (сигнал long polling живёт всю сессию). Подписка снимается в `#run` после запроса.
+     * @param external Внешний сигнал отмены
+     * @returns Сигнал для fetch
+     */
+    #linkSignal(external: AbortSignal): AbortSignal {
+        const controller = new AbortController();
+        if (external.aborted) {
+            controller.abort(external.reason);
+            return controller.signal;
+        }
+        const onAbort = (): void => controller.abort(external.reason);
+        external.addEventListener('abort', onAbort, { once: true });
+        this.#unlinkSignal = (): void => external.removeEventListener('abort', onAbort);
+        if (this.maxTimeQuery) {
+            const timeout = AbortSignal.timeout(this.maxTimeQuery);
+            timeout.addEventListener('abort', () => controller.abort(timeout.reason), {
+                once: true,
+            });
+        }
+        return controller.signal;
     }
 
     /**

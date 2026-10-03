@@ -18,11 +18,15 @@
  * - Не влияет на стандартные интенты (`welcome`, `help`).
  * - Можно зарегистрировать только одну fallback-команду (последняя перезапишет предыдущую).
  * - Можно просто передать "*"
+ *
+ * @group Основное
  */
 export const FALLBACK_COMMAND = '*';
 
 /**
  * Идентификатор интента приветствия
+ *
+ * @group Основное
  */
 export const WELCOME_INTENT_NAME = 'welcome';
 
@@ -33,6 +37,8 @@ export const WELCOME_INTENT_SLOTS = ['привет', 'здравст'];
 
 /**
  * Идентификатор интента помощи
+ *
+ * @group Основное
  */
 export const HELP_INTENT_NAME = 'help';
 

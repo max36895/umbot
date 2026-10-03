@@ -35,7 +35,7 @@
 | Любая другая платформа | `...`         | ✅ Через адаптеры                                                             |
 
 Что входит в базовый набор мессенджеров по каждой платформе — в разделах ниже и в
-[«Сравнении контрактов платформ»](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-contract-comparison.html).
+[«Сравнении контрактов платформ»](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-contract-comparison).
 
 Выбор платформы происходит автоматически в зависимости от запроса, который пришел в приложение, главное не забыть
 подключить адаптеры для платформ.
@@ -77,12 +77,73 @@ bot.setAppConfig({
 bot.start('localhost', 3000); // Запуск приложения
 ```
 
-### Приём обновлений: только вебхук
+### Авто-определение платформы
 
-Все платформы подключаются через вебхук: платформа сама присылает запрос на ваш HTTPS-адрес. Long polling
-(`getUpdates` у Telegram, Bots Long Poll у VK, `GET /updates` у MAX) не поддерживается, поэтому для проверки
-с реальной платформой на локальной машине нужен туннель (ngrok и аналоги, см. getting-started). Без сети логику
-можно проверить в консоли через `BotTest` (`umbot/test`).
+`Bot` сам определяет, от какой платформы пришёл запрос — по телу запроса и заголовкам. Вам ничего настраивать не нужно:
+один webhook-эндпоинт принимает запросы от всех платформ.
+
+Если авто-определение не справляется (редкий случай, обычно при проксировании через свой шлюз), его можно
+переопределить:
+
+```ts
+bot.setPlatformResolver((query, headers, detect) => {
+    // detect() запускает стандартное авто-определение
+    if (headers?.['x-my-routing'] === 'alice') return 'alisa';
+    return detect ? detect(query, headers) : null;
+});
+```
+
+### Лимиты: что адаптер делает сам
+
+У каждой платформы свои лимиты на длину текста, число кнопок, размер карточки и state. Адаптеры приводят ответ к
+допустимому виду сами, поэтому код остаётся одинаковым для всех платформ:
+
+- **Кнопки сверх лимита** отбрасываются с предупреждением в лог. Лимиты адаптеров: Алиса, Маруся и VK — 10 кнопок,
+  SmartApp — 8, Viber — 6, MAX — 30, Telegram — 40. Лишние кнопки в ряду (`buttons.row()`) переносятся на следующую
+  строку.
+- **Текст длиннее лимита** обрезается: Алиса и Маруся — 1024 символа, Telegram и VK — 4096, MAX — 4000, Viber —
+  7000, SmartApp — 250 в «пузыре».
+- **Payload кнопки больше лимита** — кнопка пропускается с предупреждением; данные не обрезаются и не переписываются.
+- **State больше лимита** (Алиса — 1 КБ, Маруся — 3584 байта) не отправляется, ошибка пишется в лог.
+- **Устройство без экрана** (колонка) — кнопки и карточки не отправляются.
+
+Обрезать бизнес-логику фреймворк не может: время ответа голосовым платформам — ваша зона ответственности. Фреймворк
+пишет предупреждение после 2 с обработки и ошибку после 2,9 с; медиа загружайте заранее через `Preload`.
+
+### Приём обновлений: вебхук или long polling
+
+По умолчанию платформа сама присылает запрос на ваш HTTPS-адрес — вебхук (`bot.start()`, `webhookHandle`,
+`webhookEvent`). Telegram, VK и MAX умеют ещё и отдавать обновления по запросу: `bot.startPolling()` запускает
+long polling (`getUpdates` у Telegram, Bots Long Poll у VK, `GET /updates` у MAX), и публичный адрес не нужен —
+удобно для локальной разработки и серверов без HTTPS.
+
+```ts
+bot.use(new TelegramAdapter(process.env.TELEGRAM_TOKEN));
+await bot.startPolling(); // выполняется после bot.stopPolling(), bot.close() или SIGINT/SIGTERM
+```
+
+- Обновление проходит тот же конвейер, что и вебхук (middleware, команды, очередь пользователя), кроме проверки
+  подписи: оно получено от API по токену бота. Обновления одной пачки выполняются параллельно, не больше 32
+  одновременно; обновления одного пользователя — по очереди, в порядке пачки.
+- IP клиента у polling нет: `ipFilter` с `rejectWithoutIp: true` отклонит все обновления. Для бота на polling
+  `ipFilter` не нужен — запросы к платформе делает сам бот.
+- Ошибка сети или 5xx — повтор с паузой от 1 до 30 секунд. Неверный токен или активный вебхук у Telegram
+  (ответ 409) останавливают polling этой платформы с причиной в логе.
+- Telegram: polling не работает, пока у бота зарегистрирован вебхук (ответ 409). Вебхук не снимается молча —
+  токен может принадлежать production-боту. Возьмите для разработки другой токен или снимите вебхук явно опцией
+  `new TelegramAdapter(token, { telegram_delete_webhook: true })`: адаптер вызовет `deleteWebhook` при первом
+  запросе и запишет предупреждение в лог. В режиме polling ответ всегда уходит через API: опция
+  `telegram_webhook_reply` не действует.
+- VK: нужен токен сообщества и включённый Long Poll API («Работа с API» → «Long Poll API») с нужными типами
+  событий. Секрет Callback API (`VK_SECRET_KEY`) для polling не нужен. Имена авторов сообщений пачки
+  загружаются одним запросом `users.get`.
+- MAX рекомендует polling для разработки и тестов, в продакшене — вебхук (`POST /subscriptions`). По
+  документации MAX первый запрос без `marker` отдаёт только последнее накопившееся событие: сообщения, пришедшие
+  до запуска бота, кроме последнего, не обрабатываются.
+- Можно совмещать: например, `bot.start()` для Алисы и `bot.startPolling({ platforms: ['telegram'] })` для Telegram.
+
+Алиса, Маруся, SmartApp и Viber работают только через вебхук: для проверки на локальной машине нужен туннель
+(ngrok и аналоги, см. getting-started). Без сети логику можно проверить в консоли через `BotTest` (`umbot/test`).
 
 Как фреймворк обрабатывает поток вебхуков:
 
@@ -216,7 +277,7 @@ bot.use(new TelegramAdapter('YOUR_BOT_TOKEN')); // Способ 1: токен в
 > выполнения логики). **Без `webhookSecret` адаптер принимает любой запрос с полем `update_id`** —
 > любой, кто узнает URL вебхука, сможет слать сообщения от имени любого пользователя; это допустимо
 > только для локальной отладки. Подробнее — в
-> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_configuration.html#проверка-подписи-вебхука-обязательно-для-production).
+> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration#проверка-подписи-вебхука-обязательно-для-production).
 
 ### Особенности
 
@@ -349,7 +410,7 @@ bot.use(new MaxAdapter('YOUR_BOT_TOKEN', { secret: 'YOUR_WEBHOOK_SECRET' })); //
 > заголовком (401). **Без секрета адаптер принимает любой запрос с полями `update_type` +
 > `timestamp`** — любой, кто узнает URL вебхука, сможет слать сообщения от имени любого
 > пользователя; допустимо только для локальной отладки. Подробнее — в
-> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_configuration.html#проверка-подписи-вебхука-обязательно-для-production).
+> [configuration.md → Проверка подписи вебхука](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration#проверка-подписи-вебхука-обязательно-для-production).
 
 ### Особенности
 
@@ -466,7 +527,7 @@ bot.setAppConfig({
 умеет загружать аудиофайлы в Марусю (`marusia.getAudioUploadLink` → upload → `marusia.createAudio`),
 поэтому кастомные звуки работают у обеих голосовых платформ — у Алисы и Маруси. Предзагрузка — через
 `Preload.loadSounds(paths, [T_ALISA, T_MARUSIA])`: токены звуков кэшируются в БД (как у Алисы),
-маршрут тот же, что и в [контрактной сверке](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-contract-comparison.html#маруся-исходящие-картинки-аудио)
+маршрут тот же, что и в [контрактной сверке](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-contract-comparison#маруся-исходящие-картинки-аудио)
 (раздел 6, «Исходящие API-запросы Маруси»).
 В обработчике достаточно работать с `controller.sound` — адаптер сам подберёт токен по пути к файлу.
 
@@ -586,38 +647,33 @@ class MyAdapter extends BasePlatformAdapter {
      * @param controller - Контроллер приложения
      */
     setQueryData(query: unknown, controller: BotController): boolean | Promise<boolean> {
-        if (this.appContext) {
-            if (query) {
-                let content: Record<string, unknown>;
-                if (typeof query === 'string') {
-                    content = JSON.parse(query);
-                } else {
-                    content = query as Record<string, unknown>;
-                }
-
-                const data = content.data as Record<string, unknown> | undefined;
-
-                controller.requestObject = content;
-                controller.userId = content.userId as string;
-                controller.userCommand = ((data?.text as string) || '').toLowerCase();
-                controller.originalUserCommand = (data?.text as string) || '';
-                controller.messageId = data?.messageCount as number;
-
-                if (content.store) {
-                    controller.state = content.store as Record<string, unknown>;
-                }
-
-                controller.isScreen = false;
-
-                return true;
-            } else {
-                controller.platformOptions.error = 'MyAdapter:init(): Отправлен пустой запрос!';
-            }
-        } else {
+        if (!query) {
             // ошибки адаптера пишите через логгер контекста, а не в console напрямую
-            this.appContext?.logError('MyAdapter:init(): Не указан контекст приложения!');
+            controller.appContext.logError('MyAdapter.setQueryData(): отправлен пустой запрос');
+            return false;
         }
-        return false;
+        let content: Record<string, unknown>;
+        if (typeof query === 'string') {
+            content = JSON.parse(query);
+        } else {
+            content = query as Record<string, unknown>;
+        }
+
+        const data = content.data as Record<string, unknown> | undefined;
+
+        controller.requestObject = content;
+        controller.userId = content.userId as string;
+        controller.userCommand = ((data?.text as string) || '').toLowerCase();
+        controller.originalUserCommand = (data?.text as string) || '';
+        controller.messageId = data?.messageCount as number;
+
+        if (content.store) {
+            controller.state = content.store as Record<string, unknown>;
+        }
+
+        controller.isScreen = false;
+
+        return true;
     }
 
     /**
@@ -655,6 +711,46 @@ class MyAdapter extends BasePlatformAdapter {
     }
 }
 ```
+
+## Возможности платформ: сводная таблица
+
+| Свойство                                 | Алиса | Маруся | SmartApp         | Telegram | VK  | Viber    | Max |
+| ---------------------------------------- | ----- | ------ | ---------------- | -------- | --- | -------- | --- |
+| Голосовая (TTS native)                   | ✅    | ✅     | ✅               | ❌       | ❌  | ❌       | ❌  |
+| Локальное хранилище                      | ✅    | ✅     | ✅ (внешнее API) | ❌       | ❌  | ❌       | ❌  |
+| Проактивная отправка (`bot.send`)        | ❌    | ❌     | ❌               | ✅       | ✅  | ✅       | ✅  |
+| Загрузка изображений                     | ✅    | ✅     | ❌ (URL)         | ✅       | ✅  | ❌ (URL) | ✅  |
+| Загрузка файлов звуков                   | ✅    | ✅     | ❌               | ✅       | ✅  | ❌       | ✅  |
+| Стандартные звуки (S_AUDIO_*)            | ✅    | ✅     | ❌               | ❌       | ❌  | ❌       | ❌  |
+| Эффекты `S_EFFECT_*`                     | ✅    | ❌     | ❌               | ❌       | ❌  | ❌       | ❌  |
+| TTS через SpeechKit (`speech_kit_token`) | ❌    | ❌     | ❌               | ✅       | ✅  | ❌       | ✅  |
+| Проверка подписи webhook                 | ❌    | ❌     | ❌               | ✅*      | ✅* | ✅       | ✅* |
+| Эмоции / appeal                          | ❌    | ❌     | ✅               | ❌       | ❌  | ❌       | ❌  |
+
+> Где `❌` — фича не поддерживается платформой, фреймворк просто молча проигнорирует соответствующие поля в `controller`.
+> Код не сломается.
+
+> ⚠️ **Про «Проверка подписи webhook»:**
+>
+> - Алиса, SmartApp, Маруся — подписи запросов **нет вообще**: всё содержимое payload (включая `user_id`) контролирует
+>   отправитель. Не интерполируйте эти данные в URL или query без экранирования и не считайте такой запрос
+>   аутентифицированным.
+> - Viber — подпись проверяется автоматически всегда (`x-viber-content-signature`).
+> - Telegram — проверка включается заданием секрета (`tokens.telegram.webhookSecret` → заголовок
+>   `x-telegram-bot-api-secret-token`); без секрета проверка отключена.
+> - VK — проверка включается только если задан `tokens.vk.secret_key` (сверяется с полем `secret` в теле запроса);
+>   без секрета — пропускается.
+> - MAX — проверка включается заданием `tokens.max_app.webhookSecret` (заголовок `x-max-bot-api-secret`).
+
+> ℹ️ **Про звуки:**
+>
+> - **Голосовые платформы** (Алиса, Маруся) подставляют звуки как `<speaker audio="...">` в TTS.
+> - **Алиса и Маруся** умеют загружать ваши аудиофайлы (хелперы `getSoundInDB` из `Alisa/Sound` и `Marusia/Sound`
+>   — внутри используют `YandexSoundRequest` / `MarusiaRequest`);
+>   у Маруси стандартные звуки подставляются из фиксированного набора `marusia-sounds/*`.
+> - **Чат-платформы** (Telegram, VK, MAX) загружают аудиофайл и отправляют его как голосовое/аудио сообщение;
+>   текстовая часть TTS при заданном `speech_kit_token` синтезируется через Yandex SpeechKit.
+> - **Viber и SmartApp** маркеры звуков из TTS вычищают (в Viber `soundProcessing` возвращает `null`).
 
 ## Подводные камни по платформам
 
@@ -710,6 +806,7 @@ class MyAdapter extends BasePlatformAdapter {
 - **Webhook-reply (opt-in).** `new TelegramAdapter('TOKEN', { telegram_webhook_reply: true })`: простой текстовый ответ уходит телом webhook-ответа (`{method: 'sendMessage', ...}`) — Telegram выполнит его сам, экономится один исходящий POST на запрос. По образцу grammy: opt-in (по умолчанию выключено), не применяется к callback/inline-запросам и ответам с карточками/звуками — они уходят штатным путём. Учтите: ошибки отправки при этом недиагностируемы (Telegram подтверждает webhook раньше реального выполнения метода).
 
 ```ts
+import { Bot } from 'umbot';
 import { TelegramAdapter, T_FORMAT_MARKDOWN, escapeMarkdownV2 } from 'umbot/plugins';
 
 // Вариант 1: обычный текст без parse_mode
@@ -729,10 +826,11 @@ const botWebhookReply = new Bot().use(
     }),
 );
 
-// Безопасная вставка пользовательского ввода в MarkdownV2 (внутри обработчика
-// команды/события; ctx — BotController)
-const userName = escapeMarkdownV2('Иван. Петров');
-ctx.text = `*Пользователь:* ${userName}`;
+// Безопасная вставка пользовательского ввода в MarkdownV2
+botMd.addCommand('whoami', ['кто я'], (_, ctx) => {
+    const userName = escapeMarkdownV2(ctx.originalUserCommand ?? '');
+    ctx.text = `*Вы написали:* ${userName}`;
+});
 ```
 
 ### VK
@@ -743,7 +841,8 @@ ctx.text = `*Пользователь:* ${userName}`;
 - **Имя пользователя берётся из кэша.** Результат `users.get` (имя для `nlu.getUserName()`) кэшируется в памяти процесса на 1 час (до 5000 записей; ошибки API не кэшируются). Отключить загрузку можно опцией адаптера `new VkAdapter(token, { vk_load_user_info: false })` — тогда `getUserName()` вернёт `null`, зато на ответ уходит один запрос к VK вместо двух. Сбросить кэш (тесты, смена имени) — `clearVkUserCache()` из `umbot/plugins`.
 - **Callback-кнопки подтверждаются через `messages.sendMessageEventAnswer`.** На нажатие callback-кнопки (`message_event`) адаптер подтверждает событие (`sendMessageEvent` без `event_data` — у пользователя пропадает индикатор загрузки на кнопке), а ответ обработчика отправляет обычным сообщением (`messages.send`). Если бизнес-логика завершилась ошибкой, вместо сообщения показывается snackbar с текстом ошибки. Чтобы показать свой snackbar, вызовите `controller.api.answerCallback(text)`. ID события хранится в `platformOptions.requestData.vk.eventId` (с fallback в `platformOptions.eventId`).
 - **Payload callback-кнопок нормализуется.** Строка `'buy'` или JSON `{"command":"buy"}` в payload попадает в `userCommand` как `buy` и срабатывает как обычная команда — без ручного разбора `requestObject`.
-- **Группировка кнопок.** Кнопки с одинаковым `options._group` окажутся в одной строке.
+- **Раскладка кнопок.** `buttons.row()` завершает ряд (до 5 кнопок; `location`/`vkpay`/`open_app` занимают ряд
+  целиком); кнопки с одинаковым `options._group` (строка или число) тоже встают в один ряд.
 - **Цвет кнопок.** `options.color: 'primary' | 'secondary' | 'positive' | 'negative'`.
 
 ### Viber
@@ -752,7 +851,8 @@ ctx.text = `*Пользователь:* ${userName}`;
 - **Версия API — 7 по умолчанию.** Если пользователь не передал версию явно, адаптер
   отправляет `min_api_version: 7` (`VIBER_DEFAULT_API_VERSION`). Версия 7 нужна для
   rich_media (карточек); на старых клиентах карточки не отобразятся.
-- **Звуки не поддерживаются.** `controller.tts` игнорируется.
+- **Звуки не поддерживаются.** Кастомные звуки не отправляются; `controller.tts` при пустом `text` уходит обычным
+  текстом (без звуковой разметки), при заполненном `text` — не используется.
 - **Нет локального хранилища.** При `isLocalStorage: true` без DB-адаптера `userData` хранится в памяти процесса (`memorySession`): шаги работают, но данные теряются при перезапуске и не разделяются между процессами и репликами. Для надёжного хранения подключите БД.
 - **Служебные события.** Адаптер обрабатывает события `subscribed`/`unsubscribed` (логируются),
   `delivered`/`seen`/`failed` (подтверждаются без ошибки), `conversation_started` и событие
@@ -786,7 +886,7 @@ ctx.text = `*Пользователь:* ${userName}`;
   `controller.api.answerCallback(text)`, повторного подтверждения не будет.
 - **API.** Базовый URL — `platform-api2.max.ru`; авторизация заголовком `Authorization: <token>`
   (query-параметры платформа больше не поддерживает). Детальное сравнение контракта —
-  в [platform-contract-comparison.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_platform-contract-comparison.html#4-max).
+  в [platform-contract-comparison.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-contract-comparison#4-max).
 
 ### SmartApp (Сбер)
 
@@ -813,7 +913,7 @@ ctx.text = `*Пользователь:* ${userName}`;
 
 Две кросс-платформенные возможности 3.1.0 закрывают то, что раньше требовало ручного разбора
 `requestObject` под каждую платформу. Полный справочник API (сигнатуры, примеры) —
-в [api-reference.md](https://www.maxim-m.ru/docs/umbot/documents/umbot_v-3.1_.src_docs_api-reference.html); здесь — привязка к платформам.
+в [api-reference.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference); здесь — привязка к платформам.
 
 ### Событийный роутинг (`bot.addEvent`)
 

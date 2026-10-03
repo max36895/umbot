@@ -1,0 +1,56 @@
+// Тесты адаптера {{Name}} на встроенном node:test. Запуск после сборки:
+//   npm run build && node --test dist/platforms/{{Name}}Adapter.test.js
+// Меняете формат запроса в адаптере — обновите getQueryExample, и тесты снова станут зелёными.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { BotController } from 'umbot';
+import { BotTest } from 'umbot/test';
+import { {{Name}}Adapter, I{{Name}}Query } from './{{Name}}Adapter';
+
+/**
+ * Бот с одним адаптером и командой «привет», которая запоминает, с чем её вызвали.
+ * @returns Тестовый бот и вызовы команды: пользователь и исходный текст
+ */
+function createBot(): { bot: BotTest; calls: { userId: unknown; text: string }[] } {
+    const calls: { userId: unknown; text: string }[] = [];
+    const bot = new BotTest();
+    bot.use(new {{Name}}Adapter());
+    bot.addCommand('hello', ['привет'], (_: string, ctx: BotController) => {
+        calls.push({ userId: ctx.userId, text: ctx.originalUserCommand ?? '' });
+        ctx.text = 'Привет!';
+        ctx.buttons.addBtn('Помощь');
+    });
+    return { bot, calls };
+}
+
+test('{{Name}}Adapter: пример запроса распознаётся адаптером', () => {
+    const adapter = new {{Name}}Adapter();
+    const query = adapter.getQueryExample('привет', '1', 0) as I{{Name}}Query;
+    assert.equal(adapter.isPlatformOnQuery(query), true);
+});
+
+test('{{Name}}Adapter: чужой запрос не перехватывается', () => {
+    const adapter = new {{Name}}Adapter();
+    // Формат вебхука Алисы: такой запрос должен уйти её адаптеру, а не этому.
+    const alisaQuery: Record<string, unknown> = {
+        version: '1.0',
+        session: {},
+        request: { command: 'привет' },
+    };
+    assert.equal(adapter.isPlatformOnQuery(alisaQuery as I{{Name}}Query), false);
+});
+
+test('{{Name}}Adapter: сообщение доходит до команды', async () => {
+    const { bot, calls } = createBot();
+    await bot.simulate('Привет', { platform: '{{platformName}}', userId: '42' });
+    assert.deepEqual(calls, [{ userId: '42', text: 'Привет' }]);
+});
+
+test('{{Name}}Adapter: неизвестное событие получает ответ без вызова команд', async () => {
+    const { bot, calls } = createBot();
+    const query = { type: 'typing', user_id: '1', text: 'привет' };
+    // Ответ обязан быть успешным: на ошибку платформа повторяет доставку.
+    const result = await bot.run('{{platformName}}', JSON.stringify(query));
+    assert.equal(result, 'ok');
+    assert.deepEqual(calls, []);
+});

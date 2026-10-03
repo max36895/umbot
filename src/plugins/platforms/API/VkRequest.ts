@@ -88,6 +88,8 @@ const VK_NUMERIC_ID = /^-?\d{1,15}$/;
  *   }
  * }
  * ```
+ *
+ * @group API платформ
  */
 export class VkRequest {
     /**

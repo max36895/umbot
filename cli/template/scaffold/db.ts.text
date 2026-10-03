@@ -1,0 +1,150 @@
+import { IModelRes, IQuery, IQueryData } from 'umbot';
+import { BaseDbAdapter } from 'umbot/plugins';
+
+/** Запись таблицы. */
+type TRow = Record<string, unknown>;
+
+/**
+ * Адаптер базы данных {{Name}}.
+ *
+ * Каркас уже рабочий: данные хранятся в памяти процесса, поэтому тесты проходят сразу.
+ * TODO: замените хранилище `#tables` на вызовы драйвера своей базы — метод за методом,
+ * не меняя смысла ответов (что и когда возвращать, описано в JSDoc каждого метода).
+ * Тесты рядом проверяют этот смысл: пока они зелёные, фреймворк работает с адаптером правильно.
+ *
+ * Контракт и форматы данных: https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/dbAdapter
+ *
+ * @example
+ * ```ts
+ * import { {{Name}}DbAdapter } from './db/{{Name}}DbAdapter';
+ *
+ * bot.use(new {{Name}}DbAdapter({ host: process.env.DB_HOST, database: process.env.DB_NAME }));
+ * ```
+ */
+export class {{Name}}DbAdapter extends BaseDbAdapter {
+    /** Таблица → ключ записи → запись. TODO: замените на подключение к базе. */
+    #tables = new Map<string, Map<string, TRow>>();
+
+    /**
+     * Подключается к базе. Вызывается фреймворком при старте и при переподключении.
+     * @returns true, если подключение установлено
+     */
+    connect(): Promise<boolean> | boolean {
+        // TODO: создайте пул соединений; параметры подключения — в this._dbOptions.
+        return true;
+    }
+
+    /**
+     * Проверяет, живо ли подключение.
+     * @returns true, если с базой можно работать
+     */
+    isConnected(): Promise<boolean> | boolean {
+        // TODO: ping базы.
+        return true;
+    }
+
+    /**
+     * Ищет записи по точному совпадению полей `where`.
+     * @param selectData Таблица и её ключи
+     * @param where Условие; null — все записи
+     * @param isOne Нужна одна запись (объект), а не массив
+     * @returns `{ status: true, data }`, если найдено; `{ status: false }` без `error`, если записей нет;
+     *   `{ status: false, error }` — только при сбое базы
+     */
+    _select(selectData: IQuery, where: IQueryData | null, isOne: boolean): IModelRes {
+        const rows = [...this.#getTable(selectData.tableName).values()].filter((row) =>
+            Object.entries(where ?? {}).every(([field, value]) => row[field] === value),
+        );
+        if (!rows.length) {
+            // Без error: с ним фреймворк примет «не найдено» за сбой и не сохранит нового пользователя
+            return { status: false };
+        }
+        return { status: true, data: isOne ? rows[0] : rows };
+    }
+
+    /**
+     * Добавляет запись. Исключения не бросает — ошибка возвращается как false.
+     * @param insertData Таблица, ключи и данные записи (`insertData.data`)
+     * @returns true, если запись добавлена
+     */
+    _insert(insertData: IQuery): boolean {
+        if (!insertData.data) {
+            return false;
+        }
+        const key = this.#getRowKey(insertData, insertData.data);
+        if (key === null) {
+            return false;
+        }
+        this.#getTable(insertData.tableName).set(key, { ...insertData.data });
+        return true;
+    }
+
+    /**
+     * Обновляет запись, найденную по `updateData.query`.
+     * @param updateData Таблица, ключи, условие (`query`) и новые значения (`data`)
+     * @returns true, если ошибки не было — в том числе когда запись не найдена
+     */
+    _update(updateData: IQuery): boolean {
+        const key = updateData.query ? this.#getRowKey(updateData, updateData.query) : null;
+        if (key === null) {
+            return false;
+        }
+        const table = this.#getTable(updateData.tableName);
+        const row = table.get(key);
+        if (row) {
+            table.set(key, { ...row, ...updateData.data });
+        }
+        return true;
+    }
+
+    /**
+     * Удаляет запись, найденную по `removeData.query`.
+     * @param removeData Таблица, ключи и условие (`query`)
+     * @returns true, если ошибки не было — в том числе когда записи не было
+     */
+    _remove(removeData: IQuery): boolean {
+        const key = removeData.query ? this.#getRowKey(removeData, removeData.query) : null;
+        if (key === null) {
+            return false;
+        }
+        this.#getTable(removeData.tableName).delete(key);
+        return true;
+    }
+
+    /**
+     * Закрывает подключение при остановке приложения.
+     */
+    destroy(): void {
+        // TODO: закройте пул соединений.
+        this.#tables.clear();
+    }
+
+    /**
+     * Возвращает таблицу, создавая её при первом обращении.
+     * @param tableName Имя таблицы
+     * @returns Записи таблицы
+     */
+    #getTable(tableName: string): Map<string, TRow> {
+        let table = this.#tables.get(tableName);
+        if (!table) {
+            table = new Map();
+            this.#tables.set(tableName, table);
+        }
+        return table;
+    }
+
+    /**
+     * Ключ записи: первичный ключ вместе с `uniqueKeys`. Без `uniqueKeys` данные одного
+     * пользователя на разных платформах (UsersData: userId + platform) затёрли бы друг друга.
+     * @param query Описание запроса
+     * @param fields Поля записи или условия
+     * @returns Ключ или null, если первичного ключа нет
+     */
+    #getRowKey(query: IQuery, fields: IQueryData): string | null {
+        const id = fields[String(query.primaryKeyName)];
+        if (id === undefined || id === null || id === '') {
+            return null;
+        }
+        return JSON.stringify([id, ...(query.uniqueKeys ?? []).map((key) => fields[key] ?? null)]);
+    }
+}

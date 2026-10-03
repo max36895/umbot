@@ -1,0 +1,44 @@
+// Тесты middleware {{name}} на встроенном node:test. Запуск после сборки:
+//   npm run build && node --test dist/middleware/{{name}}.test.js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { BotController } from 'umbot';
+import { AlisaAdapter, T_ALISA } from 'umbot/plugins';
+import { BotTest } from 'umbot/test';
+import { {{name}} } from './{{name}}';
+
+/**
+ * Бот с middleware и командой «привет». Платформа — Алиса: её ответ приходит телом
+ * запроса, поэтому тест обходится без токенов и сети.
+ * @returns Тестовый бот
+ */
+function createBot(): BotTest {
+    const bot = new BotTest();
+    bot.use(new AlisaAdapter());
+    bot.use({{name}}({ blockedUserIds: ['blocked'] }));
+    bot.addCommand('hello', ['привет'], (_: string, ctx: BotController) => {
+        ctx.text = 'Привет!';
+    });
+    return bot;
+}
+
+/**
+ * Текст ответа навыка.
+ * @param bot Тестовый бот
+ * @param userId Пользователь
+ * @returns Текст ответа
+ */
+async function reply(bot: BotTest, userId: string): Promise<string> {
+    const res = (await bot.simulate('привет', { platform: T_ALISA, userId, count: 1 })) as {
+        response: { text: string };
+    };
+    return res.response.text;
+}
+
+test('{{name}}: обычный запрос доходит до команды', async () => {
+    assert.equal(await reply(createBot(), 'user'), 'Привет!');
+});
+
+test('{{name}}: запрос заблокированного пользователя останавливается', async () => {
+    assert.equal(await reply(createBot(), 'blocked'), 'Доступ ограничен.');
+});

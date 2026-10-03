@@ -28,6 +28,8 @@ import { getErrorMsg } from './constants';
  *   console.error('Ошибка запроса к API Яндекса');
  * }
  * ```
+ *
+ * @group API платформ
  */
 export class YandexRequest {
     /**

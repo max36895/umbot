@@ -34,6 +34,15 @@ node ./dist/index.js
 1. Если навык в определённый момент ставит `isEnd = true` (завершение диалога) — дойдите в сценарии до этого места.
 2. Вызвать команду exit.
 
+#### Что происходит при `test()`
+
+- При запуске `bot.test()` автоматически отправляется первое сообщение `'Привет'` (имитация старта сессии с
+  `messageId === 0`).
+- Дальше вы вводите текст вручную, бот отвечает так же, как ответил бы на реальной платформе.
+- Выход — введите `exit` или закройте терминал. Также выход произойдёт автоматически, если бот выставил `isEnd = true`.
+- `appMode` форсируется в `'dev'` (если явно не указан `strict_prod`).
+- Обработка та же, что в продакшене, — вы тестируете реальную логику.
+
 ### Тестирование конкретной платформы
 
 `BotTest` по умолчанию работает с «auto»-платформой: при вызове `test()` и `simulate()` без явного указания будет
@@ -243,6 +252,32 @@ describe('MyController', () => {
         expect(result).toBeDefined();
     });
 });
+```
+
+### Моки: HTTP-клиент и файловая БД
+
+Чтобы тесты не ходили в сеть и не трогали диск, подмените HTTP-клиент контекста и чтение файлов `FileAdapter`:
+
+```ts
+import { BotTest } from 'umbot/test';
+import { fullPlatforms, FileAdapter } from 'umbot/plugins';
+
+const bot = new BotTest();
+bot.use(fullPlatforms);
+
+// Мок HTTP-клиента: запросы к API платформ и внешним сервисам не уходят в сеть
+bot.getAppContext().httpClient = (): Promise<Response> =>
+    Promise.resolve(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
+
+// Мок файловой БД: таблицы читаются из памяти, а не с диска
+const tables: Record<string, Record<string, Record<string, unknown>>> = { UsersData: {} };
+const adapter = new FileAdapter();
+adapter.getFileData = (tableName) => {
+    const data = (tables[tableName] ??= {});
+    adapter.setCachedFileData(tableName, { data, version: Date.now(), isFileRead: true });
+    return data;
+};
+bot.use(adapter);
 ```
 
 ### BotTest vs run() — что выбрать?
