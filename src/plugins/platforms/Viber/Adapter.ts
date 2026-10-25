@@ -389,7 +389,14 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
             params.keyboard = keyboard;
             params.keyboard.Type = 'keyboard';
         }
-        if ((controller.requestObject as IViberContent | null)?.event === 'conversation_started') {
+        // При proactive-отправке (bot.send) результат getContent не является телом
+        // webhook-ответа: приветственный JSON никуда не уйдёт. Отправляем обычным
+        // send_message — если пользователь ещё не подписан, Viber отклонит запрос,
+        // и send() честно вернёт false.
+        if (
+            (controller.requestObject as IViberContent | null)?.event === 'conversation_started' &&
+            !controller.platformOptions.isProactive
+        ) {
             return this.#getWelcomeContent(controller, viberApi, params);
         }
 

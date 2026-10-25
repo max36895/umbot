@@ -53,7 +53,9 @@
 - **Telegram voice** — synthesized OGG/Opus goes via `sendVoice`; `sendAudio` accepts only MP3/M4A.
 - **MAX bot_started** — carries `payload` (deep-link) and must be answered (welcome), not skipped.
 - **Deep-link parameters** (all mapped to the `start` event, parameter in `controller.payload`):
-  Telegram — the text `/start <param>` (`/start@bot <param>` in groups); VK — `message.ref` /
+  Telegram — the text `/start <param>` (`/start@bot <param>` in groups; when the bot username is known —
+  option `telegram_bot_username` or `getMe` at polling start — a `/start@<other>` command is NOT a start
+  event); VK — `message.ref` /
   `message.ref_source` of the message sent after following `vk.me/<club>?ref=` (verified by the
   docs and client libraries, not on the live API); Viber — `context` of `conversation_started`
   (absent unless the link has `&context=`).
@@ -87,13 +89,16 @@
   `Bearer <IAM>`; the `OAuth` scheme belongs to the Dialogs API only.
 - **Telegram button `style`** — only `danger`, `success`, `primary`.
 - **Viber welcome** — the reply to `conversation_started` goes in the webhook response body;
-  REST `send_message` to a not-yet-subscribed user is rejected.
+  REST `send_message` to a not-yet-subscribed user is rejected. In proactive `bot.send()` the welcome
+  branch is skipped (the getContent result is not a webhook body): the message goes via `send_message`,
+  and a rejection turns into `send()` === false.
 - **Viber** — тело исходящего запроса к API ограничено 30 КБ (проверяется в
   `ViberRequest.call()`); `rich_media` требует `min_api_version >= 7`.
 - **Long polling** (`getUpdates` адаптеров, `bot.startPolling()`):
   Telegram `getUpdates` — `timeout` 25 с, `offset` = последний `update_id` + 1; 409 — активен вебхук или другой
   процесс читает обновления, 401/404 — неверный токен (polling останавливается). Вебхук снимается только явной
-  опцией `telegram_delete_webhook` — токен может принадлежать production-боту. MAX `GET /updates` — `timeout`
+  опцией `telegram_delete_webhook` — токен может принадлежать production-боту. При старте сеанса один раз
+  вызывается `getMe` — username нужен, чтобы отличать `/start@<этот бот>` от команды другому боту. MAX `GET /updates` — `timeout`
   0–90 с (берём 30), `limit` 1–1000, `marker` из ответа передаётся в следующий запрос, `Authorization: <token>`;
   MAX называет polling средством разработки, для продакшена — вебхук. VK Bots Long Poll — `groups.getById`
   (ответ с 5.139 — `{groups: [...]}`, раньше — массив) → `groups.getLongPollServer(group_id)` → `{server, key, ts}`

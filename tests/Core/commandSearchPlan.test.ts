@@ -16,6 +16,7 @@ class NoopController extends BotController {
 interface IHarness {
     bot: Bot;
     add(name: string, slots: TSlots, isPattern?: boolean): void;
+    addExact(name: string, slots: string[]): void;
     ask(text: string): Promise<string | null>;
 }
 
@@ -43,6 +44,20 @@ function createHarness(groupMode: 'auto' | 'group' = 'auto'): IHarness {
                     ctx.skipAutoReply = true;
                 },
                 isPattern,
+            );
+        },
+        addExact(name, slots): void {
+            // isExact недоступен через Bot.addCommand — только через реестр
+            // (так регистрируют действия кнопок defineAction/addAction)
+            bot.getAppContext().command.addCommand(
+                name,
+                slots,
+                (_, ctx) => {
+                    hit = name;
+                    ctx.skipAutoReply = true;
+                },
+                false,
+                true,
             );
         },
         async ask(text): Promise<string | null> {
@@ -220,5 +235,129 @@ describe('Перерегистрация и удаление команд', () =
 
         expect(await h.ask('общий')).toBe('first');
         expect(await h.ask('второй')).toBe('*');
+    });
+});
+
+describe('Дифференциальный тест: план поиска против эталонного перебора', () => {
+    interface IReg {
+        name: string;
+        slots: (string | RegExp)[];
+        isPattern: boolean;
+        isExact: boolean;
+    }
+
+    /** Детерминированный ГПСЧ: случайный порядок регистрации без flaky-падений. */
+    function lcg(seed: number): () => number {
+        let s = seed >>> 0;
+        return () => (s = (s * 1664525 + 1013904223) >>> 0) / 0x100000000;
+    }
+
+    /**
+     * Эталон: задокументированная семантика поиска линейным перебором —
+     * точное совпадение строкового слота, затем перебор в порядке регистрации
+     * (подстрока для литералов, test() для регулярок; isExact только точно).
+     */
+    function referenceWinner(regs: IReg[], rawText: string): string | null {
+        const text = rawText.toLowerCase().trim();
+        // Слот принадлежит команде, зарегистрировавшей его первой (#exactMatchMap).
+        for (const reg of regs) {
+            if (reg.isPattern) {
+                continue;
+            }
+            for (const slot of reg.slots) {
+                if (typeof slot === 'string' && slot === text) {
+                    return reg.name;
+                }
+            }
+        }
+        for (const reg of regs) {
+            if (reg.isExact || reg.slots.length === 0) {
+                continue;
+            }
+            for (const slot of reg.slots) {
+                if (typeof slot === 'string') {
+                    if (reg.isPattern ? new RegExp(slot, 'ium').test(text) : text.includes(slot)) {
+                        return reg.name;
+                    }
+                } else if (slot.test(text)) {
+                    return reg.name;
+                }
+            }
+        }
+        return null;
+    }
+
+    it('победитель совпадает с эталоном на смешанных литеральных, exact и pattern командах', async () => {
+        const rnd = lcg(20261025);
+        const regs: IReg[] = [];
+        // Литералы с пересекающимися подстроками ('кот' ⊂ 'котёнок'): ≥16 — включится индекс
+        const words = ['кот', 'котёнок', 'код', 'кодовое', 'сок', 'нос'];
+        for (let i = 0; i < 18; i++) {
+            regs.push({
+                name: `lit_${i}`,
+                slots: [words[i % words.length] as string],
+                isPattern: false,
+                isExact: false,
+            });
+        }
+        // Действия кнопок: срабатывают только на точный текст
+        regs.push({ name: 'act_buy', slots: ['купить'], isPattern: false, isExact: true });
+        regs.push({ name: 'act_code', slots: ['код'], isPattern: false, isExact: true });
+        // Регулярки и pattern-команды с обязательной подстрокой: ≥16 — включится префильтр
+        for (let i = 0; i < 10; i++) {
+            regs.push({
+                name: `re_${i}`,
+                slots: [new RegExp(`число_${i}_\\d+`)],
+                isPattern: false,
+                isExact: false,
+            });
+            regs.push({
+                name: `pat_${i}`,
+                slots: [`токен_${i}_\\d+`],
+                isPattern: true,
+                isExact: false,
+            });
+        }
+        // Перемешиваем порядок регистрации — побеждает зарегистрированная раньше
+        for (let i = regs.length - 1; i > 0; i--) {
+            const j = Math.floor(rnd() * (i + 1));
+            const tmp = regs[i] as IReg;
+            regs[i] = regs[j] as IReg;
+            regs[j] = tmp;
+        }
+
+        const h = createHarness();
+        for (const reg of regs) {
+            if (reg.isExact) {
+                h.addExact(reg.name, reg.slots as string[]);
+            } else {
+                h.add(reg.name, reg.slots as TSlots, reg.isPattern);
+            }
+        }
+
+        // Входы: точный текст слота, подстрока внутри фразы, совпадение регулярок, шум
+        const inputs: string[] = [];
+        for (const reg of regs) {
+            for (const slot of reg.slots) {
+                if (typeof slot === 'string' && !reg.isPattern) {
+                    inputs.push(slot, `скажи ${slot} пожалуйста`);
+                }
+            }
+        }
+        for (let i = 0; i < 10; i++) {
+            inputs.push(`число_${i}_4${i}`, `токен_${i}_7`);
+        }
+        inputs.push('купить', 'а не купить ли нам', 'совершенно посторонняя фраза');
+
+        // Простой план (до отложенной сборки), затем полный (индекс + префильтр):
+        // инвариант «побеждает зарегистрированная раньше» обязан держаться на обоих.
+        for (const input of inputs) {
+            expect(await h.ask(input)).toBe(referenceWinner(regs, input) ?? '*');
+        }
+        await settle();
+        for (const input of inputs) {
+            expect(await h.ask(input)).toBe(referenceWinner(regs, input) ?? '*');
+        }
+        await h.bot.close();
     });
 });

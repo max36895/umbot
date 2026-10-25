@@ -4,7 +4,7 @@
  */
 import { Bot, BotController } from '../../src';
 import { MaxAdapter, TelegramAdapter, VkAdapter, clearVkUserCache } from '../../src/plugins';
-import type { IPlatformAdapter } from '../../src';
+import type { AppContext, IPlatformAdapter } from '../../src';
 
 interface ICall {
     url: string;
@@ -36,16 +36,23 @@ const signal = (): AbortSignal => new AbortController().signal;
 describe('TelegramAdapter.getUpdates()', () => {
     it('передаёт timeout и сдвигает offset после полученных обновлений', async () => {
         const adapter = new TelegramAdapter('123:secret-token');
-        const { calls } = setup(adapter, () =>
-            json({ ok: true, result: [{ update_id: 7 }, { update_id: 8 }] }),
+        const { calls } = setup(adapter, (url) =>
+            url.endsWith('/getMe')
+                ? json({ ok: true, result: { id: 1, is_bot: true, username: 'mybot' } })
+                : json({ ok: true, result: [{ update_id: 7 }, { update_id: 8 }] }),
         );
 
         await expect(adapter.getUpdates(signal())).resolves.toHaveLength(2);
         await adapter.getUpdates(signal());
 
-        expect(calls[0]?.url).toBe('https://api.telegram.org/bot123:secret-token/getUpdates');
-        expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ timeout: 25 });
-        expect(JSON.parse(String(calls[1]?.init.body))).toEqual({ timeout: 25, offset: 9 });
+        // Перед первым getUpdates username бота запрашивается через getMe (один раз на сеанс)
+        expect(calls.map((c) => c.url.split('/').pop())).toEqual([
+            'getMe',
+            'getUpdates',
+            'getUpdates',
+        ]);
+        expect(JSON.parse(String(calls[1]?.init.body))).toEqual({ timeout: 25 });
+        expect(JSON.parse(String(calls[2]?.init.body))).toEqual({ timeout: 25, offset: 9 });
     });
 
     it('при активном вебхуке (409) останавливает polling с подсказкой', async () => {
@@ -78,11 +85,11 @@ describe('TelegramAdapter.getUpdates()', () => {
         const adapter = new TelegramAdapter('123:secret-token', { telegram_delete_webhook: true });
         const warns: string[] = [];
         const { calls } = setup(adapter, (url) =>
-            json(
-                url.endsWith('/deleteWebhook')
-                    ? { ok: true, result: true }
-                    : { ok: true, result: [] },
-            ),
+            url.endsWith('/deleteWebhook')
+                ? json({ ok: true, result: true })
+                : url.endsWith('/getMe')
+                  ? json({ ok: true, result: { id: 1, is_bot: true, username: 'mybot' } })
+                  : json({ ok: true, result: [] }),
         );
         adapter.appContext?.setLogger({ error: () => {}, warn: (msg: string) => warns.push(msg) });
 
@@ -91,6 +98,7 @@ describe('TelegramAdapter.getUpdates()', () => {
 
         expect(calls.map((c) => c.url.split('/').pop())).toEqual([
             'deleteWebhook',
+            'getMe',
             'getUpdates',
             'getUpdates',
         ]);
@@ -104,6 +112,46 @@ describe('TelegramAdapter.getUpdates()', () => {
         await adapter.getUpdates(signal());
 
         expect(calls.some((c) => c.url.endsWith('/deleteWebhook'))).toBe(false);
+    });
+
+    it('username из getMe отличает /start@<свой бот> от команды другому боту', async () => {
+        class Probe extends BotController {
+            action(): void {
+                return;
+            }
+        }
+        const adapter = new TelegramAdapter('123:secret-token');
+        setup(adapter, (url) =>
+            url.endsWith('/getMe')
+                ? json({ ok: true, result: { id: 1, is_bot: true, username: 'RoomBot' } })
+                : json({ ok: true, result: [] }),
+        );
+        await adapter.getUpdates(signal());
+
+        const send = async (text: string): Promise<Probe> => {
+            const controller = new Probe(adapter.appContext as AppContext);
+            await adapter.setQueryData(
+                {
+                    update_id: 1,
+                    message: {
+                        message_id: 1,
+                        from: { id: 42 },
+                        chat: { id: -100, type: 'supergroup' },
+                        text,
+                    },
+                } as never,
+                controller,
+            );
+            return controller;
+        };
+        // Имя совпадает с любым регистром — переход по ссылке, событие start
+        const own = await send('/start@roombot K7M2QX');
+        expect(own.eventType).toBe('start');
+        expect(own.payload).toBe('K7M2QX');
+        // Команда, адресованная другому боту, остаётся обычным сообщением
+        const other = await send('/start@other_bot K7M2QX');
+        expect(other.eventType).toBe('message');
+        expect(other.payload).toBeNull();
     });
 
     it('после остановки polling снова отвечает телом вебхука (webhook-reply)', async () => {

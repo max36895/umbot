@@ -153,6 +153,19 @@ describe('bot.send(): Telegram', () => {
         await expect(bot.send('42', controller, T_TELEGRAM)).resolves.toBe(false);
         expect(calls.some((call) => call.url.includes('/sendPhoto'))).toBe(true);
     });
+
+    it('send() с контроллером inline-запроса шлёт сообщение получателю, а не отвечает на inline-запрос', async () => {
+        const { bot, calls } = setup(json({ ok: true, result: { message_id: 1 } }));
+        const controller = new BaseBotController(bot.getAppContext());
+        controller.text = 'Уведомление';
+        // Контроллер входящего inline-запроса: send() не является ответом на вебхук,
+        // поэтому answerInlineQuery не должен поглощать сообщение
+        controller.platformOptions.requestData = { telegram: { inlineQueryId: 'iq1' } };
+        await expect(bot.send('42', controller, T_TELEGRAM)).resolves.toBe('ok');
+        const urls = calls.map((call) => call.url).join();
+        expect(urls).toContain('/sendMessage');
+        expect(urls).not.toContain('/answerInlineQuery');
+    });
 });
 
 describe('bot.send(): VK', () => {
@@ -213,6 +226,16 @@ describe('bot.send(): Viber', () => {
     it('ошибка API (receiverNotSubscribed) — false', async () => {
         const { bot } = setup(json({ status: 6, status_message: 'notSubscribed' }));
         await expect(bot.send('u1', 'Привет', T_VIBER)).resolves.toBe(false);
+    });
+
+    it('send() с контроллером conversation_started шлёт send_message, а не welcome JSON в никуда', async () => {
+        const { bot, calls } = setup(json({ status: 0, status_message: 'ok' }));
+        const controller = new BaseBotController(bot.getAppContext());
+        controller.text = 'Привет!';
+        controller.requestObject = { event: 'conversation_started' };
+        await expect(bot.send('u1', controller, T_VIBER)).resolves.toBe('ok');
+        expect(calls.length).toBeGreaterThan(0);
+        expect(calls[0].body).toContain('Привет!');
     });
 });
 

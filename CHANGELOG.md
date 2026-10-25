@@ -69,6 +69,9 @@ data)`, payload `{ action: name, ...data }`) и регистрирует обр�
   `BasePlatform.send()` помечает контроллер `isProactive` (отвечать телом вебхука нельзя), а адаптер передаёт
   результат запроса отправки в `checkSendResult(controller, result)` — при ошибке выставляется `sendFailed`, и
   `bot.send()` возвращает `false`.
+- **Опция адаптера `telegram_bot_username`.** Username бота (с `@` или без), по которому команда
+  `/start@<бот> <параметр>` в группе отличается от команды, адресованной другому боту. При long polling username
+  определяется сам — одним вызовом `getMe` на сеанс; для webhook-режима задайте опцию явно.
 - **`BasePlatformAdapter.consumeSendLimit(count)` и `pUtils.consumeUploadRate()`** — учёт
   дополнительных вызовов API в лимите отправки. Одна отправка не всегда один запрос к платформе:
   незакэшированное медиа — это ещё и загрузка (VK: `photos/docs.getMessagesUploadServer` + `save` —
@@ -115,6 +118,14 @@ platformName, apiCalls)`; метод `consumeSendLimit` — для своих а
   при отказе выставляется `sendFailed`, и `send()` возвращает `false`, как для текста и медиа-групп.
 - **`defineMenu` предупреждал о payload длиннее 64 байт и без Telegram.** Лимит действует только для Telegram,
   поэтому предупреждение выводится, только когда его адаптер подключён (как у `defineAction.addBtn`).
+- **`bot.send()` с контроллером входящего запроса мог не доставить сообщение, вернув `'ok'`.** Telegram отвечал на
+  исходный inline-запрос (`answerInlineQuery`), а Viber на `conversation_started` собирал приветствие телом
+  webhook-ответа, которого у `send()` нет. При proactive-отправке обе ветки пропускаются: сообщение уходит адресату
+  обычной отправкой, а её отказ платформой по-прежнему даёт `false`.
+- **Telegram: `/start@<другой бот>` в группе запускал событие `start` с чужим параметром.** Бот с отключённой
+  приватностью видит команды всем ботам группы; теперь, когда username бота известен (опция
+  `telegram_bot_username` или `getMe` при long polling), команда, адресованная другому боту, остаётся обычным
+  сообщением.
 - **`defineAction`: ключи `action`/`command` в данных кнопки уводили нажатие в другое действие.** Payload собирался
   как `{ action: name, ...data }`, и данные перезаписывали ключ маршрутизации (а нормализация payload предпочитает
   `command`). Теперь эти ключи игнорируются в данных (с предупреждением в логе, один раз на ключ) — кнопка всегда
@@ -153,6 +164,9 @@ platformName, apiCalls)`; метод `consumeSendLimit` — для своих а
 - **`Request`** в справочнике (поля, методы, результат) и вариант рецепта 7 на нём.
 - `defineMenu` — api-reference.md («Меню из экранов»), GUIDE.md, recipes.md (рецепт 20); `TelegramRequest.call` с
   параметрами — platform-integration.md (Telegram), recipes.md («Редактирование отправленного сообщения»).
+- `telegram_bot_username` и поведение `/start@<бот>` в группах — platform-integration.md (Telegram); вызов `getMe`
+  при polling — platform-contract-comparison.md; ветки, пропускаемые при `bot.send()` (inline-ответ Telegram,
+  приветствие Viber), — platform-integration.md, «Активные рассылки».
 - Рецепты: игра на двоих (общее состояние, таймаут хода без таймеров), платежи и подписка; testing.md — тест на двух
   пользователей с моком `bot.send`. В GUIDE.md исправлено утверждение, что платежи и редактирование сообщений
   доступны через `controller.api`.

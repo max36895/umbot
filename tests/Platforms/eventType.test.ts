@@ -203,6 +203,37 @@ describe('TelegramAdapter: eventType', () => {
         expect(controller.payload).toBe('K7M2QX');
     });
 
+    it('/start@<чужой бот> не становится start, когда username задан опцией', async () => {
+        const context = createContext();
+        context.appConfig.tokens[T_TELEGRAM] = { token: 'tg-token' };
+        const adapter = new TelegramAdapter('tg-token', { telegram_bot_username: '@room_bot' });
+        adapter.init(context);
+        const send = async (text: string): Promise<TestController> => {
+            const controller = new TestController(createContext());
+            await adapter.setQueryData(
+                {
+                    update_id: 9,
+                    message: {
+                        message_id: 9,
+                        from: { id: 42, is_bot: false, first_name: 'U' },
+                        chat: { id: -100, type: 'supergroup' },
+                        text,
+                    },
+                } as never,
+                controller,
+            );
+            return controller;
+        };
+        // Команда другого бота — обычное сообщение, событие start не возникает
+        const other = await send('/start@other_bot K7M2QX');
+        expect(other.eventType).toBe('message');
+        expect(other.payload).toBeNull();
+        // Своё имя — с любым регистром и с символом @ в опции
+        const own = await send('/start@Room_Bot K7M2QX');
+        expect(own.eventType).toBe('start');
+        expect(own.payload).toBe('K7M2QX');
+    });
+
     it('/start без параметра и похожие команды — обычное сообщение', async () => {
         for (const text of ['/start', '/start ', '/startgame K7M2QX', 'start K7M2QX']) {
             const controller = await startUpdate(text);

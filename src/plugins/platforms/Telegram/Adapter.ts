@@ -48,9 +48,10 @@ type ITelegramRequestData = Record<string, unknown> & {
  * Параметр ссылки `t.me/<бот>?start=<параметр>`: Telegram присылает его текстом
  * «/start <параметр>» (в группах — «/start@бот <параметр>»).
  * @param text Текст сообщения
+ * @param botUsername Username этого бота (без @), если известен
  * @returns Параметр с исходным регистром или null, если это не переход по ссылке с параметром
  */
-function getStartParam(text: string | undefined): string | null {
+function getStartParam(text: string | undefined, botUsername?: string | null): string | null {
     if (!text?.startsWith('/start')) {
         return null;
     }
@@ -58,6 +59,14 @@ function getStartParam(text: string | undefined): string | null {
     const command = space === -1 ? '' : text.slice(0, space);
     if (command !== '/start' && !command.startsWith('/start@')) {
         return null;
+    }
+    if (command.startsWith('/start@') && botUsername) {
+        // Бот с отключённой приватностью видит в группе и команды других ботов:
+        // чужой deep link не должен запускать наш сценарий start.
+        const mention = command.slice('/start@'.length);
+        if (mention.toLowerCase() !== botUsername.toLowerCase()) {
+            return null;
+        }
     }
     return text.slice(space + 1).trim() || null;
 }
@@ -161,6 +170,17 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
      * Вебхук уже снят опцией `telegram_delete_webhook` — снимается один раз, при первом запросе.
      */
     #webhookDeleted = false;
+
+    /**
+     * Username бота, полученный через getMe при старте polling: по нему команда
+     * `/start@<бот>` в группе отличается от команды, адресованной другому боту.
+     */
+    #botUsername: string | null = null;
+
+    /**
+     * Username бота уже запрашивался в этом сеансе polling (успешно или нет).
+     */
+    #botUsernameResolved = false;
 
     /**
      * API-фасад Telegram для `controller.api` (отправка медиа, ответ на
@@ -308,6 +328,8 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
                 return null;
             }
         }
+        // Повторные вызовы отсекаются внутри метода
+        await this.#resolveBotUsername(appContext as AppContext, token, signal);
         const request = new Request(appContext as AppContext);
         request.maxTimeQuery = TELEGRAM_POLLING_TIMEOUT * 1000 + POLLING_REQUEST_MARGIN;
         request.signal = signal;
@@ -401,6 +423,56 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
                 'Чтобы вернуть его, зарегистрируйте заново: npx umbot webhook telegram <https-url>.',
         );
         return true;
+    }
+
+    /**
+     * Запрашивает username бота методом getMe (один раз за сеанс polling): по нему команда
+     * `/start@<бот>` в группе отличается от команды, адресованной другому боту. Сетевая
+     * ошибка не считается результатом — попытка повторится на следующем тике polling.
+     * @param appContext Контекст приложения
+     * @param token Токен бота
+     * @param signal Сигнал остановки polling
+     */
+    async #resolveBotUsername(
+        appContext: AppContext,
+        token: string,
+        signal: AbortSignal,
+    ): Promise<void> {
+        if (this.#botUsernameResolved) {
+            return;
+        }
+        const request = new Request(appContext);
+        request.maxTimeQuery = POLLING_REQUEST_MARGIN;
+        request.signal = signal;
+        const res = await request.send<{ ok?: boolean; result?: { username?: string } }>(
+            `${TELEGRAM_API_URL}${token}/getMe`,
+        );
+        if (!res.status) {
+            return;
+        }
+        this.#botUsernameResolved = true;
+        const username = res.data?.result?.username;
+        if (res.data?.ok === true && username) {
+            this.#botUsername = username;
+            return;
+        }
+        appContext.logWarn(
+            `TelegramAdapter.getUpdates(): getMe не вернул username (${describePollingError(res)}) — ` +
+                'команда /start@<бот> в группах распознаётся по любому имени. Задать его явно можно опцией telegram_bot_username.',
+        );
+    }
+
+    /**
+     * Username этого бота (без @): опция `telegram_bot_username` либо результат getMe
+     * при старте polling; `null` — неизвестен, `/start@...` принимается по любому имени.
+     * @returns Username бота без символа @ либо `null`
+     */
+    #getBotUsername(): string | null {
+        const option = this._platformOptions?.telegram_bot_username;
+        if (typeof option === 'string' && option) {
+            return option.replace(/^@/, '');
+        }
+        return this.#botUsername;
     }
 
     #setCallbackQuery(query: ITelegramContent, controller: BotController): boolean {
@@ -498,7 +570,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         controller.messageId = message.message_id;
         controller.eventType = telegramMessageEvent(message);
         // Как у MAX: переход по ссылке с параметром — событие start, параметр в payload.
-        const startParam = getStartParam(message.text);
+        const startParam = getStartParam(message.text, this.#getBotUsername());
         if (startParam) {
             controller.eventType = 'start';
             controller.payload = startParam;
@@ -828,7 +900,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
             controller,
             this.platformName,
         );
-        if (requestData.inlineQueryId) {
+        if (requestData.inlineQueryId && !controller.platformOptions.isProactive) {
             // Как и обычный ответ: если заполнен только tts, отдаём его текстом,
             // иначе inline-результат уходил пустым.
             await this.#answerInlineQuery(
