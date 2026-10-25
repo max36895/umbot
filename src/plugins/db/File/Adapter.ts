@@ -395,6 +395,23 @@ export class FileAdapter extends Base<IFileDbInfo> {
     }
 
     /**
+     * Новые значения строки поверх сохранённых. Незаданные поля модели приходят как
+     * undefined: они не должны стирать сохранённые значения (как в SQL- и Mongo-адаптерах).
+     * @param row Сохранённая строка
+     * @param update Новые значения
+     * @returns Обновлённая строка
+     */
+    #mergeRow(row: IQueryData, update: IQueryData | null | undefined): IQueryData {
+        const result = { ...row };
+        for (const [field, value] of Object.entries(update ?? {})) {
+            if (value !== undefined) {
+                result[field] = value;
+            }
+        }
+        return result;
+    }
+
+    /**
      * Выполняет UPDATE-запрос.
      * @param updateData Дополнительная информация для запроса. Содержит сам запрос, а также название таблицы и прочие данные.
      * @returns true, если запись найдена по первичному ключу и обновлена (или отсутствует — операция безошибочна), иначе false
@@ -412,7 +429,7 @@ export class FileAdapter extends Base<IFileDbInfo> {
                 }
                 const rowKey = this.#resolveRowKey(updateData, select, data);
                 if (rowKey !== null && data[rowKey] !== undefined) {
-                    data[rowKey] = { ...data[rowKey], ...update };
+                    data[rowKey] = this.#mergeRow(data[rowKey], update);
                     this.#update(updateData.tableName);
                 }
                 return true;
@@ -424,7 +441,8 @@ export class FileAdapter extends Base<IFileDbInfo> {
     /**
      * Выполняет INSERT-запрос.
      * @param insertData Дополнительная информация для запроса. Содержит сам запрос, а также название таблицы и прочие данные.
-     * @returns true при успешной вставке записи, иначе false (нет первичного ключа или ключ запрещён)
+     * @returns true при успешной вставке записи, иначе false (нет первичного ключа, ключ запрещён
+     *   или запись с таким ключом уже есть)
      */
     public _insert(insertData: IQuery): boolean {
         const insert = insertData.data;
@@ -434,6 +452,13 @@ export class FileAdapter extends Base<IFileDbInfo> {
             if (idVal) {
                 if (this.#isForbiddenKey(idVal)) {
                     this._appContext?.logError(`Попытка использовать запрещённый ключ: ${idVal}`);
+                    return false;
+                }
+                // Как SQL при занятом первичном ключе: add() не перезаписывает запись молча.
+                if (this.#resolveRowKey(insertData, insert, data) !== null) {
+                    this._appContext?.logWarn(
+                        `FileAdapter: запись с ключом "${idVal}" в таблице "${insertData.tableName}" уже есть — вставка отклонена. Для изменения записи используйте update().`,
+                    );
                     return false;
                 }
                 data[this.#getStorageKey(insertData, insert) ?? idVal] = insert;

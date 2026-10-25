@@ -9,15 +9,20 @@ import {
     getSoundToken,
     cacheMediaToken,
     getSpeechText,
+    consumeUploadRate,
 } from '../Base/utils';
 import { T_VK } from './constants';
 
 /**
- * Возвращает peer_id диалога, из которого пришёл запрос.
+ * Возвращает peer_id диалога-адресата для загрузки голосового.
  */
 function getPeerId(controller: BotController): string | number {
     const requestData = getPlatformRequestData<{ peerId?: string | number }>(controller, T_VK);
-    return requestData.peerId ?? (controller.userId as string | number);
+    // Адресат протактивной отправки — аргумент send(): peerId входящего запроса
+    // принадлежит чату этого запроса, а не получателю рассылки.
+    return controller.platformOptions.isProactive
+        ? (controller.userId as string | number)
+        : (requestData.peerId ?? (controller.userId as string | number));
 }
 
 /**
@@ -57,6 +62,9 @@ async function uploadVoiceMessage(
     path: string,
     isAttachContent: boolean = false,
 ): Promise<string | null> {
+    // Загрузка голосового — два лишних вызова api.vk.com (getMessagesUploadServer +
+    // save): резервируем слоты лимита, как это делает загрузка фото карточек.
+    consumeUploadRate(controller, T_VK, 2);
     const vkApi = new VkRequest(controller.appContext);
     vkApi.isAttachContent = isAttachContent;
     const uploadServerResponse = await vkApi.docsGetMessagesUploadServer(

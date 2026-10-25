@@ -4,7 +4,7 @@
 import { ICardInfo, ImageTokens, Text, BotController } from '../../../index';
 
 import { TelegramRequest } from '../API';
-import { ITelegramMedia, TTelegramChatId } from './interfaces/ITelegramPlatform';
+import { ITelegramMedia, ITelegramResult, TTelegramChatId } from './interfaces/ITelegramPlatform';
 import { getImageToken, getPlatformRequestData, cacheMediaToken } from '../Base/utils';
 import { T_TELEGRAM } from './constants';
 
@@ -18,7 +18,38 @@ function getChatId(controller: BotController): TTelegramChatId {
         controller,
         T_TELEGRAM,
     );
-    return requestData.chatId ?? (controller.userId as TTelegramChatId);
+    // Адресат протактивной отправки — аргумент send(): chatId входящего запроса
+    // принадлежит чату этого запроса, а не получателю рассылки.
+    return (
+        controller.platformOptions.isProactive
+            ? controller.userId
+            : (requestData.chatId ?? controller.userId)
+    ) as TTelegramChatId;
+}
+
+/**
+ * Отправляет одиночное фото; при ошибке API отмечает недоставку в контроллере,
+ * чтобы `bot.send()` вернул `false` (как `BasePlatform.checkSendResult` для текста).
+ * @param controller Контроллер приложения
+ * @param photo Локальный путь, URL или file_id
+ * @param caption Подпись к фото
+ * @returns Ответ Telegram API либо `null` при ошибке
+ */
+async function sendPhotoChecked(
+    controller: BotController,
+    photo: string,
+    caption: string | undefined,
+): Promise<ITelegramResult | null> {
+    const result = await new TelegramRequest(controller.appContext).sendPhoto(
+        getChatId(controller),
+        photo,
+        caption,
+    );
+    if (!result) {
+        // eslint-disable-next-line require-atomic-updates -- флаг монотонный: выставляется только в true
+        controller.platformOptions.sendFailed = true;
+    }
+    return result;
 }
 
 /**
@@ -35,8 +66,7 @@ export async function getImageInDB(
 ): Promise<string | null> {
     let isCbCalled = false;
     const result = await getImageToken(path, T_TELEGRAM, controller, async (model: ImageTokens) => {
-        const api = new TelegramRequest(controller.appContext);
-        const photo = await api.sendPhoto(getChatId(controller), path, caption || undefined);
+        const photo = await sendPhotoChecked(controller, path, caption || undefined);
         isCbCalled = true;
 
         if (photo?.ok && photo.result?.photo?.length) {
@@ -51,11 +81,7 @@ export async function getImageInDB(
     });
 
     if (!isCbCalled && result) {
-        await new TelegramRequest(controller.appContext).sendPhoto(
-            getChatId(controller),
-            result,
-            caption || undefined,
-        );
+        await sendPhotoChecked(controller, result, caption || undefined);
     }
 
     return result;
@@ -122,11 +148,7 @@ async function getMediaGroup(
         const photo = media.media.startsWith('attach://')
             ? media.media.replace('attach://', '')
             : media.media;
-        await new TelegramRequest(controller.appContext).sendPhoto(
-            getChatId(controller),
-            photo,
-            media.caption || undefined,
-        );
+        await sendPhotoChecked(controller, photo, media.caption || undefined);
         return null;
     }
     return object;
@@ -172,11 +194,7 @@ export async function cardProcessing(
                     );
                 }
             } else {
-                await new TelegramRequest(controller.appContext).sendPhoto(
-                    getChatId(controller),
-                    image.imageToken,
-                    Text.resize(image.desc, 1024),
-                );
+                await sendPhotoChecked(controller, image.imageToken, Text.resize(image.desc, 1024));
             }
         } catch (e) {
             // Логируем ошибку загрузки и возвращаем карточку без фото:

@@ -179,6 +179,11 @@ VK на техобслуживании).
 Отдельная сверка на случай расхождений имён (`imageId` vs `image_id`): для каждого
 исходящего запроса — формат ответа по документации и **фактический путь чтения** в коде.
 
+Ошибка запроса отправки сообщения (`sendMessage`/`sendMediaGroup` Telegram, `messages.send` VK,
+`send_message`/rich media Viber, `POST /messages` и `POST /answers` MAX) клиент возвращает как `null`;
+адаптер выставляет `platformOptions.sendFailed`, и `bot.send()` возвращает `false`. Тело ответа на вебхук
+при этом остаётся `ok`.
+
 ### Telegram
 
 Конверт ответа: `{ok: boolean, result?: T, error_code?: number, description?: string}`
@@ -206,7 +211,7 @@ VK на техобслуживании).
 | Upload документа                      | `{file: "..."}`                                | `uploadResponse.file` → `docs.save`                                          | 📄 ✅  |
 | `docs.save`                           | `response: {id, owner_id, title, ...}`         | `doc.owner_id`, `doc.id` → токен `doc{owner_id}_{id}`                        | 📄 ✅  |
 | `users.get`                           | `response: [{id, first_name, last_name, ...}]` | `users[0]` → `first_name`/`last_name` → кэш имён VK                          | ✅     |
-| `messages.send`                       | `response: <message_id: number>`               | Возвращается вызывающему (сообщения fire-and-forget)                         | 📄 ✅  |
+| `messages.send`                       | `response: <message_id: number>`               | Возвращается вызывающему; `null` (ошибка) → `bot.send()` возвращает `false`  | 📄 ✅  |
 | `messages.sendMessageEventAnswer`     | `response: true`                               | Возвращается вызывающему                                                     | 📄 ✅  |
 
 ### Viber
@@ -276,11 +281,11 @@ API ✅). Фреймворк: `ViberRequest.call()` — успех `data.status 
 
 ## 9. Long polling (Telegram, VK, MAX)
 
-| Платформа | Официальный контракт                                                                                                     | Что отправляет фреймворк (`getUpdates` адаптера)                                                                                                                                                     |
-| --------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Telegram  | `getUpdates`: `offset`, `timeout`; не работает при активном вебхуке (409)                                                | `POST getUpdates {timeout: 25, offset: последний update_id + 1}`; 401/404/409 — остановка polling с причиной, остальные ошибки — повтор; `deleteWebhook` — только по опции `telegram_delete_webhook` |
-| VK        | `groups.getLongPollServer(group_id)` → `{server, key, ts}`; `a_check` с `key`, `ts`, `wait`; `failed` 1/2/3              | ID сообщества — `groups.getById`; `GET {server}?act=a_check&key&ts&wait=25`; `failed: 1` — новый `ts`, `2` — новый ключ, `3` — новые ключ и `ts`                                                     |
-| MAX       | `GET /updates`: `limit` 1–1000, `timeout` 0–90 с, `marker`; `Authorization: <token>`; для продакшена рекомендован вебхук | `GET /updates?timeout=30[&marker]`, `marker` из ответа — в следующий запрос; 401 — остановка polling                                                                                                 |
+| Платформа | Официальный контракт                                                                                                     | Что отправляет фреймворк (`getUpdates` адаптера)                                                                                                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Telegram  | `getUpdates`: `offset`, `timeout`; не работает при активном вебхуке (409)                                                | `POST getUpdates {timeout: 25, offset: последний update_id + 1}`; 401/404/409 — остановка polling с причиной, остальные ошибки — повтор; `deleteWebhook` — только по опции `telegram_delete_webhook`; при старте сеанса один раз `getMe` (username для распознавания `/start@<бот>`) |
+| VK        | `groups.getLongPollServer(group_id)` → `{server, key, ts}`; `a_check` с `key`, `ts`, `wait`; `failed` 1/2/3              | ID сообщества — `groups.getById`; `GET {server}?act=a_check&key&ts&wait=25`; `failed: 1` — новый `ts`, `2` — новый ключ, `3` — новые ключ и `ts`                                                                                                                                     |
+| MAX       | `GET /updates`: `limit` 1–1000, `timeout` 0–90 с, `marker`; `Authorization: <token>`; для продакшена рекомендован вебхук | `GET /updates?timeout=30[&marker]`, `marker` из ответа — в следующий запрос; 401 — остановка polling                                                                                                                                                                                 |
 
 ## Итог сверки
 

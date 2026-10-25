@@ -2,7 +2,7 @@
  * Обработка звуков MAX: TTS через Yandex SpeechKit и отправка аудиофайлов через /uploads.
  */
 import { ISoundInfo, isFile, Text, unlink, BotController } from '../../../index';
-import { getSoundToken, cacheMediaToken, getSpeechText } from '../Base/utils';
+import { getSoundToken, cacheMediaToken, getSpeechText, consumeUploadRate } from '../Base/utils';
 import { IMaxAudio, MaxRequest, YandexSpeechKit } from '../API';
 import { T_MAX_APP } from './constants';
 
@@ -33,6 +33,8 @@ async function getSoundInDB(controller: BotController, path: string): Promise<st
  * @returns Токен аудио-вложения либо `null` при ошибке загрузки
  */
 async function uploadAudio(controller: BotController, path: string): Promise<string | null> {
+    // Загрузка аудио — лишний вызов API (POST /uploads), резервируем слот.
+    consumeUploadRate(controller, T_MAX_APP, 1);
     const upload = await new MaxRequest(controller.appContext).upload(path, 'audio');
     return upload?.token ?? null;
 }

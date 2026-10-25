@@ -11,6 +11,7 @@
  */
 import { INlu } from '../../components';
 import type { IMemorySessionConfig } from '../utils/MemorySessionStorage';
+import type { IDbTableSchema } from '../../models/db/schema';
 
 /**
  * Режим работы приложения.
@@ -283,6 +284,27 @@ export interface IAppConfig {
      * Конфигурация базы данных
      */
     db?: IAppDB;
+    /**
+     * Таблицы приложения (свои модели на `Model`). После подключения к БД ядро передаёт
+     * их в `ensureSchema()` DB-адаптера вместе со встроенными (`DB_TABLES_SCHEMA`):
+     * адаптер создаёт недостающие таблицы и индексы, как для встроенных.
+     *
+     * @example
+     * ```ts
+     * bot.setAppConfig({
+     *     dbTables: [
+     *         {
+     *             tableName: 'Rooms',
+     *             primaryKeyName: 'roomId',
+     *             uniqueKeys: [],
+     *             fields: { roomId: { type: 'string', maxLength: 32 }, data: { type: 'text' } },
+     *             indexes: [['roomId']],
+     *         },
+     *     ],
+     * });
+     * ```
+     */
+    dbTables?: readonly IDbTableSchema[];
     /**
      * Флаг использования локального хранилища платформы.
      * Перед включением флага убедитесь, что платформа поддерживает хранение данных в локальном хранилище.

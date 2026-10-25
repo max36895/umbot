@@ -17,6 +17,7 @@ import {
     normalizeActionPayload,
     setThisUserToNlu,
     shouldProcessChatSound,
+    tryParse,
 } from '../Base/utils';
 
 type IMaxRequestData = Record<string, unknown> & {
@@ -108,6 +109,11 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
      * Лимит запросов/сек для входящего rateLimiter (лимит MAX Bot API).
      */
     limit = 30;
+    /**
+     * Рассылка через `bot.send()`: общий лимит MAX Bot API — 30 запросов в секунду
+     * (поверх очереди 500 мс на диалог в `MaxRequest`).
+     */
+    sendLimit = 30;
 
     /**
      * Позиция чтения long polling (`marker` из ответа `GET /updates`); `null` — первый запрос.
@@ -288,7 +294,8 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
         // превращаются в userCommand='buy' и срабатывают через addAction/команду.
         controller.userCommand = normalizeActionPayload(query.callback.payload);
         controller.originalUserCommand = query.callback.payload ?? '';
-        controller.payload = query.callback.payload ?? null;
+        // Объект кнопки MAX передаёт JSON-строкой — разбираем, как Telegram и VK.
+        controller.payload = tryParse(query.callback.payload ?? null);
         const requestData = getPlatformRequestData<IMaxRequestData>(controller, this.platformName);
         requestData.callbackId = query.callback.callback_id;
         if (query.message?.recipient?.chat_id) {
@@ -443,21 +450,28 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
         const requestData = getPlatformRequestData<IMaxRequestData>(controller, this.platformName);
         // MAX Bot API ограничивает текст сообщения 4000 символами
         // Если в запросе был chat_id (групповой чат/канал) — используем его,
-        // иначе отправляем в личный диалог по user_id
+        // иначе отправляем в личный диалог по user_id. Для протактивной отправки
+        // chat_id входящего запроса не учитывается: адресат — аргумент send()
+        // (platformOptions.chatId остаётся ручным переопределением).
         const chatId =
-            requestData.chatId ?? (controller.platformOptions.chatId as number | undefined);
+            (controller.platformOptions.isProactive ? undefined : requestData.chatId) ??
+            (controller.platformOptions.chatId as number | undefined);
         const peerId: string | number = chatId ?? controller.userId ?? '';
         if (peerId === '') {
             controller.appContext.logWarn(
                 'MaxAdapter.getContent(): не указан user_id или chat_id; ответ не будет отправлен.',
             );
+            controller.platformOptions.sendFailed = true;
             return 'ok';
         }
         const text = Text.resize(getChatText(controller.text, controller.tts), 4000);
         const callbackId = requestData.callbackId;
         if (callbackId && this._platformOptions?.max_callback_edit_message === true) {
             // Opt-in: ответ заменяет сообщение с нажатой кнопкой (POST /answers с message).
-            await maxApi.answerCallback(callbackId, text, params, peerId);
+            this.checkSendResult(
+                controller,
+                await maxApi.answerCallback(callbackId, text, params, peerId),
+            );
             return 'ok';
         }
         if (callbackId && !requestData.callbackAnswered) {
@@ -466,7 +480,10 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
             // подтверждаем пустым телом, а ответ отправляем через POST /messages.
             await maxApi.answerCallback(callbackId, '', null, peerId);
         }
-        await maxApi.messagesSend(peerId, text, params, chatId ? 'chat' : 'user');
+        this.checkSendResult(
+            controller,
+            await maxApi.messagesSend(peerId, text, params, chatId ? 'chat' : 'user'),
+        );
         return 'ok';
     }
 

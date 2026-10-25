@@ -55,6 +55,28 @@ test('{{Name}}DbAdapter: обновление меняет только пере
     assert.deepEqual(res.data, { ...key, data: 'new', meta: 'keep' });
 });
 
+test('{{Name}}DbAdapter: поля со значением undefined не стирают сохранённые', async () => {
+    const db = new {{Name}}DbAdapter();
+    const key = { userId: '1', platform: 'telegram' };
+    await db.insert(usersQuery(null, { ...key, data: 'old', meta: 'keep' }));
+    // Модель присылает незаданные поля как undefined — они не должны затереть запись.
+    assert.equal(await db.update(usersQuery(key, { data: undefined })), true);
+
+    const res = await db.select(usersQuery(null), key, true);
+    assert.deepEqual(res.data, { ...key, data: 'old', meta: 'keep' });
+});
+
+test('{{Name}}DbAdapter: вставка с занятым ключом отклоняется без перезаписи', async () => {
+    const db = new {{Name}}DbAdapter();
+    const row = { userId: '1', platform: 'telegram', data: 'original' };
+    assert.equal(await db.insert(usersQuery(null, row)), true);
+    // Повторная вставка того же ключа — false, как INSERT в SQL; запись не меняется.
+    assert.equal(await db.insert(usersQuery(null, { ...row, data: 'changed' })), false);
+
+    const res = await db.select(usersQuery(null), { userId: '1', platform: 'telegram' }, true);
+    assert.deepEqual(res.data, row);
+});
+
 test('{{Name}}DbAdapter: отсутствие записи — не ошибка', async () => {
     const db = new {{Name}}DbAdapter();
     const key = { userId: 'missing', platform: 'telegram' };

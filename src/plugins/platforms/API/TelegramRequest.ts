@@ -311,9 +311,9 @@ export class TelegramRequest {
         if (retryAfter === null || retryAfter > TELEGRAM_MAX_RETRY_AFTER) {
             return data;
         }
-        await new Promise<void>((resolve) => {
-            setTimeout(resolve, retryAfter * 1000).unref();
-        });
+        // Без unref(): повтор ждут, и в скрипте без сервера (cron) процесс иначе
+        // завершился бы, не отправив сообщение. Пауза — не больше TELEGRAM_MAX_RETRY_AFTER.
+        await new Promise<void>((resolve) => setTimeout(resolve, retryAfter * 1000));
         this.#request.post = post;
         this.#request.attach = attach;
         this.#request.attachName = attachName;
@@ -321,19 +321,32 @@ export class TelegramRequest {
     }
 
     /**
-     * Отправляет запрос к Telegram API
+     * Отправляет запрос к Telegram API. С `params` вызывает любой метод Bot API, для которого
+     * нет отдельного метода класса: `editMessageText`, `deleteMessage`, `sendInvoice`, `pinChatMessage`.
      * @param method Название метода API
-     * @param userId ID пользователя или чата
-     * @returns Результат выполнения метода или null при ошибке
+     * @param userId ID пользователя или чата (`chat_id`)
+     * @param params Параметры метода; объекты (`reply_markup`) передаются как есть
+     * @returns Результат выполнения метода или null при ошибке (причина — в логе)
+     *
+     * @example
+     * ```ts
+     * const telegram = new TelegramRequest(ctx.appContext);
+     * await telegram.call('editMessageText', chatId, { message_id: messageId, text: 'Обновлено' });
+     * ```
      */
     public async call(
         method: string,
         userId: TTelegramChatId | null = null,
+        params: Record<string, unknown> | null = null,
     ): Promise<ITelegramResult | null> {
         this.#request.maxTimeQuery =
             /^(sendPhoto|sendDocument|sendAudio|sendVoice|sendVideo|sendMediaGroup)$/u.test(method)
                 ? TELEGRAM_UPLOAD_TIMEOUT
                 : 5500;
+        if (params) {
+            // Копия: ниже в тело дописывается chat_id, объект вызывающего не меняем.
+            this.#request.post = { ...params };
+        }
         if (userId) {
             if (this.#request.post instanceof FormData) {
                 this.#request.post.append('chat_id', userId.toString());

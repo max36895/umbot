@@ -10,7 +10,7 @@ import { soundProcessing } from './Sound';
 import { T_VIBER, VIBER_DEFAULT_API_VERSION } from './constants';
 import { IViberButtonObject, IViberContent } from './interfaces/IViberPlatform';
 import { makeViberApi } from './apiFacade';
-import { getChatText, setThisUserToNlu, viberMessageEvent } from '../Base/utils';
+import { getChatText, setThisUserToNlu, tryParse, viberMessageEvent } from '../Base/utils';
 
 /**
  * Адаптер, обеспечивающий поддержку платформы Viber. Позволяет разрабатывать чат-ботов для Viber на TypeScript с использованием кросс-платформенного функционала: обработка текстовых запросов, работа с карточками и кнопками.
@@ -162,6 +162,8 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
      */
     #onConversationStarted(query: IViberContent, controller: BotController): boolean {
         controller.eventType = 'start';
+        // Параметр deep-link (context), как payload у bot_started в MAX.
+        controller.payload = query.context ?? null;
         if (query.user) {
             controller.userId = query.user.id;
 
@@ -220,6 +222,13 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
         // нормализация не меняет (только lower + trim).
         controller.userCommand = normalizeActionPayload(raw);
         controller.originalUserCommand = raw;
+        // Данные кнопки с payload-объектом — в payload, как у Telegram/VK/MAX (их читает defineAction).
+        if (raw[0] === '{') {
+            const parsed = tryParse(raw);
+            if (parsed && typeof parsed === 'object') {
+                controller.payload = parsed;
+            }
+        }
         controller.messageId = query.message_token ?? 0;
         // Универсальный тип события по типу сообщения Viber (text/picture/video/file/
         // contact/location/sticker) — для декларативного роутинга bot.addEvent.
@@ -380,7 +389,14 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
             params.keyboard = keyboard;
             params.keyboard.Type = 'keyboard';
         }
-        if ((controller.requestObject as IViberContent | null)?.event === 'conversation_started') {
+        // При proactive-отправке (bot.send) результат getContent не является телом
+        // webhook-ответа: приветственный JSON никуда не уйдёт. Отправляем обычным
+        // send_message — если пользователь ещё не подписан, Viber отклонит запрос,
+        // и send() честно вернёт false.
+        if (
+            (controller.requestObject as IViberContent | null)?.event === 'conversation_started' &&
+            !controller.platformOptions.isProactive
+        ) {
             return this.#getWelcomeContent(controller, viberApi, params);
         }
 
@@ -390,30 +406,41 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
         // используем его как текст: иначе Viber не получал вообще ничего.
         const text = getChatText(controller.text, controller.tts);
         if (text) {
-            await viberApi.sendMessage(
+            const sent = await viberApi.sendMessage(
                 <string>controller.userId,
                 controller.appContext.appConfig.tokens[this.platformName]?.sender as
                     string | IViberSender,
                 text,
                 params,
             );
+            this.checkSendResult(controller, sent);
         } else if (keyboard) {
             controller.appContext.logWarn(
                 'ViberAdapter.getContent(): клавиатура задана без текста и не может быть отправлена отдельным сообщением.',
             );
         }
 
+        let delivered = Boolean(text);
         if (controller.isCardInit() && controller.card.images.length) {
             const res = controller.card.getCards(cardProcessing, controller);
             // `cardProcessing` может вернуть одиночный объект (для одной картинки) или массив (для галереи)
             const list = Array.isArray(res) ? res : res ? [res] : [];
             if (list.length) {
-                await viberApi.richMedia(<string>controller.userId, list);
+                this.checkSendResult(
+                    controller,
+                    await viberApi.richMedia(<string>controller.userId, list),
+                );
+                delivered = true;
             }
         }
 
         if (controller.isSoundInit() && controller.sound.sounds.length) {
             await controller.sound.getSounds(controller.tts, soundProcessing, controller);
+        }
+        if (!delivered) {
+            // Ничего не отправлено: send()/broadcast() обязаны видеть это как failure,
+            // а не «ok». Звуки не в счёт: у Viber нет отправки аудио.
+            this.checkSendResult(controller, null);
         }
         return 'ok';
     }

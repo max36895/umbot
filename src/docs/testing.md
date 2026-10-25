@@ -205,6 +205,18 @@ console.log(bot.getBotController()?.text); // 'Привет!'
 Метод возвращает тот же результат, что и `run()`: для голосовых платформ — JSON-ответ,
 для чат-платформ — строку `'ok'`, так как отправка в API в режиме симуляции пропускается.
 
+Сценарий на нескольких пользователей (игра, приглашение) проверяется чередованием `userId`. `simulate()` глушит только
+ответ на входящее сообщение; `bot.send()` и `bot.broadcast()` пошли бы в API платформы, поэтому подмените их:
+
+```ts
+const send = jest.spyOn(bot, 'send').mockResolvedValue('ok');
+
+await bot.simulate('играть', { platform: T_TELEGRAM, userId: 'anna' });
+await bot.simulate('играть', { platform: T_TELEGRAM, userId: 'boris' }); // пара собралась
+
+expect(send).toHaveBeenCalledWith('anna', expect.anything(), T_TELEGRAM); // первому игроку сообщили о сопернике
+```
+
 ### Jest-тесты с полной настройкой
 
 Более детальный пример с настройкой платформы и проверкой ответа:

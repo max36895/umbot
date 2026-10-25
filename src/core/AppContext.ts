@@ -325,6 +325,7 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
         error_log: join(process.cwd(), 'logs'),
         json: join(process.cwd(), 'json'),
         db: { host: '', user: '', pass: '', database: '' },
+        dbTables: [],
         isLocalStorage: false,
         tokens: {},
         env: '',

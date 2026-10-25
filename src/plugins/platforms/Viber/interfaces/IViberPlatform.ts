@@ -148,6 +148,11 @@ export interface IViberContent {
      * Информация о сообщении
      */
     message?: IViberMessage;
+    /**
+     * Параметр `context` ссылки `viber://pa?chatURI=<бот>&context=...`
+     * (только в conversation_started; без параметра в ссылке поля нет)
+     */
+    context?: string;
 }
 
 /**

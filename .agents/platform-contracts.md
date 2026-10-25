@@ -29,7 +29,8 @@
   `Content-Type` is required for requests with a body. Up to 12 attachments per message,
   keyboard up to 30 rows / 7 buttons per row (3 for link/open_app/geo/contact).
   Max 2 callback-ответа в секунду на диалог; отправка в один диалог — не чаще 1 сообщения
-  в 500 мс (реализовано очередью в `MaxRequest` с таймерами `.unref()`).
+  в 500 мс (очередь в `MaxRequest`; таймеры паузы держат процесс — без `unref()`, иначе
+  cron-скрипт без сервера завершался бы до отправки).
 - **VK** — `users.get` документирует только `user_ids` (список через запятую);
   legacy-алиас `user_id` не использовать. У vkpay-кнопки `hash` находится внутри
   `action`, а не на верхнем уровне объекта кнопки; `hash: null` отклоняет всю
@@ -51,6 +52,19 @@
   `payload.items` is required in ANSWER_TO_USER; `pronounceText` has no documented length limit.
 - **Telegram voice** — synthesized OGG/Opus goes via `sendVoice`; `sendAudio` accepts only MP3/M4A.
 - **MAX bot_started** — carries `payload` (deep-link) and must be answered (welcome), not skipped.
+- **Deep-link parameters** (all mapped to the `start` event, parameter in `controller.payload`):
+  Telegram — the text `/start <param>` (`/start@bot <param>` in groups; when the bot username is known —
+  option `telegram_bot_username` or `getMe` at polling start — a `/start@<other>` command is NOT a start
+  event); VK — `message.ref` /
+  `message.ref_source` of the message sent after following `vk.me/<club>?ref=` (verified by the
+  docs and client libraries, not on the live API); Viber — `context` of `conversation_started`
+  (absent unless the link has `&context=`).
+- **Outgoing rate limits** (`sendLimit`, applied only to `bot.send()` / `bot.broadcast()`): Telegram ~30
+  messages/s to different users and ~1/s per chat (Bots FAQ; per-chat limit is not queued — one 429 retry
+  ≤5 s); VK community-token methods 20 requests/s (error 6 otherwise); MAX Bot API 30 rps plus the existing
+  500 ms per-dialog queue; Viber has no documented limit (`sendLimit = null`).
+- **MAX callback payload** — `callback.payload` is a string: an object button payload arrives as
+  JSON and is parsed with `tryParse`, like Telegram `callback_data` and VK `payload`.
 - **MAX buttons** — per the official SDK (`@maxhub/max-bot-api`): `quick` exists only on
   `request_geo_location`, `contact_id`/`web_app` only on `open_app`, `payload` on
   `callback`/`clipboard`/`open_app` (never on `link`). `intent` is absent from current docs and
@@ -58,24 +72,33 @@
 - **VK uploads** — photos (`photos.getMessagesUploadServer`) must be uploaded in the multipart
   field `photo`, documents/voice in `file`. `docs.save` returns `{type, doc | audio_message}` —
   ids live in the nested object. Carousel elements must share one structure (same button count)
-  and the message text is mandatory with a carousel.
+  and the message text is mandatory with a carousel. A photo or voice cache miss burns 2 extra
+  `api.vk.com` slots (getMessagesUploadServer + save; the multipart POST goes to the upload
+  server, not the API) — `Vk/Card.ts` and `Vk/Sound.ts` reserve them via
+  `pUtils.consumeUploadRate(controller, T_VK, 2)` so media broadcasts respect the shared
+  20 rps token limit.
 - **MAX uploads** — the upload-server response for `audio`/`video` is `retval` (not JSON); their
   token comes from the `POST /uploads` step. Never cache the one-time upload `url` as a token.
   A message sent right after an upload may be rejected with `attachment.not.ready` — `MaxRequest`
   retries it (0.5/1/2 s). `POST /answers` with `message` REPLACES the message with the pressed
   button; the adapter acknowledges with `{}` and replies via `POST /messages` unless
-  `max_callback_edit_message: true`.
+  `max_callback_edit_message: true`. An image/audio cache miss is 1 extra Bot API call
+  (`POST /uploads`) — `Max/Card.ts` and `Max/Sound.ts` reserve it via
+  `pUtils.consumeUploadRate(controller, T_MAX_APP, 1)`.
 - **SpeechKit TTS** — body `application/x-www-form-urlencoded`, auth `Api-Key <key>` or
   `Bearer <IAM>`; the `OAuth` scheme belongs to the Dialogs API only.
 - **Telegram button `style`** — only `danger`, `success`, `primary`.
 - **Viber welcome** — the reply to `conversation_started` goes in the webhook response body;
-  REST `send_message` to a not-yet-subscribed user is rejected.
+  REST `send_message` to a not-yet-subscribed user is rejected. In proactive `bot.send()` the welcome
+  branch is skipped (the getContent result is not a webhook body): the message goes via `send_message`,
+  and a rejection turns into `send()` === false.
 - **Viber** — тело исходящего запроса к API ограничено 30 КБ (проверяется в
   `ViberRequest.call()`); `rich_media` требует `min_api_version >= 7`.
 - **Long polling** (`getUpdates` адаптеров, `bot.startPolling()`):
   Telegram `getUpdates` — `timeout` 25 с, `offset` = последний `update_id` + 1; 409 — активен вебхук или другой
   процесс читает обновления, 401/404 — неверный токен (polling останавливается). Вебхук снимается только явной
-  опцией `telegram_delete_webhook` — токен может принадлежать production-боту. MAX `GET /updates` — `timeout`
+  опцией `telegram_delete_webhook` — токен может принадлежать production-боту. При старте сеанса один раз
+  вызывается `getMe` — username нужен, чтобы отличать `/start@<этот бот>` от команды другому боту. MAX `GET /updates` — `timeout`
   0–90 с (берём 30), `limit` 1–1000, `marker` из ответа передаётся в следующий запрос, `Authorization: <token>`;
   MAX называет polling средством разработки, для продакшена — вебхук. VK Bots Long Poll — `groups.getById`
   (ответ с 5.139 — `{groups: [...]}`, раньше — массив) → `groups.getLongPollServer(group_id)` → `{server, key, ts}`

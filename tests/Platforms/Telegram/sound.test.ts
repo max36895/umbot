@@ -1,5 +1,6 @@
 import { BotController, ISoundInfo } from '../../../src';
 import { TelegramSound, TelegramRequest, YandexSpeechKit } from '../../../src/plugins';
+import { getPlatformRequestData } from '../../../src/plugins/platforms/Base/utils';
 
 // Мокаем утилиты isFile для getBaseDataSoundProcessing
 jest.mock('../../../src/utils/standard/util', () => ({
@@ -123,6 +124,28 @@ describe('Telegram Sound', () => {
 
             // sendAudio должен быть вызван для загрузки файла и получения file_id
             expect(sendAudioMock).toHaveBeenCalled();
+        });
+    });
+
+    describe('getSoundInDB', () => {
+        it('протактивная отправка: аудио уходит адресату send(), а не чату входящего запроса', async () => {
+            getPlatformRequestData<{ chatId?: number }>(controller, 'telegram').chatId = -100500;
+            const sendAudioMock = jest
+                .spyOn(TelegramRequest.prototype, 'sendAudio')
+                .mockResolvedValue({
+                    ok: true,
+                    result: { message_id: 200, audio: { file_id: 'a1', duration: 1 } },
+                } as never);
+
+            // Протактивная отправка: BasePlatform.send() подставил адресата в userId
+            controller.platformOptions.isProactive = true;
+            await TelegramSound.getSoundInDB(controller, '/sound.mp3');
+            expect(sendAudioMock).toHaveBeenCalledWith(12345, '/sound.mp3');
+
+            // Ответ на входящий запрос — в чат запроса (прежнее поведение)
+            delete controller.platformOptions.isProactive;
+            await TelegramSound.getSoundInDB(controller, '/sound2.mp3');
+            expect(sendAudioMock).toHaveBeenLastCalledWith(-100500, '/sound2.mp3');
         });
     });
 });

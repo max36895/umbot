@@ -4,7 +4,7 @@
 import { ICardInfo, ImageTokens, Text, BotController } from '../../../index';
 
 import { IMaxCard, MaxRequest } from '../API';
-import { getImageToken, cacheMediaToken } from '../Base/utils';
+import { getImageToken, cacheMediaToken, consumeUploadRate } from '../Base/utils';
 import { T_MAX_APP } from './constants';
 
 /**
@@ -21,6 +21,8 @@ export async function getImageInDB(
         return path;
     }
     return getImageToken(path, T_MAX_APP, controller, async (model: ImageTokens) => {
+        // Cache miss: загрузка — лишний вызов API (POST /uploads), резервируем слот.
+        consumeUploadRate(controller, T_MAX_APP, 1);
         const api = new MaxRequest(controller.appContext);
         const upload = await api.upload(path, 'image');
         // Кэшируем только токен вложения. upload.url — одноразовый адрес

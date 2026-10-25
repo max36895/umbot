@@ -252,7 +252,7 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
     /**
      * Универсальные события VK (для валидации addEvent): текст и callback-кнопки.
      */
-    supportedEvents: readonly TEventType[] = ['message', 'callback'];
+    supportedEvents: readonly TEventType[] = ['message', 'callback', 'start'];
     /**
      * VK — чат-платформа (не голосовая).
      */
@@ -261,6 +261,11 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
      * Лимит запросов/сек для входящего rateLimiter (лимит VK Callback API).
      */
     limit = 30;
+    /**
+     * Рассылка через `bot.send()`: методы API от имени сообщества — не больше 20 запросов
+     * в секунду (иначе ошибка 6 «Too many requests per second»).
+     */
+    sendLimit = 20;
 
     /**
      * Сервер Bots Long Poll текущей сессии; `null` — запросить заново перед следующим опросом.
@@ -621,6 +626,12 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
         if (actionName) {
             controller.userCommand = actionName;
         }
+        // После перехода по vk.me/<сообщество>?ref=<параметр> VK кладёт параметр в ref
+        // сообщения. Как у MAX: событие start, параметр — в payload.
+        if (message.ref) {
+            controller.eventType = 'start';
+            controller.payload = message.ref;
+        }
         // Загрузку имени можно отключить: `new VkAdapter(token, { vk_load_user_info: false })`.
         // Тогда nlu.getUserName() вернёт null, зато на ответ уходит один запрос к VK вместо двух.
         if (this._platformOptions?.vk_load_user_info === false) {
@@ -902,11 +913,15 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
         if (!text && params.template !== undefined) {
             text = this.#getCarouselText(controller);
         }
-        await vkApi.messagesSend(
-            (requestData.peerId ?? controller.userId) as string,
-            Text.resize(text, 4096),
-            params,
-        );
+        // Адресат протактивной отправки — аргумент send(): peerId входящего запроса
+        // принадлежит чату этого запроса, а не получателю рассылки.
+        const peerId = (
+            controller.platformOptions.isProactive
+                ? controller.userId
+                : (requestData.peerId ?? controller.userId)
+        ) as string;
+        const sent = await vkApi.messagesSend(peerId, Text.resize(text, 4096), params);
+        this.checkSendResult(controller, sent);
         return 'ok';
     }
 
