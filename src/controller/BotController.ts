@@ -269,6 +269,17 @@ export interface IPlatformOptions {
      * Используется middleware `ipFilter`.
      */
     clientIp?: string;
+    /**
+     * Ответ отправляется методом `bot.send()`, а не в ответ на входящий запрос.
+     * Выставляет `BasePlatform.send()`: адаптер не должен отвечать телом вебхука —
+     * вебхука нет и тело никто не отправит.
+     */
+    isProactive?: boolean;
+    /**
+     * Платформа отклонила отправку (ошибка API, сеть, таймаут). Выставляет адаптер,
+     * когда запрос отправки вернул ошибку; `BasePlatform.send()` тогда возвращает `false`.
+     */
+    sendFailed?: boolean;
 }
 
 /**

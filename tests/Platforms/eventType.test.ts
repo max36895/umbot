@@ -170,6 +170,46 @@ describe('TelegramAdapter: eventType', () => {
         );
         expect(controller.eventType).toBe('channel_post');
     });
+
+    async function startUpdate(text: string): Promise<TestController> {
+        const { adapter } = setup();
+        const controller = new TestController(createContext());
+        await adapter.setQueryData(
+            {
+                update_id: 8,
+                message: {
+                    message_id: 8,
+                    from: { id: 42, is_bot: false, first_name: 'U' },
+                    chat: { id: 42, type: 'private' },
+                    text,
+                },
+            } as never,
+            controller,
+        );
+        return controller;
+    }
+
+    it('/start с параметром ссылки → start, параметр в payload с исходным регистром', async () => {
+        const controller = await startUpdate('/start K7M2QX');
+        expect(controller.eventType).toBe('start');
+        expect(controller.payload).toBe('K7M2QX');
+        // Команды по тексту /start продолжают работать.
+        expect(controller.userCommand).toBe('/start k7m2qx');
+    });
+
+    it('/start@бот с параметром (группа) → start', async () => {
+        const controller = await startUpdate('/start@room_bot K7M2QX');
+        expect(controller.eventType).toBe('start');
+        expect(controller.payload).toBe('K7M2QX');
+    });
+
+    it('/start без параметра и похожие команды — обычное сообщение', async () => {
+        for (const text of ['/start', '/start ', '/startgame K7M2QX', 'start K7M2QX']) {
+            const controller = await startUpdate(text);
+            expect(controller.eventType).toBe('message');
+            expect(controller.payload).toBeNull();
+        }
+    });
 });
 
 describe('VkAdapter: eventType и нормализация payload', () => {
@@ -222,6 +262,41 @@ describe('VkAdapter: eventType и нормализация payload', () => {
         expect(controller.eventType).toBe('callback');
         expect(controller.userCommand).toBe('buy');
     });
+
+    function messageWithRef(ref?: string): Record<string, unknown> {
+        return {
+            type: 'message_new',
+            object: {
+                message: {
+                    id: 2,
+                    peer_id: 42,
+                    from_id: 42,
+                    text: 'Начать',
+                    random_id: 0,
+                    payload: '{"command":"start"}',
+                    ...(ref === undefined ? {} : { ref, ref_source: 'site' }),
+                },
+                client_info: {},
+            },
+        };
+    }
+
+    it('сообщение после перехода по vk.me/...?ref= → start, ref в payload', async () => {
+        const { adapter } = setup();
+        const controller = new TestController(createContext());
+        await adapter.setQueryData(messageWithRef('K7M2QX') as never, controller);
+        expect(controller.eventType).toBe('start');
+        expect(controller.payload).toBe('K7M2QX');
+        expect(controller.userCommand).toBe('начать');
+    });
+
+    it('сообщение без ref — обычное сообщение', async () => {
+        const { adapter } = setup();
+        const controller = new TestController(createContext());
+        await adapter.setQueryData(messageWithRef() as never, controller);
+        expect(controller.eventType).toBe('message');
+        expect(controller.payload).toEqual({ command: 'start' });
+    });
 });
 
 describe('MaxAdapter: eventType', () => {
@@ -269,6 +344,28 @@ describe('MaxAdapter: eventType', () => {
         );
         expect(controller.eventType).toBe('callback');
         expect(controller.userCommand).toBe('buy');
+        expect(controller.payload).toEqual({ command: 'buy' });
+    });
+
+    it('message_callback: payload-объект кнопки приходит объектом, строка — строкой', async () => {
+        const { adapter } = setup();
+        const press = async (payload: string): Promise<TestController> => {
+            const controller = new TestController(createContext());
+            await adapter.setQueryData(
+                {
+                    update_type: 'message_callback',
+                    timestamp: 1,
+                    callback: { callback_id: 'cb-2', payload, user: { user_id: 42 } },
+                } as never,
+                controller,
+            );
+            return controller;
+        };
+        expect((await press('{"action":"go","r":"abc"}')).payload).toEqual({
+            action: 'go',
+            r: 'abc',
+        });
+        expect((await press('go')).payload).toBe('go');
     });
 
     it('bot_started → start', async () => {
@@ -347,6 +444,40 @@ describe('ViberAdapter: eventType', () => {
             controller,
         );
         expect(controller.eventType).toBe('start');
+        expect(controller.payload).toBeNull();
+    });
+
+    it('conversation_started по ссылке с context → start, context в payload', async () => {
+        const { adapter } = setup();
+        const controller = new TestController(createContext());
+        await adapter.setQueryData(
+            {
+                event: 'conversation_started',
+                timestamp: 1,
+                context: 'K7M2QX',
+                user: { id: 'u1', name: 'U', api_version: 8 },
+            } as never,
+            controller,
+        );
+        expect(controller.eventType).toBe('start');
+        expect(controller.payload).toBe('K7M2QX');
+    });
+
+    it('нажатие кнопки с payload-объектом: данные кнопки в payload, действие в userCommand', async () => {
+        const { adapter } = setup();
+        const controller = new TestController(createContext());
+        await adapter.setQueryData(
+            {
+                event: 'message',
+                timestamp: 1,
+                message_token: 3,
+                sender: { id: 'u1', name: 'U', api_version: 8 },
+                message: { type: 'text', text: '{"action":"kick","p":"u7"}' },
+            } as never,
+            controller,
+        );
+        expect(controller.userCommand).toBe('kick');
+        expect(controller.payload).toEqual({ action: 'kick', p: 'u7' });
     });
 
     it('subscribed → subscribed', async () => {

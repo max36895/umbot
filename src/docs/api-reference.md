@@ -79,40 +79,99 @@ class Bot<
 
 #### Методы
 
-| Метод                    | Параметры                                                                                                                                            | Возвращаемое значение          | Описание                                                                                                                                                                                                |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| setAppConfig             | config: Partial\<IAppConfig\>                                                                                                                        | Bot                            | Установка конфигурации приложения                                                                                                                                                                       |
-| setAppMode               | mode: TAppMode (`'dev' \| 'prod' \| 'strict_prod'`)                                                                                                  | Bot                            | Установка режима работы                                                                                                                                                                                 |
-| setPlatformParams        | params: IAppParam                                                                                                                                    | Bot                            | Установка параметров платформы                                                                                                                                                                          |
-| initBotController        | controller: TBotControllerClass                                                                                                                      | Bot                            | Подключение класса контроллера                                                                                                                                                                          |
-| addCommand               | commandName: string, slots: TSlots, cb: (userCommand: string, bc: BotController) => void \| string \| Promise\<void \| string\>, isPattern?: boolean | Bot                            | Регистрация команды                                                                                                                                                                                     |
-| addAction                | actionName: string, cb: (userCommand: string, bc: BotController) => void \| string \| Promise\<void \| string\>                                      | Bot                            | Обработчик нажатия callback-кнопки по payload (аналог `bot.action()` у Telegram-фреймворков). Payload `'buy'` / `{"command":"buy"}` вызывает команду `buy` (Telegram, VK, MAX)                          |
-| addEvent                 | eventType: TEventType, cb: (bc: BotController) => void \| string \| Promise\<void \| string\> \| false                                               | Bot                            | Обработчик события платформы (фото, голосовое, callback, start и др.). Вызывается до шагов и команд; `false` — передать запрос обычному конвейеру                                                       |
-| removeEvent              | eventType: TEventType                                                                                                                                | Bot                            | Удаление всех обработчиков события                                                                                                                                                                      |
-| clearEvents              | -                                                                                                                                                    | Bot                            | Удаление всех событийных обработчиков                                                                                                                                                                   |
-| removeCommand            | commandName: string                                                                                                                                  | Bot                            | Удаление команды по имени                                                                                                                                                                               |
-| clearCommands            | -                                                                                                                                                    | Bot                            | Удаление всех команд                                                                                                                                                                                    |
-| addStep                  | stepName: string, handler: IStepParam['cb']                                                                                                          | Bot                            | Регистрация шага (цепочки диалога)                                                                                                                                                                      |
-| removeStep               | stepName: string                                                                                                                                     | Bot                            | Удаление шага по имени                                                                                                                                                                                  |
-| clearSteps               | -                                                                                                                                                    | Bot                            | Удаление всех шагов                                                                                                                                                                                     |
-| addForm                  | formName: string, options: IAddFormOptions                                                                                                           | Bot                            | Регистрация многошаговой формы с валидацией полей                                                                                                                                                       |
-| removeForm               | formName: string                                                                                                                                     | Bot                            | Удаление формы и всех её шагов                                                                                                                                                                          |
-| use                      | fn: MiddlewareFn \| platform: TAppType, fn: MiddlewareFn \| plugin: TPlugin                                                                          | Bot                            | Подключение middleware или плагина                                                                                                                                                                      |
-| clearUse                 | -                                                                                                                                                    | Bot                            | Удаление всех платформ, плагинов и middleware                                                                                                                                                           |
-| setCustomCommandResolver | resolver: TCommandResolver                                                                                                                           | Bot                            | Установка кастомного резолвера команд                                                                                                                                                                   |
-| setCommandGroupMode      | mode: TCommandGroupMode                                                                                                                              | Bot                            | Режим группировки RegExp                                                                                                                                                                                |
-| setPlatformResolver      | resolver: TPlatformResolver                                                                                                                          | Bot                            | Установка функции определения платформы                                                                                                                                                                 |
-| setLogger                | logger: ILogger \| null                                                                                                                              | Bot                            | Установка кастомного логгера (null — отключить)                                                                                                                                                         |
-| getAppContext            | -                                                                                                                                                    | AppContext                     | Получение контекста приложения                                                                                                                                                                          |
-| setContent               | content: TBotContent (`object \| string \| null`)                                                                                                    | void                           | Установка содержимого запроса (для тестирования)                                                                                                                                                        |
-| run                      | appType?: TAppType \| null, content?: string \| object \| null, auth?: TBotAuth, clientIp?: string                                                   | Promise\<TRunResult\>          | Обработка входящего запроса. Все параметры имеют дефолты (`null`), т.е. вызов без аргументов валиден. `clientIp` доступен middleware через `controller.platformOptions.clientIp` (например, `ipFilter`) |
-| webhookHandle            | req: IncomingMessage, res: ServerResponse, responseCb?: TBotResponseCb                                                                               | Promise\<void\>                | Обработчик HTTP-запроса (для Express/Fastify интеграции)                                                                                                                                                |
-| webhookEvent             | data: string \| object \| null, headers?: Record\<string, unknown\>, clientIp?: string                                                               | Promise\<IWebhookEventResult\> | Обработка события serverless-платформы (Yandex Cloud Functions, AWS Lambda) с проверкой подписи вебхука. Возвращает `{ statusCode, body }` для возврата из cloud-функции                                |
-| start                    | hostname?: string, port?: number, responseCb?: TBotResponseCb                                                                                        | Server                         | Запуск HTTP-сервера (возвращает экземпляр Server)                                                                                                                                                       |
-| startPolling             | options?: IPollingOptions (`{ platforms?: TAppType[] }`)                                                                                             | Promise\<void\>                | Запуск long polling (Telegram, VK, MAX) вместо вебхука. Промис выполняется после остановки; отклоняется, если ни один адаптер не поддерживает polling                                                   |
-| stopPolling              | -                                                                                                                                                    | Promise\<void\>                | Остановка long polling: обрывает текущие запросы обновлений и ждёт обработки уже полученных                                                                                                             |
-| close                    | -                                                                                                                                                    | Promise\<void\>                | Остановка HTTP-сервера и long polling, очистка ресурсов                                                                                                                                                 |
-| send                     | userId: string \| number, controllerOrText: BotController \| string, platform: TAppType                                                              | Promise\<unknown \| boolean\>  | Отправка сообщения пользователю (для платформ с поддержкой)                                                                                                                                             |
+| Метод                    | Параметры                                                                                                                                                                | Возвращаемое значение          | Описание                                                                                                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| setAppConfig             | config: Partial\<IAppConfig\>                                                                                                                                            | Bot                            | Установка конфигурации приложения                                                                                                                                                                       |
+| setAppMode               | mode: TAppMode (`'dev' \| 'prod' \| 'strict_prod'`)                                                                                                                      | Bot                            | Установка режима работы                                                                                                                                                                                 |
+| setPlatformParams        | params: IAppParam                                                                                                                                                        | Bot                            | Установка параметров платформы                                                                                                                                                                          |
+| initBotController        | controller: TBotControllerClass                                                                                                                                          | Bot                            | Подключение класса контроллера                                                                                                                                                                          |
+| addCommand               | commandName: string, slots: TSlots, cb: (userCommand: string, bc: BotController) => void \| string \| Promise\<void \| string\>, isPattern?: boolean                     | Bot                            | Регистрация команды                                                                                                                                                                                     |
+| addAction                | actionName: string, cb: (userCommand: string, bc: BotController) => void \| string \| Promise\<void \| string\>                                                          | Bot                            | Обработчик нажатия кнопки с payload `name` (`'buy'`, `{"action":"buy"}`, `{"command":"buy"}`) и текста, равного имени. На подстроку не срабатывает                                                      |
+| defineAction             | actionName: string                                                                                                                                                       | IButtonAction\<TData\>         | Действие кнопки с данными: `addBtn(buttons, title, data)` создаёт кнопку, `handle((data, ctx) => ...)` получает разобранные данные                                                                      |
+| defineMenu               | menuName: string, options: IMenuOptions                                                                                                                                  | IMenu                          | Меню из экранов: кнопки-переходы, «Назад», переход по нажатию и по названию кнопки; `menu.show(ctx, screen?)`                                                                                           |
+| addEvent                 | eventType: TEventType, cb: (bc: BotController) => void \| string \| Promise\<void \| string\> \| false                                                                   | Bot                            | Обработчик события платформы (фото, голосовое, callback, start и др.). Вызывается до шагов и команд; `false` — передать запрос обычному конвейеру                                                       |
+| removeEvent              | eventType: TEventType                                                                                                                                                    | Bot                            | Удаление всех обработчиков события                                                                                                                                                                      |
+| clearEvents              | -                                                                                                                                                                        | Bot                            | Удаление всех событийных обработчиков                                                                                                                                                                   |
+| removeCommand            | commandName: string                                                                                                                                                      | Bot                            | Удаление команды по имени                                                                                                                                                                               |
+| clearCommands            | -                                                                                                                                                                        | Bot                            | Удаление всех команд                                                                                                                                                                                    |
+| addStep                  | stepName: string, handler: IStepParam['cb']                                                                                                                              | Bot                            | Регистрация шага (цепочки диалога)                                                                                                                                                                      |
+| removeStep               | stepName: string                                                                                                                                                         | Bot                            | Удаление шага по имени                                                                                                                                                                                  |
+| clearSteps               | -                                                                                                                                                                        | Bot                            | Удаление всех шагов                                                                                                                                                                                     |
+| addForm                  | formName: string, options: IAddFormOptions                                                                                                                               | Bot                            | Регистрация многошаговой формы: варианты-кнопки, пропуск, проверка и преобразование ответа, выход по чужой кнопке                                                                                       |
+| startForm                | ctx: BotController, formName: string, context?: TFormContext                                                                                                             | boolean                        | Запуск формы: первый вопрос с кнопками; `context` доступен в `prompt` и `onComplete`                                                                                                                    |
+| removeForm               | formName: string                                                                                                                                                         | Bot                            | Удаление формы и всех её шагов                                                                                                                                                                          |
+| use                      | fn: MiddlewareFn \| platform: TAppType, fn: MiddlewareFn \| plugin: TPlugin                                                                                              | Bot                            | Подключение middleware или плагина                                                                                                                                                                      |
+| clearUse                 | -                                                                                                                                                                        | Bot                            | Удаление всех платформ, плагинов и middleware                                                                                                                                                           |
+| setCustomCommandResolver | resolver: TCommandResolver                                                                                                                                               | Bot                            | Установка кастомного резолвера команд                                                                                                                                                                   |
+| setCommandGroupMode      | mode: TCommandGroupMode                                                                                                                                                  | Bot                            | Режим группировки RegExp                                                                                                                                                                                |
+| setPlatformResolver      | resolver: TPlatformResolver                                                                                                                                              | Bot                            | Установка функции определения платформы                                                                                                                                                                 |
+| setLogger                | logger: ILogger \| null                                                                                                                                                  | Bot                            | Установка кастомного логгера (null — отключить)                                                                                                                                                         |
+| getAppContext            | -                                                                                                                                                                        | AppContext                     | Получение контекста приложения                                                                                                                                                                          |
+| setContent               | content: TBotContent (`object \| string \| null`)                                                                                                                        | void                           | Установка содержимого запроса (для тестирования)                                                                                                                                                        |
+| run                      | appType?: TAppType \| null, content?: string \| object \| null, auth?: TBotAuth, clientIp?: string                                                                       | Promise\<TRunResult\>          | Обработка входящего запроса. Все параметры имеют дефолты (`null`), т.е. вызов без аргументов валиден. `clientIp` доступен middleware через `controller.platformOptions.clientIp` (например, `ipFilter`) |
+| webhookHandle            | req: IncomingMessage, res: ServerResponse, responseCb?: TBotResponseCb                                                                                                   | Promise\<void\>                | Обработчик HTTP-запроса (для Express/Fastify интеграции)                                                                                                                                                |
+| webhookEvent             | data: string \| object \| null, headers?: Record\<string, unknown\>, clientIp?: string                                                                                   | Promise\<IWebhookEventResult\> | Обработка события serverless-платформы (Yandex Cloud Functions, AWS Lambda) с проверкой подписи вебхука. Возвращает `{ statusCode, body }` для возврата из cloud-функции                                |
+| start                    | hostname?: string, port?: number, responseCb?: TBotResponseCb                                                                                                            | Server                         | Запуск HTTP-сервера (возвращает экземпляр Server)                                                                                                                                                       |
+| startPolling             | options?: IPollingOptions (`{ platforms?: TAppType[] }`)                                                                                                                 | Promise\<void\>                | Запуск long polling (Telegram, VK, MAX) вместо вебхука. Промис выполняется после остановки; отклоняется, если ни один адаптер не поддерживает polling                                                   |
+| stopPolling              | -                                                                                                                                                                        | Promise\<void\>                | Остановка long polling: обрывает текущие запросы обновлений и ждёт обработки уже полученных                                                                                                             |
+| connect                  | -                                                                                                                                                                        | Promise\<boolean\>             | Подключение к БД и `ensureSchema()` без входящего запроса (cron, скрипты); после него `close()` закрывает БД                                                                                            |
+| close                    | -                                                                                                                                                                        | Promise\<void\>                | Остановка HTTP-сервера и long polling, очистка ресурсов                                                                                                                                                 |
+| send                     | userId: string \| number, controllerOrText: BotController \| string \| ISendMessage, platform: TAppType                                                                  | Promise\<unknown \| boolean\>  | Отправка сообщения пользователю первым (Telegram, VK, MAX, Viber). `false` — не доставлено (ошибка API, сеть, таймаут) или платформа без рассылок; иначе `'ok'`                                         |
+| broadcast                | userIds: (string \| number)[], message: string \| ISendMessage \| ((userId) => BotController \| string \| ISendMessage), platform: TAppType, options?: IBroadcastOptions | Promise\<IBroadcastResult\>    | Рассылка многим получателям с лимитом платформы; `{ sent, failed }` и `onResult(userId, ok)` по каждому                                                                                                 |
+
+#### Сообщения вне ответа: `send`, `broadcast`, `connect`
+
+Ответ на входящее сообщение — это `ctx.text`/`ctx.buttons` в обработчике. Написать пользователю **первым**
+(уведомление сопернику, напоминание, рассылка) можно только на чат-платформах — Telegram, VK, MAX, Viber; Алиса,
+Маруся и SmartApp сообщения без запроса не принимают, и `send` для них возвращает `false`.
+
+```ts
+// Сообщение для send/broadcast без сборки контроллера
+interface ISendMessage {
+    text: string;
+    tts?: string;
+    buttons?: (string | ISendButton)[]; // строка — обычная кнопка с этим текстом
+}
+
+interface ISendButton {
+    title: string;
+    url?: string;
+    payload?: TButtonPayload; // например, action.payload(data) из defineAction
+    options?: IButtonOptions;
+}
+
+interface IBroadcastOptions {
+    // после каждой отправки: прогресс, отметка в БД; ошибка в нём не прерывает рассылку
+    onResult?: (userId: string | number, ok: boolean) => void | Promise<void>;
+}
+
+interface IBroadcastResult {
+    sent: (string | number)[]; // доставлено
+    failed: (string | number)[]; // не доставлено: заблокировал бота, неверный id, сбой сети
+}
+```
+
+```ts
+import { T_TELEGRAM } from 'umbot/plugins';
+
+// Одному пользователю — из обработчика другого пользователя или из скрипта
+const ok = await bot.send(opponentId, { text: 'Ваш ход', buttons: ['Сдаться'] }, T_TELEGRAM);
+if (ok === false) {
+    // не доставлено — например, соперник заблокировал бота
+}
+
+// Многим — с лимитом платформы (Telegram 30 сообщений/с, VK 20, MAX 30)
+const { sent, failed } = await bot.broadcast(userIds, 'Вышел новый выпуск', T_TELEGRAM);
+```
+
+- `userId` — тот же id, что `ctx.userId` в обработчиках этой платформы (храните его вместе с платформой).
+- Карточки и звуки отправляются контроллером: `bot.send(userId, controller, platform)` или фабрикой в `broadcast`.
+- Вне HTTP-сервера (задача cron, скрипт) сначала вызовите `await bot.connect()`, если нужна БД, и в конце
+  `await bot.close()`. Готовый скрипт — в рецептах, «Рассылка по расписанию»; где запускать такие задачи — в
+  [Развертывании](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/deployment#фоновые-задачи-cron-таймеры-рассылки).
+
+Подробности о доставке, лимитах и очереди отправки — в
+[Интеграции с платформами](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration#активные-рассылки-метод-send).
 
 #### Минимальный набор для запуска
 
@@ -309,6 +368,7 @@ interface IAppConfig {
     memorySession?: IMemorySessionConfig | false; // Сессия userData в памяти процесса (платформы без localStorage, без БД)
     env?: string; // Путь к .env файлу или 'local' для process.env
     tokens?: ITokenPlatform; // Токены платформ (telegram, vk и др.)
+    dbTables?: readonly IDbTableSchema[]; // Таблицы своих моделей: создаются ensureSchema() после подключения к БД
 }
 ```
 
@@ -427,19 +487,19 @@ const ALL_EVENT_TYPES: readonly TEventType[]; // перечень всех 17 у
 function isEventType(event: string): event is TEventType; // true, если имя события известно фреймворку
 ```
 
-Поддержка объявляется самим адаптером (поле `supportedEvents`): Telegram — медиа/callback/inline/edited/каналы; VK — message/callback; MAX — message/callback/start/edited; Viber — медиа-типы/start/subscribed/unsubscribed; Алиса — message/auth; SmartApp — message/start/rating; Маруся — message/auth. Обработчик просто не вызывается там, где событие физически невозможно — мультиплатформенный бот не ломается. Кастомная платформа (`BasePlatform`) объявляет собственный `supportedEvents` и автоматически участвует в валидации: `bot.addEvent` предупреждает, если событие не поддерживает ни один подключённый адаптер (обработчик при этом регистрируется и заработает после подключения нужной платформы).
+Поддержка объявляется самим адаптером (поле `supportedEvents`): Telegram — медиа/callback/inline/edited/каналы/start; VK — message/callback/start; MAX — message/callback/start/edited; Viber — медиа-типы/start/subscribed/unsubscribed; Алиса — message/auth; SmartApp — message/start/rating; Маруся — message/auth. Обработчик просто не вызывается там, где событие физически невозможно — мультиплатформенный бот не ломается. Кастомная платформа (`BasePlatform`) объявляет собственный `supportedEvents` и автоматически участвует в валидации: `bot.addEvent` предупреждает, если событие не поддерживает ни один подключённый адаптер (обработчик при этом регистрируется и заработает после подключения нужной платформы).
 
 Сводная таблица `supportedEvents` по адаптерам (значения — из `supportedEvents` в коде адаптеров):
 
-| Платформа | `supportedEvents`                                                                                                                          |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Telegram  | `message`, `photo`, `voice`, `video`, `document`, `location`, `contact`, `sticker`, `callback`, `inline`, `message_edited`, `channel_post` |
-| VK        | `message`, `callback`                                                                                                                      |
-| MAX       | `message`, `callback`, `start`, `message_edited`                                                                                           |
-| Viber     | `message`, `photo`, `video`, `document`, `contact`, `location`, `sticker`, `start`, `subscribed`, `unsubscribed`                           |
-| Алиса     | `message`, `auth`                                                                                                                          |
-| Маруся    | `message`, `auth`                                                                                                                          |
-| SmartApp  | `message`, `start`, `rating`                                                                                                               |
+| Платформа | `supportedEvents`                                                                                                                                   |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Telegram  | `message`, `photo`, `voice`, `video`, `document`, `location`, `contact`, `sticker`, `callback`, `inline`, `message_edited`, `channel_post`, `start` |
+| VK        | `message`, `callback`, `start`                                                                                                                      |
+| MAX       | `message`, `callback`, `start`, `message_edited`                                                                                                    |
+| Viber     | `message`, `photo`, `video`, `document`, `contact`, `location`, `sticker`, `start`, `subscribed`, `unsubscribed`                                    |
+| Алиса     | `message`, `auth`                                                                                                                                   |
+| Маруся    | `message`, `auth`                                                                                                                                   |
+| SmartApp  | `message`, `start`, `rating`                                                                                                                        |
 
 ```ts
 // Фото от пользователя — без ручного разбора requestObject
@@ -473,9 +533,31 @@ class MyController extends BotController {
 - `async`-обработчики поддерживаются, фреймворк дожидается результата;
 - несколько обработчиков одного события идут по порядку регистрации до первого не-`false`.
 
+#### Ссылка-приглашение (событие `start`)
+
+Открытие бота по ссылке с параметром (код комнаты, реферальная метка) приходит событием `start`, параметр — в
+`ctx.payload` строкой с исходным регистром:
+
+| Платформа | Ссылка                                        | Когда приходит `start`                                                                   |
+| --------- | --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Telegram  | `t.me/<бот>?start=<параметр>`                 | сообщение `/start <параметр>` (`userCommand` остаётся `'/start <параметр>'`)             |
+| VK        | `vk.me/<сообщество>?ref=<параметр>`           | первое сообщение после перехода по ссылке (поле `ref`; `ref_source` — в `requestObject`) |
+| MAX       | `max.ru/<бот>?start=<параметр>`               | нажатие «Начать» (`bot_started`); без параметра в ссылке `payload` — `null`              |
+| Viber     | `viber://pa?chatURI=<бот>&context=<параметр>` | открытие диалога (`conversation_started`); без параметра `payload` — `null`              |
+
+`/start` без параметра в Telegram и сообщение без `ref` в VK остаются обычными сообщениями (`message`). Если обработчик
+`start` вернул `false`, запрос идёт дальше по конвейеру: в Telegram срабатывают команды по тексту `/start`.
+
+```ts
+bot.addEvent('start', (ctx) => {
+    if (typeof ctx.payload !== 'string' || !ctx.payload) return false; // «Начать» без параметра
+    ctx.text = `Вы вошли в комнату ${ctx.payload}`;
+});
+```
+
 ### Действия кнопок (`addAction`)
 
-Обработчик нажатия callback-кнопки по её payload — как `bot.action()` у конкурентов. Кнопка создаётся с payload (`buttons.addBtn('Купить', '', 'buy')`), адаптеры Telegram/VK/MAX нормализуют payload в имя команды:
+Обработчик нажатия кнопки по её payload — как `bot.action()` у конкурентов. Кнопка создаётся с payload (`buttons.addBtn('Купить', '', 'buy')`), адаптеры Telegram, VK, MAX и Алисы нормализуют payload `'buy'`, `{"action":"buy"}` или `{"command":"buy"}` в имя действия:
 
 ```ts
 bot.addCommand('catalog', ['каталог'], (_, ctx) => {
@@ -490,7 +572,99 @@ bot.addAction('buy', (_, ctx) => {
 });
 ```
 
-На платформах без callback-кнопок (Алиса, Маруся) кнопки отправляют текст, который матчится штатным слотом — обработчик не требуется.
+Действие срабатывает на нажатие кнопки и на текст, **равный** имени действия (голосовые платформы), но не на подстроку:
+сообщение «хочу buyer» действие `buy` не вызовет. Поэтому имена действий не нужно делать уникальными префиксами. Если
+одно и то же имя зарегистрировано и командой, и действием, побеждает зарегистрированное раньше.
+
+#### Кнопки с данными (`defineAction`)
+
+Когда кнопка несёт данные (id комнаты, вариант, страницу), опишите действие один раз — как `CallbackData` в aiogram:
+описание создаёт кнопки и регистрирует обработчик, который получает данные уже разобранными (payload без поля `action`).
+
+```ts
+const kick = bot.defineAction<{ p: string }>('kick');
+
+kick.handle((data, ctx) => {
+    ctx.text = `Участник ${data.p} исключён`;
+});
+
+bot.addCommand('members', ['участники'], (_, ctx) => {
+    ctx.text = 'Участники комнаты:';
+    for (const member of members) {
+        kick.addBtn(ctx.buttons, `Исключить ${member.name}`, { p: member.id });
+    }
+});
+
+// Payload для card.addButton и других мест: kick.payload({ p: 'u7' }) -> { action: 'kick', p: 'u7' }
+```
+
+Данные хранятся в самой кнопке: Telegram принимает payload до 64 байт, VK — до 255. Если payload длиннее 64 байт
+и подключён Telegram, `addBtn` пишет предупреждение в лог — сократите данные (короткие ключи, id вместо названий).
+
+#### Меню из экранов (`defineMenu`)
+
+Меню «Главная → Раздел → Назад» описывается таблицей экранов. `menu.show(ctx, экран)` выводит текст экрана, его
+кнопки и «Назад» (если у экрана есть `parent`).
+
+```ts
+interface IMenuOptions<TBotController> {
+    screens: Record<string, IMenuScreen<TBotController>>; // экраны по именам
+    start?: string; // экран по умолчанию; без поля — первый в screens
+    backText?: string; // текст кнопки возврата (по умолчанию 'Назад')
+}
+
+interface IMenuScreen<TBotController> {
+    text: string | ((ctx: TBotController) => string);
+    buttons?: IMenuButton[]; // в порядке показа
+    parent?: string; // куда ведёт «Назад»; без поля кнопки нет
+    onShow?: (ctx: TBotController) => void | Promise<void>; // после текста и кнопок: карточки, Navigation, форма
+}
+
+interface IMenuButton {
+    title: string;
+    to?: string; // переход на экран
+    url?: string; // кнопка-ссылка
+    payload?: TButtonPayload; // другое действие, например buy.payload({ id: 7 })
+}
+
+interface IMenu<TBotController> {
+    readonly name: string;
+    show(ctx: TBotController, screen?: string): void | Promise<void>; // без screen или для неизвестного — start
+    payload(screen: string): Record<string, unknown>; // кнопка перехода вне меню
+}
+```
+
+```ts
+const menu = bot.defineMenu('main', {
+    screens: {
+        home: {
+            text: 'Чем помочь?',
+            buttons: [
+                { title: 'Тарифы', to: 'prices' },
+                { title: 'Сайт', url: 'https://example.com' },
+            ],
+        },
+        prices: { text: 'Базовый — 0 ₽, Премиум — 299 ₽', parent: 'home' },
+    },
+});
+
+bot.addCommand('menu', ['меню', '/start'], (_, ctx) => menu.show(ctx));
+```
+
+Как работает переход:
+
+- **Нажатие кнопки** — экран записан в payload кнопки (`{ action: '__menu_<имя>', s: экран }`), поэтому нажатие
+  срабатывает на любой платформе и в любой момент, даже если пользователь между нажатиями писал другое.
+- **Название кнопки текстом или голосом** — `show` ставит `thisIntentName` на шаг экрана (`__menu_<имя>_<экран>`), и
+  следующая реплика сначала сравнивается с кнопками этого экрана (без учёта регистра). Не совпала — шаг возвращает
+  `false`, и запрос уходит обычным командам. Кнопки `url` и `payload` по названию не срабатывают.
+- `onShow` вызывается после того, как задан шаг экрана, поэтому может перевести диалог дальше (`bot.startForm(...)`,
+  свой `thisIntentName`). Если `onShow` асинхронный, верните результат `show` из обработчика — фреймворк его дождётся.
+
+`userData` меню не использует: текущий экран хранится в `oldIntentName`, как у обычных шагов. При регистрации
+`defineMenu` предупреждает о переходах на несуществующие экраны и, при подключённом Telegram, о payload
+длиннее 64 байт (его лимит) — держите имена меню и экранов короткими. Внутренние имена `__menu_<имя>` (действие) и
+`__menu_<имя>_<экран>` (шаги) не используйте для своих команд и шагов.
 
 ### Группы регулярных выражений (`match`)
 
@@ -538,25 +712,41 @@ bot.addAction('buy', async (_, ctx) => {
 
 ### Формы (`addForm`)
 
-Многошаговая форма — обёртка над шагами: каждое поле становится отдельным шагом, ответы собираются в объект и передаются в `onComplete`.
+Многошаговая форма — обёртка над шагами: каждое поле становится отдельным шагом, ответы собираются в объект и передаются в `onComplete`. Запускайте форму через `bot.startForm(ctx, name, context?)`: он задаёт первый вопрос с кнопками и передаёт контекст (например, id комнаты) в `prompt` и `onComplete`.
 
 ```ts
 // Одно поле формы
 interface IAddFormField<TBotController extends BotController = BotController> {
     name: string; // Ключ поля в объекте ответов
-    prompt: string | ((ctx: TBotController) => string); // Вопрос пользователю
+    prompt: string | ((ctx: TBotController, context: TFormContext) => string); // Вопрос пользователю
+    options?: string[]; // Варианты — кнопками; ответ должен совпасть с одним из них (без учёта регистра)
+    optional?: boolean; // Кнопка «Пропустить»; пропущенного поля нет в ответах
     // true — принято; false — повторить prompt; string — текст ошибки пользователю
     validate?: (value: string) => boolean | string | Promise<boolean | string>;
+    // Преобразование ответа: { value } — в ответы попадёт value; { error } — вопрос повторяется
+    parse?: (value: string, ctx: TBotController) => TFormParseResult | Promise<TFormParseResult>;
 }
 
 // Параметры addForm
-interface IAddFormOptions<TBotController extends BotController = BotController> {
+interface IAddFormOptions<TBotController, TAnswers = Record<string, string>> {
     fields: IAddFormField<TBotController>[]; // Поля, обрабатываются последовательно
-    onComplete: (ctx: TBotController, answers: Record<string, string>) => void | Promise<void>; // Вызывается после заполнения всех полей
+    // Вызывается после заполнения всех полей; context — из startForm ({} без него)
+    onComplete: (
+        ctx: TBotController,
+        answers: TAnswers,
+        context: TFormContext,
+    ) => void | Promise<void>;
     cancelText?: string; // Текст при отмене (по умолчанию 'Форма отменена.')
     cancelCommands?: string[]; // Команды отмены (по умолчанию ['отмена', 'cancel'])
+    skipText?: string; // Кнопка пропуска (по умолчанию 'Пропустить')
+    invalidOptionText?: string; // Ответ не из options (по умолчанию 'Выберите один из вариантов.')
+    // Callback-кнопка или текст, равный команде (не вариант ответа), — выход из формы,
+    // запрос уходит обычному конвейеру. Без опции такой ввод — ответ на вопрос
+    escape?: boolean;
 }
 ```
+
+Порядок проверки ответа: команда отмены → выход по `escape` → пропуск → `options` → `validate` → `parse`.
 
 ```ts
 bot.addForm('registration', {
@@ -574,7 +764,33 @@ bot.addForm('registration', {
 });
 ```
 
-> Промежуточные ответы хранятся в `userData.__formdata_<имя>`. После заполнения или отмены формы
+```ts
+bot.addForm<BotController, { guests: number; time?: string }>('booking', {
+    escape: true, // кнопка «Меню» посреди формы выходит из неё
+    fields: [
+        {
+            name: 'guests',
+            prompt: (_ctx, context) => `Комната ${context.roomId}. Сколько гостей?`,
+            parse: (v) =>
+                Number.isInteger(+v) && +v > 0 ? { value: +v } : { error: 'Нужно целое число' },
+        },
+        { name: 'time', prompt: 'Во сколько?', options: ['Утро', 'Вечер'], optional: true },
+    ],
+    onComplete: (ctx, answers, context) => {
+        ctx.text = `Бронь в комнате ${context.roomId}: ${answers.guests} гостей, ${answers.time ?? 'время любое'}`;
+    },
+});
+
+const book = bot.defineAction<{ room: string }>('book');
+book.handle((data, ctx) => {
+    bot.startForm(ctx, 'booking', { roomId: data.room });
+});
+```
+
+Значения `parse` и контекст хранятся в `userData` до конца формы, поэтому должны сериализоваться в JSON (дату
+возвращайте строкой ISO).
+
+> Промежуточные ответы хранятся в `userData.__formdata_<имя>`, контекст — в `userData.__formctx_<имя>`. После заполнения или отмены формы
 > поле получает значение `null`, а не удаляется: Алиса убирает поле из `user_state_update` только
 > при значении `null`, удалённое через `delete` поле осталось бы в состоянии пользователя.
 
@@ -845,9 +1061,64 @@ class RatingController extends BotController {
 | `logWarn(msg, meta?, options?)` | Логирование предупреждений. `options.stderr: true` — вне `dev` и без своего логгера дублировать в stderr (для предупреждений, которые нельзя пропустить) |
 | `logMetric(name, value, label)` | Логирование метрик                                                                                                                                       |
 
+### Request
+
+HTTP-клиент, которым фреймворк ходит в API платформ. Им же удобно ходить во внешние API из обработчиков: у него
+таймаут по умолчанию, он не бросает исключений и идёт через `appContext.httpClient` — запросы подменяются в тестах
+одним моком (см. [Кастомизация HTTP-слоя](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/http-client)).
+
+```ts
+import { Request } from 'umbot';
+
+bot.addCommand('weather', ['погода'], async (_, ctx) => {
+    const request = new Request(ctx.appContext);
+    request.get = { city: 'moscow' }; // → ?city=moscow
+    const res = await request.send<{ temp: number }>('https://api.weather.example.com/current');
+    ctx.text = res.status && res.data ? `Сейчас ${res.data.temp}°C` : 'Не удалось узнать погоду';
+});
+```
+
+#### Поля (настройка одного вызова)
+
+| Поле               | Тип                                           | По умолчанию | Описание                                                                                                                    |
+| ------------------ | --------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `url`              | `string \| null`                              | `null`       | Адрес; можно передать в `send(url)`                                                                                         |
+| `get`              | `Record<string, string> \| null`              | `null`       | Параметры строки запроса (кодируются)                                                                                       |
+| `post`             | `Record<string, unknown> \| FormData \| null` | `null`       | Тело: объект уходит JSON (`Content-Type: application/json` подставляется сам), `FormData` — multipart. С телом метод — POST |
+| `postInString`     | `string \| null`                              | `null`       | Тело готовой строкой (приоритетнее `post`)                                                                                  |
+| `header`           | `HeadersInit \| null`                         | `null`       | Заголовки (`Authorization` и т.п.)                                                                                          |
+| `customRequest`    | `string \| null`                              | `null`       | Свой HTTP-метод: `'PUT'`, `'DELETE'`, …                                                                                     |
+| `attach`           | `string \| null`                              | `null`       | Путь к файлу для multipart-загрузки (или содержимое при `isAttachContent: true`)                                            |
+| `attachName`       | `string`                                      | `'file'`     | Имя поля файла                                                                                                              |
+| `isAttachContent`  | `boolean`                                     | `false`      | `attach` — содержимое файла, а не путь                                                                                      |
+| `isConvertJson`    | `boolean`                                     | `true`       | Разобрать ответ как JSON; `false` — текст (или `ArrayBuffer` при `isBinaryResponse`)                                        |
+| `isBinaryResponse` | `boolean`                                     | `false`      | Вернуть ответ как `ArrayBuffer` (при `isConvertJson: false`)                                                                |
+| `signal`           | `AbortSignal \| null`                         | `null`       | Внешняя отмена, действует вместе с таймаутом                                                                                |
+| `maxTimeQuery`     | `number \| null`                              | `2000`       | Таймаут, мс. **Сохраняется** между вызовами — это настройка клиента                                                         |
+
+Все поля, кроме `maxTimeQuery`, сбрасываются после `send()`: один экземпляр можно переиспользовать, настройки одного
+запроса не попадут в следующий. Редиректы не выполняются (`redirect: 'manual'`).
+
+#### Методы
+
+| Метод                            | Возвращает                  | Описание                                                                                                                 |
+| -------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `send<T>(url?)`                  | `Promise<IRequestSend<T>>`  | Выполняет запрос. Не бросает: `{ status: true, data }` или `{ status: false, data: null, err, httpStatus?, errorBody? }` |
+| `getError()`                     | `Error \| string \| null`   | Ошибка последнего запроса                                                                                                |
+| `getAttachFile(filePath, name?)` | `Promise<FormData \| null>` | `FormData` с файлом — для `post`                                                                                         |
+
+`httpStatus` и `errorBody` (до 1000 символов) есть, только если сервер ответил не 2xx: по ним отличают 429 от 400.
+При таймауте и сетевой ошибке их нет. Подробнее — [Кастомизация HTTP-слоя](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/http-client#результат-запроса-при-ошибке).
+
+> Таймаут 2 с по умолчанию выбран под голосовые платформы, где на весь ответ около 3 с. Для чат-ботов и фоновых
+> задач увеличьте `maxTimeQuery`, но не снимайте его совсем: зависший внешний API не должен держать обработчик.
+
 ### Navigation
 
-Компонент для постраничной навигации по спискам и меню.
+Компонент для постраничной навигации по спискам. Это пагинация одного списка, а не переходы между экранами меню —
+для меню «раздел → подраздел → назад» есть [`bot.defineMenu`](#меню-из-экранов-definemenu); список можно показать
+внутри экрана меню через `onShow`. Экземпляр не хранит состояние между запросами: номер страницы сохраняйте в
+`userData` и восстанавливайте в `thisPage` (рецепт «Пагинация»).
 
 ```ts
 import { Navigation } from 'umbot';
@@ -1098,15 +1369,51 @@ if (await score.whereOne({ userId: score.state.userId })) {
 
 #### Методы Model
 
-| Метод                   | Описание                                       |
-| ----------------------- | ---------------------------------------------- |
-| `add()`                 | Вставка новой записи                           |
-| `update()`              | Обновление текущей записи                      |
-| `remove()`              | Удаление записи                                |
-| `whereOne(where?)`      | Поиск одной записи по условиям                 |
-| `where(where?, isOne?)` | Поиск записей по условиям                      |
-| `query(callback)`       | Сырой запрос к БД                              |
-| `save(isNew?)`          | Сохранение (add если isNew=true, иначе update) |
+| Метод                   | Возвращает           | Описание                                                                                       |
+| ----------------------- | -------------------- | ---------------------------------------------------------------------------------------------- |
+| `add()`                 | `Promise<boolean>`   | Вставка новой записи; FileAdapter возвращает `false`, если запись с таким ключом уже есть      |
+| `update()`              | `Promise<boolean>`   | Обновление записи по ключу из `state`                                                          |
+| `remove()`              | `Promise<boolean>`   | Удаление записи по ключу из `state`                                                            |
+| `whereOne(where?)`      | `Promise<boolean>`   | Поиск одной записи; найденная запись загружается в `state`                                     |
+| `where(where?, isOne?)` | `Promise<IModelRes>` | Поиск записей: `{ status: true, data: строки[] }`; ничего не найдено — `status: false`         |
+| `query(callback)`       | зависит от адаптера  | Сырой запрос драйвером (`(client, db) => ...` у MongoAdapter); у FileAdapter возвращает `null` |
+| `save(isNew?)`          | `Promise<boolean>`   | Сохранение (add если isNew=true, иначе update)                                                 |
+
+#### Условия `where()` / `whereOne()`
+
+Условие — объект «поле: значение»: `where({ userId: '42', status: 'active' })` найдёт записи, у которых **все**
+перечисленные поля равны значениям. Без аргумента возвращаются все записи таблицы. Строка вида
+``'`age`=25 `status`="active"'`` — тот же объект в текстовой записи (числа из строки становятся числами).
+
+Сравнение с диапазоном и списком зависит от адаптера:
+
+| Адаптер              | Точное совпадение   | Операторы (`$gt`, `$lt`, `$in`, `$ne`, `$regex`, `$or` …)                                                                         |
+| -------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `FileAdapter`        | да, строго по `===` | нет: условие с оператором не совпадёт ни с одной записью                                                                          |
+| `MongoAdapter`       | да                  | да — операторы сравнения MongoDB; `$where`, `$function` и незнакомые операторы отклоняются (запрос не выполнится, причина в логе) |
+| внешние (knex, YDB…) | да                  | см. документацию адаптера                                                                                                         |
+
+```ts
+// Траты пользователя за последние 7 дней; expenses — своя модель (как ScoreModel выше) с полем createdAt
+const expenses = new ExpenseModel(ctx.appContext);
+const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+const res = await expenses.where({ userId: String(ctx.userId), createdAt: { $gt: weekAgo } }); // MongoAdapter
+const rows = res.status && Array.isArray(res.data) ? res.data : [];
+
+// То же для любого адаптера: точное условие в БД, остальное — в коде
+const all = await expenses.where({ userId: String(ctx.userId) });
+const recent = (all.status && Array.isArray(all.data) ? all.data : []).filter(
+    (row) => Number(row.createdAt) > weekAgo,
+);
+```
+
+- `FileAdapter` сравнивает и тип: запись с `userId: '42'` не найдётся по `{ userId: 42 }`. Храните id одного типа
+  (строкой — как `ctx.userId` чат-платформ после `String()`).
+- Фильтр в коде годится, пока выборка по точному условию небольшая (записи одного пользователя). Агрегации
+  («топ-10 по рефералам») и выборки по всей большой таблице делайте средствами БД через `query()` — пример для
+  MongoDB есть в JSDoc `Model.query`.
+- Поля из `getUniqueKeys()` добавляются к условию только в `update()`/`remove()` и поиске по ключу; в `where()`
+  указывайте их сами (например, `platform` для `UsersData`).
 
 Если первичный ключ уникален только в паре с другим полем (как `userId` у `UsersData` — в пределах платформы),
 переопределите защищённый метод `getUniqueKeys()`: модель добавит эти поля в условие select/update/remove и передаст
@@ -1305,6 +1612,18 @@ import {
     TBotControllerClass,
     MiddlewareFn,
     MiddlewareNext,
+    ISendMessage,
+    ISendButton,
+    IBroadcastOptions,
+    IBroadcastResult,
+    IButtonAction,
+    IMenu,
+    IMenuOptions,
+    IMenuScreen,
+    IMenuButton,
+    IDbTableSchema,
+    Request,
+    IRequestSend,
 } from 'umbot';
 
 // Платформы и БД-адаптеры

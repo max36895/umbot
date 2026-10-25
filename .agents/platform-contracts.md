@@ -29,7 +29,8 @@
   `Content-Type` is required for requests with a body. Up to 12 attachments per message,
   keyboard up to 30 rows / 7 buttons per row (3 for link/open_app/geo/contact).
   Max 2 callback-ответа в секунду на диалог; отправка в один диалог — не чаще 1 сообщения
-  в 500 мс (реализовано очередью в `MaxRequest` с таймерами `.unref()`).
+  в 500 мс (очередь в `MaxRequest`; таймеры паузы держат процесс — без `unref()`, иначе
+  cron-скрипт без сервера завершался бы до отправки).
 - **VK** — `users.get` документирует только `user_ids` (список через запятую);
   legacy-алиас `user_id` не использовать. У vkpay-кнопки `hash` находится внутри
   `action`, а не на верхнем уровне объекта кнопки; `hash: null` отклоняет всю
@@ -51,6 +52,17 @@
   `payload.items` is required in ANSWER_TO_USER; `pronounceText` has no documented length limit.
 - **Telegram voice** — synthesized OGG/Opus goes via `sendVoice`; `sendAudio` accepts only MP3/M4A.
 - **MAX bot_started** — carries `payload` (deep-link) and must be answered (welcome), not skipped.
+- **Deep-link parameters** (all mapped to the `start` event, parameter in `controller.payload`):
+  Telegram — the text `/start <param>` (`/start@bot <param>` in groups); VK — `message.ref` /
+  `message.ref_source` of the message sent after following `vk.me/<club>?ref=` (verified by the
+  docs and client libraries, not on the live API); Viber — `context` of `conversation_started`
+  (absent unless the link has `&context=`).
+- **Outgoing rate limits** (`sendLimit`, applied only to `bot.send()` / `bot.broadcast()`): Telegram ~30
+  messages/s to different users and ~1/s per chat (Bots FAQ; per-chat limit is not queued — one 429 retry
+  ≤5 s); VK community-token methods 20 requests/s (error 6 otherwise); MAX Bot API 30 rps plus the existing
+  500 ms per-dialog queue; Viber has no documented limit (`sendLimit = null`).
+- **MAX callback payload** — `callback.payload` is a string: an object button payload arrives as
+  JSON and is parsed with `tryParse`, like Telegram `callback_data` and VK `payload`.
 - **MAX buttons** — per the official SDK (`@maxhub/max-bot-api`): `quick` exists only on
   `request_geo_location`, `contact_id`/`web_app` only on `open_app`, `payload` on
   `callback`/`clipboard`/`open_app` (never on `link`). `intent` is absent from current docs and

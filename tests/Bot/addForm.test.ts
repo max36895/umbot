@@ -1,4 +1,4 @@
-import { Bot, BotController } from '../../src';
+import { Bot, BotController, type TFormParseResult } from '../../src';
 
 /**
  * Тесты для addForm — многошаговой формы, добавленной в Bot.
@@ -361,5 +361,192 @@ describe('Bot.addForm', () => {
             const steps = bot.getAppContext().command.steps;
             expect(steps.has('__form_exists_0')).toBe(true); // первая форма осталась
         });
+    });
+});
+
+describe('Bot.startForm и расширенные поля формы', () => {
+    function makeBot(): Bot {
+        const bot = new Bot();
+        bot.setLogger({ log: () => {}, error: () => {}, warn: () => {} });
+        return bot;
+    }
+
+    /** Ответ пользователя на текущий шаг формы (как следующий запрос). */
+    async function reply(bot: Bot, ctx: BotController, text: string): Promise<unknown> {
+        const step = bot.getAppContext().command.steps.get(ctx.thisIntentName as string);
+        ctx.oldIntentName = ctx.thisIntentName;
+        ctx.userCommand = text.toLowerCase();
+        ctx.originalUserCommand = text;
+        ctx.text = '';
+        ctx.buttons.clear();
+        return step?.cb(ctx);
+    }
+
+    const titles = (ctx: BotController): string[] => ctx.buttons.buttons.map((b) => b.title ?? '');
+
+    it('startForm задаёт первый вопрос, контекст доступен в prompt и onComplete', async () => {
+        const bot = makeBot();
+        let completed: unknown = null;
+        bot.addForm('join', {
+            fields: [
+                {
+                    name: 'name',
+                    prompt: (_ctx, context): string => `Комната ${String(context.roomId)}. Имя?`,
+                },
+            ],
+            onComplete: (ctx, answers, context) => {
+                completed = { answers, context };
+            },
+        });
+        const ctx = new BotController(bot.getAppContext());
+        expect(bot.startForm(ctx, 'join', { roomId: 'K7' })).toBe(true);
+        expect(ctx.text).toBe('Комната K7. Имя?');
+        expect(ctx.thisIntentName).toBe('__form_join_0');
+
+        await reply(bot, ctx, 'Анна');
+        expect(completed).toEqual({ answers: { name: 'Анна' }, context: { roomId: 'K7' } });
+        const data = ctx.userData as Record<string, unknown>;
+        expect(data.__formdata_join).toBeNull();
+        expect(data.__formctx_join).toBeNull();
+        expect(ctx.thisIntentName).toBeNull();
+    });
+
+    it('startForm неизвестной формы — false', () => {
+        const bot = makeBot();
+        expect(bot.startForm(new BotController(bot.getAppContext()), 'nope')).toBe(false);
+    });
+
+    it('options: кнопки вариантов, ответ без учёта регистра, неверный вариант — повтор', async () => {
+        const bot = makeBot();
+        let completed: unknown = null;
+        bot.addForm('slot', {
+            fields: [{ name: 'time', prompt: 'Когда?', options: ['Утро', 'Вечер'] }],
+            onComplete: (_ctx, answers) => {
+                completed = answers;
+            },
+        });
+        const ctx = new BotController(bot.getAppContext());
+        bot.startForm(ctx, 'slot');
+        expect(titles(ctx)).toEqual(['Утро', 'Вечер']);
+
+        await reply(bot, ctx, 'ночь');
+        expect(ctx.text).toBe('Выберите один из вариантов.\nКогда?');
+        expect(titles(ctx)).toEqual(['Утро', 'Вечер']);
+        expect(ctx.thisIntentName).toBe('__form_slot_0');
+
+        await reply(bot, ctx, 'вечер');
+        expect(completed).toEqual({ time: 'Вечер' });
+    });
+
+    it('options: вариант со знаками препинания совпадает по исходной реплике', async () => {
+        const bot = makeBot();
+        let completed: unknown = null;
+        bot.addForm('slot2', {
+            fields: [{ name: 'time', prompt: 'Когда?', options: ['Утро, рано', 'Вечер'] }],
+            onComplete: (_ctx, answers) => {
+                completed = answers;
+            },
+        });
+        const ctx = new BotController(bot.getAppContext());
+        bot.startForm(ctx, 'slot2');
+        // Как у Алисы: command без знаков препинания, original_utterance — с ними.
+        ctx.oldIntentName = ctx.thisIntentName;
+        ctx.userCommand = 'утро рано';
+        ctx.originalUserCommand = 'Утро, рано';
+        await bot
+            .getAppContext()
+            .command.steps.get(ctx.thisIntentName as string)
+            ?.cb(ctx);
+        expect(completed).toEqual({ time: 'Утро, рано' });
+    });
+
+    it('optional: кнопка «Пропустить», пропущенного поля нет в ответах', async () => {
+        const bot = makeBot();
+        let completed: unknown = null;
+        bot.addForm('profile', {
+            fields: [
+                { name: 'phone', prompt: 'Телефон?', optional: true },
+                { name: 'name', prompt: 'Имя?' },
+            ],
+            onComplete: (_ctx, answers) => {
+                completed = answers;
+            },
+        });
+        const ctx = new BotController(bot.getAppContext());
+        bot.startForm(ctx, 'profile');
+        expect(titles(ctx)).toEqual(['Пропустить']);
+        await reply(bot, ctx, 'Пропустить');
+        expect(ctx.text).toBe('Имя?');
+        await reply(bot, ctx, 'Олег');
+        expect(completed).toEqual({ name: 'Олег' });
+    });
+
+    it('parse: преобразует ответ, ошибка — повтор вопроса с текстом ошибки', async () => {
+        const bot = makeBot();
+        let completed: unknown = null;
+        bot.addForm<BotController, { guests: number }>('booking', {
+            fields: [
+                {
+                    name: 'guests',
+                    prompt: 'Сколько гостей?',
+                    parse: (v): TFormParseResult =>
+                        +v > 0 ? { value: +v } : { error: 'Нужно число' },
+                },
+            ],
+            onComplete: (_ctx, answers) => {
+                completed = answers;
+            },
+        });
+        const ctx = new BotController(bot.getAppContext());
+        bot.startForm(ctx, 'booking');
+        await reply(bot, ctx, 'много');
+        expect(ctx.text).toBe('Нужно число\nСколько гостей?');
+        await reply(bot, ctx, '3');
+        expect(completed).toEqual({ guests: 3 });
+    });
+
+    it('escape: команда или callback-кнопка вне формы выходит из неё и уходит конвейеру', async () => {
+        const bot = makeBot();
+        bot.addCommand('menu', ['меню'], () => {});
+        bot.addForm('survey', {
+            escape: true,
+            fields: [{ name: 'answer', prompt: 'Ответ?', options: ['Да', 'Нет'] }],
+            onComplete: () => {},
+        });
+        const ctx = new BotController(bot.getAppContext());
+        bot.startForm(ctx, 'survey');
+        expect(await reply(bot, ctx, 'Меню')).toBe(false);
+        expect(ctx.thisIntentName).toBeNull();
+        expect((ctx.userData as Record<string, unknown>).__formdata_survey).toBeNull();
+
+        bot.startForm(ctx, 'survey');
+        ctx.eventType = 'callback';
+        expect(await reply(bot, ctx, 'other_action')).toBe(false);
+        // Вариант ответа формы — не выход, даже если пришёл кнопкой.
+        bot.startForm(ctx, 'survey');
+        expect(await reply(bot, ctx, 'Да')).toBeUndefined();
+    });
+
+    it('без escape команда посреди формы — ответ на вопрос (прежнее поведение)', async () => {
+        const bot = makeBot();
+        bot.addCommand('menu', ['меню'], () => {});
+        let completed: unknown = null;
+        bot.addForm('survey2', {
+            fields: [{ name: 'answer', prompt: 'Ответ?' }],
+            onComplete: (_ctx, answers) => {
+                completed = answers;
+            },
+        });
+        const ctx = new BotController(bot.getAppContext());
+        bot.startForm(ctx, 'survey2');
+        await reply(bot, ctx, 'Меню');
+        expect(completed).toEqual({ answer: 'Меню' });
+    });
+
+    it('removeForm удаляет форму и для startForm', () => {
+        const bot = makeBot();
+        bot.addForm('tmp', { fields: [{ name: 'a', prompt: 'A?' }], onComplete: () => {} });
+        bot.removeForm('tmp');
+        expect(bot.startForm(new BotController(bot.getAppContext()), 'tmp')).toBe(false);
     });
 });

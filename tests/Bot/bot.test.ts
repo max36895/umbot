@@ -216,6 +216,7 @@ describe('Bot', () => {
                     pass: '',
                     user: '',
                 },
+                dbTables: [],
                 tokens: {},
             });
         });

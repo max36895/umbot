@@ -8,6 +8,7 @@ import {
     IControllerApi,
 } from '../../../index';
 import type { TEventType } from '../../../core/events';
+import { isPromise } from '../../../utils/isPromise';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 /**
@@ -111,6 +112,18 @@ export abstract class BasePlatform<TQuery = unknown>
      * Лимит запросов/сек для входящего rateLimiter; null — не ограничивать. Переопределяется адаптером платформы.
      */
     limit: number | null = null;
+
+    /**
+     * Сколько сообщений в секунду отправляет {@link send} (рассылки, `bot.broadcast`); null — без
+     * ограничения. Ответы на входящие запросы не ограничиваются. Переопределяется адаптером по
+     * лимиту платформы и опцией адаптера `send_rate_limit`.
+     */
+    sendLimit: number | null = null;
+
+    /**
+     * Время (мс), с которого можно отправить следующее сообщение через {@link send}.
+     */
+    #nextSendAt = 0;
 
     /**
      * Контекст приложения
@@ -429,7 +442,8 @@ export abstract class BasePlatform<TQuery = unknown>
      * Если платформа не поддерживает возможность начать диалог самостоятельно, то можно оставить метод пустым, либо вывести любую заглушку.
      * @param userId Ид пользователя, которому нужно отправить сообщение
      * @param controllerOrText Контроллер приложения или текст. Если необходимо отправить просто текст, можно передать строку, в случае, если необходимо передать картинку звук и тд, то необходимо корректно заполнить контроллер.
-     * @returns Результат getContent() — ответ в формате платформы (TContent), либо boolean для платформ без рассылки
+     * @returns Результат getContent() — ответ в формате платформы (TContent); `false`, если платформа
+     * не поддерживает рассылку или отклонила отправку (адаптер выставил `platformOptions.sendFailed`)
      *
      * @example
      * ```ts
@@ -450,10 +464,96 @@ export abstract class BasePlatform<TQuery = unknown>
         } else {
             controller = controllerOrText;
         }
-        if (!controller.userId) {
-            controller.userId = userId;
+        const delay = this.#reserveSendSlot();
+        if (delay > 0) {
+            // Таймер без unref(): отправку ждут (cron, рассылка), и процесс не должен
+            // завершиться, пока сообщение стоит в очереди.
+            return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() =>
+                this.#sendNow(controller, userId),
+            ) as TContent;
         }
-        return this.getContent(controller);
+        return this.#sendNow(controller, userId);
+    }
+
+    /**
+     * Резервирует время отправки по лимиту {@link sendLimit}: сообщения идут не чаще лимита,
+     * даже если `send()` вызывают параллельно.
+     * @returns Сколько миллисекунд ждать до отправки (0 — сразу)
+     */
+    #reserveSendSlot(): number {
+        const option = Number(this._platformOptions?.send_rate_limit);
+        const limit = option > 0 ? option : this.sendLimit;
+        if (!limit || limit <= 0) {
+            return 0;
+        }
+        const now = Date.now();
+        const sendAt = Math.max(now, this.#nextSendAt);
+        this.#nextSendAt = sendAt + 1000 / limit;
+        return sendAt - now;
+    }
+
+    /**
+     * Отправляет сообщение (часть {@link send}) и переводит ошибку отправки в `false`.
+     *
+     * Адресат — аргумент `send()`: один контроллер можно по очереди отправить разным людям.
+     * После отправки `userId` и `isProactive` возвращаются прежними: если передан контроллер
+     * текущего запроса, его ответ и `userData` не должны уйти другому пользователю.
+     * @param controller Контроллер сообщения
+     * @param userId Адресат
+     * @returns Результат getContent() или `false`
+     */
+    #sendNow(controller: BotController, userId: string | number): TContent | boolean {
+        const options = controller.platformOptions;
+        const previousUserId = controller.userId;
+        const wasProactive = options.isProactive === true;
+        const restore = (): void => {
+            controller.userId = previousUserId;
+            if (!wasProactive) {
+                delete options.isProactive;
+            }
+        };
+        controller.userId = userId;
+        options.isProactive = true;
+        options.sendFailed = false;
+        let content: TContent;
+        try {
+            content = this.getContent(controller);
+        } catch (e) {
+            restore();
+            throw e;
+        }
+        if (isPromise(content)) {
+            return content.then(
+                (res) => {
+                    restore();
+                    return options.sendFailed ? false : res;
+                },
+                (e: unknown) => {
+                    restore();
+                    throw e;
+                },
+            ) as TContent;
+        }
+        restore();
+        return options.sendFailed ? false : content;
+    }
+
+    /**
+     * Отмечает в контроллере, что платформа отклонила отправку: тогда {@link send} вернёт `false`.
+     * Вызывается в `getContent` с результатом запроса отправки; тело ответа на вебхук не меняется.
+     * @param controller Контроллер ответа
+     * @param result Результат запроса к API (`null`/`false` — ошибка)
+     *
+     * @example
+     * ```ts
+     * this.checkSendResult(controller, await myApi.sendMessage(chatId, controller.text));
+     * return 'ok';
+     * ```
+     */
+    protected checkSendResult(controller: BotController, result: unknown): void {
+        if (!result) {
+            controller.platformOptions.sendFailed = true;
+        }
     }
 
     /**

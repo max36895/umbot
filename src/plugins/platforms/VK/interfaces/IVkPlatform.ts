@@ -68,6 +68,15 @@ export interface IVkMessage {
      * Дополнительные данные
      */
     payload?: Record<string, unknown>;
+    /**
+     * Параметр `ref` ссылки `vk.me/<сообщество>?ref=...`: приходит в сообщении,
+     * которое пользователь отправил после перехода по ссылке
+     */
+    ref?: string;
+    /**
+     * Параметр `ref_source` той же ссылки
+     */
+    ref_source?: string;
 }
 
 /**

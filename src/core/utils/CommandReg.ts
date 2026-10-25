@@ -221,6 +221,11 @@ export interface ICommandParam<TBotController extends BotController = BotControl
      */
     isPattern?: boolean;
     /**
+     * Команда срабатывает только на текст, равный слоту (без поиска подстроки).
+     * Так регистрируются действия кнопок `bot.addAction`.
+     */
+    isExact?: boolean;
+    /**
      * Функция-обработчик команды
      *
      * @param {string} userCommand - Текст команды пользователя
@@ -489,6 +494,10 @@ export class CommandReg {
         const visit: number[] = [];
         for (let i = 0; i < list.length; i++) {
             const [name, command] = list[i] as [string, ICommandParam];
+            if (command.isExact) {
+                // Ищется только по точному совпадению (getExactMatchCommand), не подстрокой.
+                continue;
+            }
             if (useIndex && this.#isLiteralCommand(name, command)) {
                 for (const slot of command.slots as string[]) {
                     patterns.push([slot, i]);
@@ -1097,6 +1106,8 @@ export class CommandReg {
      *     слоты с разными флагами проверяются по отдельности.
      * @param {ICommandParam['cb']} cb - Функция-обработчик команды
      * @param {boolean} isPattern - Использовать регулярные выражения (по умолчанию false)
+     * @param {boolean} isExact - Срабатывать только на текст, равный слоту, а не на подстроку
+     *   (так регистрирует действия кнопок `bot.addAction`; по умолчанию false)
      *
      * @example
      * Простая команда со словами:
@@ -1162,6 +1173,7 @@ export class CommandReg {
         slots: TSlots,
         cb: ICommandParam<TBotController>['cb'],
         isPattern: boolean = false,
+        isExact: boolean = false,
     ): void {
         const previous = this.commands.get(commandName);
         if (previous) {
@@ -1205,31 +1217,19 @@ export class CommandReg {
             ));
         } else {
             this.#addRegexpInGroup(commandName, correctSlots, false);
-            for (let i = 0; i < slots.length; i++) {
-                const slot = slots[i];
-                if (!slot) {
-                    continue;
-                }
-                if (isRegex(slot)) {
-                    const res = this.isDangerRegex(slot);
-                    if (res.status && this.strictMode) {
-                        correctSlots.push(slot);
-                    }
-                } else {
-                    if (this.strictMode) {
-                        correctSlots.push(slot);
-                    }
-                    const tCommandName = this.#exactMatchMap.get(slot);
-                    if (!tCommandName) {
-                        this.#exactMatchMap.set(slot, commandName);
-                    }
-                }
-            }
+            this.#registerPlainSlots(commandName, slots, correctSlots);
         }
         if (correctSlots.length) {
             this.commands.set(
                 commandName,
-                this.#buildCommandParam(correctSlots, isPatternCommand, cb, regExp, groupName),
+                this.#buildCommandParam(
+                    correctSlots,
+                    isPatternCommand,
+                    cb,
+                    regExp,
+                    groupName,
+                    isExact,
+                ),
             );
             this.#markDirty();
         } else if (previous) {
@@ -1237,6 +1237,45 @@ export class CommandReg {
             // слотов не осталось, она удаляется.
             this.commands.delete(commandName);
             this.#markDirty();
+        }
+    }
+
+    /**
+     * Регистрирует слоты обычной команды: в strictMode оставляет только безопасные регулярки,
+     * строки заносит в индекс точных совпадений и предупреждает о строках с заглавными буквами.
+     * @param commandName Имя команды
+     * @param slots Слоты команды
+     * @param correctSlots Принятые слоты (в strictMode заполняются здесь)
+     */
+    #registerPlainSlots(commandName: string, slots: TSlots, correctSlots: TSlots): void {
+        let upperSlots: string[] | undefined;
+        for (const slot of slots) {
+            if (!slot) {
+                continue;
+            }
+            if (isRegex(slot)) {
+                const res = this.isDangerRegex(slot);
+                if (res.status && this.strictMode) {
+                    correctSlots.push(slot);
+                }
+                continue;
+            }
+            if (this.strictMode) {
+                correctSlots.push(slot);
+            }
+            if (slot !== slot.toLowerCase()) {
+                (upperSlots ??= []).push(slot);
+            }
+            if (!this.#exactMatchMap.get(slot)) {
+                this.#exactMatchMap.set(slot, commandName);
+            }
+        }
+        if (upperSlots) {
+            // Слот не меняется: команда, которая раньше молча не срабатывала, не начинает
+            // перехватывать реплики у команд, зарегистрированных позже.
+            this.logWarn(
+                `Команда "${commandName}": слоты ${upperSlots.map((s) => `"${s}"`).join(', ')} содержат заглавные буквы и не сработают — реплика пользователя сравнивается в нижнем регистре. Укажите слоты строчными: ${upperSlots.map((s) => `"${s.toLowerCase()}"`).join(', ')}.`,
+            );
         }
     }
 
@@ -1341,6 +1380,7 @@ export class CommandReg {
      * @param cb Обработчик команды
      * @param regExp Скомпилированное выражение (если есть)
      * @param groupName Имя группы регулярок (если есть)
+     * @param isExact Команда ищется только по точному совпадению (действия кнопок)
      * @returns Готовая запись ICommandParam
      */
     #buildCommandParam<TBotController extends BotController>(
@@ -1349,6 +1389,7 @@ export class CommandReg {
         cb: ICommandParam<TBotController>['cb'],
         regExp: RegExp | undefined,
         groupName: string | null | undefined,
+        isExact: boolean,
     ): ICommandParam {
         const commandParam: ICommandParam = {
             slots,
@@ -1361,6 +1402,10 @@ export class CommandReg {
         }
         if (groupName !== undefined) {
             commandParam.__$groupName = groupName;
+        }
+        // Точная команда находится только по хэш-индексу точных совпадений.
+        if (isExact && !isPattern) {
+            commandParam.isExact = true;
         }
         const singleStatelessRegExp = this.#getSingleStatelessRegExp(slots);
         if (singleStatelessRegExp !== undefined) {

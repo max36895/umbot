@@ -541,15 +541,15 @@ bot.addAction('buy', (text, ctx) => {
 });
 ```
 
-`bot.addAction(name, handler)` регистрирует обработчик как команду с единственным слотом `name`,
-поэтому всё, что требуется от адаптера при разборе нажатия, — три вещи:
+`bot.addAction(name, handler)` регистрирует обработчик как команду, которая срабатывает на текст, равный `name`
+(без поиска подстроки), поэтому всё, что требуется от адаптера при разборе нажатия, — три вещи:
 
 1. выставить `controller.eventType = 'callback'`;
 2. положить в `controller.userCommand` нормализованный payload — через
-   `pUtils.normalizeActionPayload(raw)`: и строка `'buy'`, и JSON `{"command":"buy"}` превращаются в
-   `buy`;
+   `pUtils.normalizeActionPayload(raw)`: строка `'buy'`, JSON `{"command":"buy"}` и `{"action":"buy"}`
+   превращаются в `buy`;
 3. сохранить разобранный payload в `controller.payload` (`pUtils.tryParse(raw)`), чтобы бизнес-логика
-   могла прочитать дополнительные поля.
+   могла прочитать дополнительные поля (их получает обработчик `bot.defineAction`).
 
 Так устроены встроенные адаптеры Telegram, VK и MAX. Образец из `Telegram/Adapter.ts`:
 
@@ -1064,6 +1064,29 @@ getRatingContext(controller: BotController): Promise<object> {
 `getContent`. Для платформы, которая отправляет ответ через API (парадигма Б), этого достаточно —
 специально ничего делать не нужно. Переопределяйте метод, только если платформа требует другого
 запроса для проактивных сообщений или не поддерживает их вовсе — тогда верните `false`.
+
+Базовый `send()` помечает контроллер флагом `platformOptions.isProactive = true`: входящего запроса нет,
+поэтому `getContent` не должен отвечать телом вебхука (как `telegram_webhook_reply`) — только запросом к API.
+Чтобы `bot.send()` сообщал о недоставленном сообщении, передайте результат запроса отправки в
+`this.checkSendResult(controller, result)`: при `null`/`false` он выставит `controller.platformOptions.sendFailed`,
+и `send()` вернёт `false`. Тело ответа на вебхук при этом не меняется: вернуть ошибку из `getContent` нельзя, иначе
+платформа повторит доставку.
+
+```ts
+this.checkSendResult(controller, await myApi.sendMessage(controller.userId, controller.text));
+return 'ok';
+```
+
+Темп рассылки задаёт поле `sendLimit` (сообщений в секунду, по умолчанию `null` — без ограничения): базовый `send()`
+выдерживает интервал между отправками, даже если `bot.send()` вызывают параллельно, а ответы на входящие запросы
+не ограничивает. Задайте лимит платформы, чтобы `bot.broadcast()` не упирался в ошибки частоты; пользователь может
+переопределить его опцией адаптера `send_rate_limit`.
+
+```ts
+class MyAdapter extends BasePlatformAdapter {
+    sendLimit = 20; // лимит API платформы на исходящие сообщения
+}
+```
 
 ### Единый формат ошибок API (`getErrorMsg`, `getErrorToken`)
 

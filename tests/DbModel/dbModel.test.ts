@@ -232,6 +232,29 @@ describe('Db file connect', () => {
         expect(await userData.whereOne(query)).toBe(true);
     });
 
+    it('частичный update() не стирает незаданные поля модели', async () => {
+        const original = { ...imageData[123] };
+        try {
+            const partial = new ImageTokens(appContext);
+            partial.state = { imageToken: '123', path: 'path-new' } as ImageTokens['state'];
+            expect(await partial.update()).toBe(true);
+            expect(imageData[123]).toEqual({
+                imageToken: '123',
+                path: 'path-new',
+                platform: T_ALISA,
+            });
+        } finally {
+            imageData[123] = original;
+        }
+    });
+
+    it('add() с занятым ключом возвращает false и не перезаписывает запись', async () => {
+        const duplicate = new ImageTokens(appContext);
+        duplicate.state = { imageToken: '456', path: 'other', platform: T_TELEGRAM };
+        expect(await duplicate.add()).toBe(false);
+        expect(imageData[456]).toEqual({ imageToken: '456', path: 'path2', platform: T_ALISA });
+    });
+
     it('Save data', async () => {
         const query = '`meta`="meta"';
         expect(await userData.whereOne(query)).toBe(false);

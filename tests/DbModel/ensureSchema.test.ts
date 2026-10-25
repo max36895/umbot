@@ -96,6 +96,41 @@ describe('Bot: ensureSchema после подключения', () => {
         await bot.close();
     });
 
+    it('таблицы приложения (dbTables) передаются вместе со встроенными', async () => {
+        const adapter = new SchemaAdapter();
+        const { bot } = makeBot(adapter);
+        const rooms: IDbTableSchema = {
+            tableName: 'Rooms',
+            primaryKeyName: 'roomId',
+            uniqueKeys: [],
+            fields: { roomId: { type: 'string', maxLength: 32 }, data: { type: 'text' } },
+            indexes: [['roomId']],
+        };
+        bot.setAppConfig({ dbTables: [rooms] });
+        await bot.run(T_ALISA, request(1));
+        expect(adapter.received).toEqual([...DB_TABLES_SCHEMA, rooms]);
+        await bot.close();
+    });
+
+    it('bot.connect() подключает и готовит схему без запроса; первый запрос не подключается повторно', async () => {
+        const adapter = new SchemaAdapter();
+        const connectSpy = jest.spyOn(adapter, 'connect');
+        const destroySpy = jest.spyOn(adapter, 'destroy');
+        const { bot } = makeBot(adapter);
+        await expect(bot.connect()).resolves.toBe(true);
+        expect(adapter.calls).toBe(1);
+        await bot.run(T_ALISA, request(1));
+        expect(connectSpy).toHaveBeenCalledTimes(1);
+        expect(adapter.calls).toBe(1);
+        await bot.close();
+        expect(destroySpy).toHaveBeenCalled();
+    });
+
+    it('bot.connect() без DB-адаптера — false', async () => {
+        const bot = new Bot();
+        await expect(bot.connect()).resolves.toBe(false);
+    });
+
     it('параллельные запросы ждут подготовки схемы', async () => {
         const adapter = new SchemaAdapter();
         const order: string[] = [];

@@ -1,7 +1,8 @@
 # Рецепты umbot: готовые решения типовых задач
 
 Короткие законченные примеры для частых задач: эхо-навык, регистрация, игра со счётом, карточка товара, пагинация,
-HTTP-запрос с таймаутом, авторизация Алисы, кнопки с payload, логгер, NLU- и i18n-плагины, inline-режим Telegram.
+HTTP-запрос с таймаутом, авторизация Алисы, кнопки с payload, логгер, NLU- и i18n-плагины, inline-режим Telegram,
+свои таблицы в БД, рассылка по расписанию, меню из экранов.
 
 Во всех рецептах `bot` — экземпляр `Bot`, созданный и настроенный как в
 [минимальном примере](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/GUIDE#минимальный-рабочий-пример); импорты показаны там, где рецепт
@@ -186,6 +187,29 @@ bot.addCommand('weather', ['погода'], async (_, bc) => {
 });
 ```
 
+То же через встроенный `Request`: таймаут (2 с по умолчанию) уже стоит, исключений нет — результат проверяется по
+`status`, а в тестах запрос подменяется моком `appContext.httpClient` (пример — в
+[Кастомизации HTTP-слоя](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/http-client#пример-мок-в-тестах)):
+
+```ts
+import { Request } from 'umbot';
+
+bot.addCommand('weather', ['погода'], async (_, bc) => {
+    const request = new Request(bc.appContext);
+    request.get = { city: 'moscow' };
+    const res = await request.send<{ temp: number; condition: string }>(
+        'https://api.weather.example.com/current',
+    );
+    bc.text =
+        res.status && res.data
+            ? `Сейчас ${res.data.temp}°C, ${res.data.condition}`
+            : 'Не удалось узнать погоду. Попробуйте позже.';
+});
+```
+
+Поля `Request` (тело, заголовки, метод, загрузка файла) — в
+[справочнике API](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference#request).
+
 ### Рецепт 8: Авторизация Алисы (полный flow)
 
 Авторизация — это особый случай: фреймворк сам выставляет `controller.userEvents.auth.status` и `controller.userToken`,
@@ -269,8 +293,9 @@ bot.initBotController(
 > **Совет:** проверяйте payload **до** intentName, иначе возможны коллизии. Например, если кнопка называется "Играть",
 > её нажатие установит `userCommand='играть'`, и сработает интент `play`, а не ваш обработчик кнопки.
 >
-> На Telegram, VK и MAX нажатие callback-кнопки проще обработать через `bot.addAction('buy', cb)`: payload `'buy'` или
-> `{"command":"buy"}` адаптер превращает в имя действия (см. [справочник API](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference#действия-кнопок-addaction)).
+> Нажатие кнопки проще обработать через `bot.addAction('buy', cb)`, а кнопку с данными — через
+> `bot.defineAction<{ id: number }>('buy')`: обработчик получит `{ id }` уже разобранным. Payload `'buy'`,
+> `{"action":"buy"}` или `{"command":"buy"}` адаптер превращает в имя действия (см. [справочник API](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference#действия-кнопок-addaction)).
 
 ### Рецепт 10: Средство безопасности — rate limiter
 
@@ -464,6 +489,189 @@ bot.addEvent('inline', async (ctx) => {
 });
 ```
 
+### Рецепт 18: Свои таблицы приложения
+
+Своя модель наследуется от `Model` (пример — в [справочнике API](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference#model)),
+а её таблицу описывает `IDbTableSchema`. Передайте описание в `appConfig.dbTables`: после подключения к БД ядро
+отдаст его в `ensureSchema()` адаптера вместе со встроенными таблицами — SQL-адаптер создаст таблицу и индексы,
+MongoDB — индексы. Отдельный middleware или ручной `connect()` для этого не нужен.
+
+```ts
+import { IDbTableSchema } from 'umbot';
+
+const ROOMS_TABLE: IDbTableSchema = {
+    tableName: 'Rooms', // то же имя, что возвращает tableName() модели
+    primaryKeyName: 'roomId',
+    uniqueKeys: [],
+    fields: {
+        roomId: { type: 'string', maxLength: 32 },
+        ownerId: { type: 'string', maxLength: 250 },
+        data: { type: 'text' },
+    },
+    indexes: [['ownerId']], // поля, по которым модель ищет записи (where/whereOne)
+};
+
+bot.setAppConfig({ dbTables: [ROOMS_TABLE] });
+```
+
+`ensureSchema()` вызывается после каждого успешного подключения (и после переподключения к упавшей базе), поэтому
+он должен быть идемпотентным — встроенные адаптеры, `umbot-knex-adapter` и `umbot-ydb-adapter` это соблюдают
+(у YDB-адаптера все колонки таблиц из `dbTables` — `Utf8`; типы колонок задаются его опцией `tables`). Если таблицу создать не
+удалось, ошибка пишется в лог, а бот продолжает работать.
+
+Вне запросов — в задаче cron, скрипте миграции, рассылке из отдельного процесса — таблицы создаёт `bot.connect()`:
+это тот же путь, что ядро проходит на первом запросе. Пример скрипта — в рецепте 19.
+
+### Рецепт 19: Рассылка по расписанию
+
+Еженедельный дайджест, напоминание «вы давно не заходили», очистка старых записей — работа без входящего запроса.
+Встроенного планировщика нет (как и у других фреймворков ботов): задачу запускает внешний планировщик, а скрипт
+подключается к БД, делает работу и завершается.
+
+Пусть бот запоминает время визита — не чаще раза в час, чтобы не добавлять запись в БД на каждое сообщение:
+
+```ts
+const HOUR = 60 * 60 * 1000;
+
+bot.use(async (ctx, next) => {
+    if (Date.now() - Number(ctx.userData.lastVisit ?? 0) > HOUR) {
+        ctx.userData.lastVisit = Date.now();
+    }
+    await next();
+});
+```
+
+Скрипт рассылки использует ту же настройку бота (адаптеры, БД, токены), но не запускает сервер. Удобно вынести
+настройку в общий модуль, который подключают и сервер, и скрипт:
+
+```ts
+// src/setup.ts — общая настройка; сервер вызывает createBot().start(...), скрипты — только createBot()
+import { Bot } from 'umbot';
+import { TelegramAdapter, MongoAdapter } from 'umbot/plugins';
+
+export function createBot(): Bot {
+    const bot = new Bot();
+    bot.use(new TelegramAdapter(process.env.TELEGRAM_TOKEN));
+    bot.use(new MongoAdapter());
+    bot.setAppConfig({
+        env: '.env',
+        db: { host: process.env.DB_HOST ?? '', database: process.env.DB_NAME ?? 'umbot' },
+    });
+    return bot;
+}
+```
+
+```ts
+// src/jobs/comeBack.ts — раз в сутки: «вы давно не заходили»
+import { UsersData } from 'umbot';
+import { T_TELEGRAM } from 'umbot/plugins';
+import { createBot } from '../setup';
+
+const WEEK = 7 * 24 * 60 * 60 * 1000;
+
+async function main(): Promise<void> {
+    const bot = createBot();
+    try {
+        if (!(await bot.connect())) {
+            throw new Error('Нет подключения к БД');
+        }
+        // userData хранится в таблице UsersData: поле data — JSON-строка
+        const res = await new UsersData(bot.getAppContext()).where({ platform: T_TELEGRAM });
+        const rows = res.status && Array.isArray(res.data) ? res.data : [];
+        const sleepers = rows
+            .filter((row) => {
+                const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+                const lastVisit = Number(data?.lastVisit ?? 0);
+                return lastVisit > 0 && Date.now() - lastVisit > WEEK;
+            })
+            .map((row) => String(row.userId));
+
+        const { sent, failed } = await bot.broadcast(
+            sleepers,
+            { text: 'Давно не виделись! Загляните — у нас новые задания.', buttons: ['Играть'] },
+            T_TELEGRAM,
+        );
+        console.log(`Доставлено ${sent.length}, не доставлено ${failed.length}`);
+    } finally {
+        await bot.close(); // закрывает БД — без него открытый пул держал бы процесс
+    }
+}
+
+main().catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+});
+```
+
+Запуск — любым планировщиком, по одному экземпляру на расписание:
+
+```bash
+# crontab: каждый день в 12:00
+0 12 * * * cd /app && node dist/jobs/comeBack.js >> logs/jobs.log 2>&1
+```
+
+- Скрипт завершается сам: `broadcast` дожидается всех отправок (паузы очереди держат процесс до конца), `close()`
+  закрывает БД. `process.exit()` не нужен.
+- Таблица UsersData читается целиком — нормально для тысяч пользователей. Для большой базы выберите их на стороне БД:
+  с MongoAdapter — `query()` с условием по полю времени, либо храните подписчиков в своей таблице с индексом
+  ([рецепт 18](#рецепт-18-свои-таблицы-приложения), условия выборки — в
+  [справочнике API](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference#условия-where--whereone)).
+- Повторный запуск не должен слать сообщение второй раз: отметьте отправку (`onResult` у `broadcast`) или выбирайте
+  по окну времени, как здесь.
+- Где запускать задачи (сервер, Docker, Yandex Cloud) и почему не `setInterval` внутри бота с несколькими репликами —
+  [Развертывание, «Фоновые задачи»](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/deployment#фоновые-задачи-cron-таймеры-рассылки).
+
+Не вызывайте `connect()` у самого адаптера: ядро о таком подключении не знает, `bot.close()` его не закроет, а первый
+запрос подключится повторно (у некоторых адаптеров это пересоздаёт пул соединений).
+
+### Рецепт 20: Меню из экранов
+
+Меню «Главная → Тарифы / Вопросы → Назад» — набор экранов: у каждого текст и кнопки-переходы. `bot.defineMenu`
+собирает его из описания: добавляет кнопку «Назад» экранам с родителем, понимает и нажатие кнопки, и её название,
+сказанное голосом или написанное текстом.
+
+```ts
+const menu = bot.defineMenu('main', {
+    screens: {
+        home: {
+            text: 'Чем помочь?',
+            buttons: [
+                { title: 'Тарифы', to: 'prices' },
+                { title: 'Вопросы', to: 'faq' },
+                { title: 'Сайт', url: 'https://example.com' },
+            ],
+        },
+        prices: {
+            text: (ctx) =>
+                `Ваш тариф: ${String(ctx.userData.plan ?? 'Базовый')}. Премиум — 299 ₽ в месяц.`,
+            parent: 'home',
+        },
+        faq: {
+            text: 'Частые вопросы:',
+            buttons: [{ title: 'Оплата', to: 'faq_pay' }],
+            parent: 'home',
+        },
+        faq_pay: { text: 'Принимаем карты и СБП.', parent: 'faq' },
+    },
+});
+
+bot.addCommand('menu', ['меню', '/start'], (_, ctx) => menu.show(ctx));
+```
+
+- Нажатие работает всегда: экран, куда ведёт кнопка, записан в её payload. Меню не ломается, если пользователь между
+  нажатиями написал что-то другое.
+- Название кнопки («тарифы», «назад») узнаётся только среди кнопок показанного экрана; остальной текст уходит обычным
+  командам — «назад» в меню и «назад» в форме не мешают друг другу.
+- Кнопка экрана может вести не на экран, а в действие: `{ title: 'Купить', payload: buy.payload({ id: 7 }) }`, где
+  `buy` — `bot.defineAction`.
+- Экран с карточками или длинным списком — `onShow: (ctx) => { ... }`: вызывается после текста и кнопок экрана
+  (`Navigation` — рецепт 6). Из любого обработчика вернуть пользователя в меню — `menu.show(ctx, 'home')`, кнопка
+  перехода вне меню — `ctx.buttons.addBtn('В меню', '', menu.payload('home'))`.
+- Имена меню и экранов входят в payload кнопки (Telegram принимает до 64 байт) — держите их короткими; о слишком
+  длинных `defineMenu` предупредит в логе.
+
+Все параметры — в [справочнике API](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference#меню-из-экранов-definemenu).
+
 ## Сценарии, требующие своей реализации
 
 Это не недостатки фреймворка — это просто сценарии, для которых нет готовых примеров в репозитории. Разработчику
@@ -561,6 +769,105 @@ bot.setLogger({
 ### WebSocket-уведомления
 
 Не входит в фреймворк. Используйте `bot.send(userId, text, platform)` в связке с внешним WS-сервером.
+
+### Игра на двоих: общее состояние и таймаут хода
+
+`userData` у каждого пользователя свой, поэтому партию (доска, чей ход, срок хода) храните в своей таблице
+([рецепт 18](#рецепт-18-свои-таблицы-приложения)), а в `userData` игрока — только id партии. Ответ ходившему —
+обычный `ctx.text`, сопернику — `bot.send()`:
+
+```ts
+// GameModel, renderBoard, opponentOf, finishGame — код вашей игры
+const move = bot.defineAction<{ cell: number }>('move');
+
+move.handle(async (data, ctx) => {
+    const game = new GameModel(ctx.appContext); // своя модель: gameId, board, turn, playerX, playerO, deadline
+    if (!(await game.whereOne({ gameId: String(ctx.userData.gameId) }))) {
+        return 'Партия не найдена';
+    }
+    if (Date.now() > Number(game.state.deadline)) {
+        return finishGame(game, 'Время на ход вышло'); // срок проверяется при каждом запросе
+    }
+    if (game.state.turn !== String(ctx.userId)) {
+        return 'Сейчас ход соперника';
+    }
+    // ... проверить клетку, записать ход, передать очередь, deadline = Date.now() + 30_000
+    await game.update();
+    ctx.text = renderBoard(game);
+    const delivered = await bot.send(
+        opponentOf(game, ctx.userId),
+        { text: renderBoard(game) },
+        ctx.appType!,
+    );
+    if (delivered === false) {
+        await finishGame(game, 'Соперник недоступен'); // заблокировал бота — не держим партию открытой
+    }
+});
+```
+
+- **Таймаут — не `setTimeout`.** Таймер живёт в памяти процесса: он теряется при рестарте, в serverless (каждый
+  вызов может попасть в новый экземпляр) и срабатывает не в той реплике. Храните срок (`deadline`) в записи партии и
+  проверяйте его при каждом входящем запросе, а брошенные партии закрывайте задачей по расписанию
+  ([рецепт 19](#рецепт-19-рассылка-по-расписанию)): она выбирает партии с истёкшим сроком и сообщает игрокам.
+- **Несколько реплик.** Два игрока могут попасть в разные процессы одновременно. Проверка «чей ход» и запись хода
+  должны быть одной операцией в БД — с MongoAdapter это `updateOne` с условием `{ gameId, turn }` через `query()`
+  (см. «Atomic-операции с БД» выше); обычный `update()` перезапишет запись целиком.
+- **Тесты.** Два игрока в `BotTest` — чередуйте `bot.simulate(текст, { userId: 'a' })` и `{ userId: 'b' }`, а
+  `bot.send` замените моком (`jest.spyOn(bot, 'send')`).
+- **Голосовые платформы** написать сопернику не могут: на Алисе и Марусе ход соперника игрок узнает только своим
+  следующим запросом.
+
+### Редактирование отправленного сообщения
+
+В едином API каждый ответ — новое сообщение. В играх и счётчиках, где доска должна меняться на месте, вызовите метод
+платформы напрямую. В MAX для нажатий на кнопки есть опция `new MaxAdapter(token, { max_callback_edit_message: true })`
+— ответ заменяет сообщение с кнопкой. В Telegram — `editMessageText` через `TelegramRequest.call(метод, chatId,
+параметры)`; так же вызывается любой метод Bot API без отдельной обёртки (`deleteMessage`, `pinChatMessage`,
+`sendInvoice`):
+
+```ts
+import { T_TELEGRAM, TelegramRequest } from 'umbot/plugins';
+
+bot.addAction('refresh', async (_, ctx) => {
+    const text = `Обновлено в ${new Date().toLocaleTimeString('ru-RU')}`;
+    if (ctx.appType !== T_TELEGRAM) {
+        ctx.text = text; // остальным платформам — новым сообщением
+        return;
+    }
+    const chatId = ctx.platformOptions.requestData?.telegram?.chatId ?? ctx.userId;
+    const result = await new TelegramRequest(ctx.appContext).call(
+        'editMessageText',
+        String(chatId),
+        {
+            message_id: ctx.messageId, // у нажатия кнопки — id сообщения с этой кнопкой
+            text,
+            reply_markup: { inline_keyboard: [[{ text: 'Обновить', callback_data: 'refresh' }]] },
+        },
+    );
+    if (result) {
+        await ctx.api?.answerCallback(''); // снять «часики» с кнопки
+        ctx.skipAutoReply = true; // сообщение уже обновлено — новое не отправлять
+    } else {
+        ctx.text = text; // не вышло (причина в логе) — отправим новым сообщением
+    }
+});
+```
+
+`call()` берёт токен из настроек бота, держит таймаут и при ошибке возвращает `null`, записав причину в лог (токен в
+логе маскируется).
+
+### Платежи и подписка
+
+Платёжных API (Telegram Payments, VK Pay) в едином API нет. Схема, которая работает на всех платформах:
+
+1. Кнопка-ссылка на страницу оплаты: `ctx.buttons.addLink('Оплатить', checkoutUrl)`, где в `checkoutUrl` — id
+   пользователя и платформа (подписанные вашим backend, чтобы их нельзя было подменить).
+2. Платёжный сервис присылает вебхук об оплате в ваш backend — не в бот.
+3. Backend записывает подписку в свою таблицу (пользователь, платформа, дата окончания, id платежа) и сообщает
+   пользователю: `bot.send(userId, 'Оплата получена, премиум включён', platform)`.
+4. Платный раздел проверяет дату окончания (`until > Date.now()`), а не флаг — просрочка отработает на первом же
+   запросе без фоновых задач. Удобно сделать это своим middleware, который не вызывает `next()` для платных команд
+   без подписки (как писать свои — в [Middleware](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/middleware)).
 
 ### i18n с плюрализацией
 

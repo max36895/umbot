@@ -65,7 +65,8 @@ export class {{Name}}DbAdapter extends BaseDbAdapter {
     /**
      * Добавляет запись. Исключения не бросает — ошибка возвращается как false.
      * @param insertData Таблица, ключи и данные записи (`insertData.data`)
-     * @returns true, если запись добавлена
+     * @returns true, если запись добавлена; false, если нет ключа или запись с таким ключом
+     *   уже есть (перезаписывать чужую запись нельзя — как INSERT в SQL)
      */
     _insert(insertData: IQuery): boolean {
         if (!insertData.data) {
@@ -75,12 +76,23 @@ export class {{Name}}DbAdapter extends BaseDbAdapter {
         if (key === null) {
             return false;
         }
-        this.#getTable(insertData.tableName).set(key, { ...insertData.data });
+        const table = this.#getTable(insertData.tableName);
+        if (table.has(key)) {
+            // Запись уже есть: молчаливая перезапись затрёт чужие данные — отклоняем.
+            // Для изменения записи вызывайте update() (модели так и делают через save()).
+            this._appContext?.logWarn(
+                `{{Name}}DbAdapter: запись с ключом "${key}" в таблице "${insertData.tableName}" уже есть — вставка отклонена.`,
+            );
+            return false;
+        }
+        table.set(key, { ...insertData.data });
         return true;
     }
 
     /**
      * Обновляет запись, найденную по `updateData.query`.
+     * Поля со значением undefined (незаданные поля модели) пропускаются — иначе частичный
+     * update стёр бы сохранённые значения (см. external-db-adapter-spec).
      * @param updateData Таблица, ключи, условие (`query`) и новые значения (`data`)
      * @returns true, если ошибки не было — в том числе когда запись не найдена
      */
@@ -92,7 +104,13 @@ export class {{Name}}DbAdapter extends BaseDbAdapter {
         const table = this.#getTable(updateData.tableName);
         const row = table.get(key);
         if (row) {
-            table.set(key, { ...row, ...updateData.data });
+            const merged = { ...row };
+            for (const [field, value] of Object.entries(updateData.data ?? {})) {
+                if (value !== undefined) {
+                    merged[field] = value;
+                }
+            }
+            table.set(key, merged);
         }
         return true;
     }

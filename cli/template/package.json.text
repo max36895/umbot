@@ -19,7 +19,7 @@
         "@types/node": "24.13.4"
     },
     "dependencies": {
-        "umbot": "^3.1.5"
+        "umbot": "^3.1.6"
     },
     "engines": {
         "node": ">=22.0.0"

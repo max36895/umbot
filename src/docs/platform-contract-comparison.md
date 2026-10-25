@@ -179,6 +179,11 @@ VK на техобслуживании).
 Отдельная сверка на случай расхождений имён (`imageId` vs `image_id`): для каждого
 исходящего запроса — формат ответа по документации и **фактический путь чтения** в коде.
 
+Ошибка запроса отправки сообщения (`sendMessage`/`sendMediaGroup` Telegram, `messages.send` VK,
+`send_message`/rich media Viber, `POST /messages` и `POST /answers` MAX) клиент возвращает как `null`;
+адаптер выставляет `platformOptions.sendFailed`, и `bot.send()` возвращает `false`. Тело ответа на вебхук
+при этом остаётся `ok`.
+
 ### Telegram
 
 Конверт ответа: `{ok: boolean, result?: T, error_code?: number, description?: string}`
@@ -206,7 +211,7 @@ VK на техобслуживании).
 | Upload документа                      | `{file: "..."}`                                | `uploadResponse.file` → `docs.save`                                          | 📄 ✅  |
 | `docs.save`                           | `response: {id, owner_id, title, ...}`         | `doc.owner_id`, `doc.id` → токен `doc{owner_id}_{id}`                        | 📄 ✅  |
 | `users.get`                           | `response: [{id, first_name, last_name, ...}]` | `users[0]` → `first_name`/`last_name` → кэш имён VK                          | ✅     |
-| `messages.send`                       | `response: <message_id: number>`               | Возвращается вызывающему (сообщения fire-and-forget)                         | 📄 ✅  |
+| `messages.send`                       | `response: <message_id: number>`               | Возвращается вызывающему; `null` (ошибка) → `bot.send()` возвращает `false`  | 📄 ✅  |
 | `messages.sendMessageEventAnswer`     | `response: true`                               | Возвращается вызывающему                                                     | 📄 ✅  |
 
 ### Viber

@@ -788,6 +788,10 @@ class MyAdapter extends BasePlatformAdapter {
   Без него `controller.tts` игнорируется.
 - **Разметка выключена по умолчанию.** `parse_mode` передаётся только при явном `telegram_parse_mode`. При включённом HTML/MarkdownV2 разработчик отвечает за экранирование динамических данных.
 - **Проактивная отправка.** `bot.send(userId, text, T_TELEGRAM)` работает (в отличие от голосовых платформ).
+- **Методы Bot API без обёртки.** `editMessageText`, `deleteMessage`, `pinChatMessage`, `sendInvoice` и любой другой
+  метод вызывается через `new TelegramRequest(ctx.appContext).call(метод, chatId, параметры)`: токен берётся из
+  настроек бота, результат — ответ API или `null` с причиной в логе. Пример — в рецептах, «Редактирование
+  отправленного сообщения».
 - **Групповые чаты.** `userId` берётся из `from.id` (человек), а не из `chat.id` (группа) —
   один пользователь получает одну запись в БД и в группе, и в личке. Ответ доставляется
   в исходный чат (ID чата — `platformOptions.requestData.telegram.chatId`).
@@ -795,7 +799,8 @@ class MyAdapter extends BasePlatformAdapter {
   `message_edited`, `channel_post`, `my_chat_member` и др.) — неизвестные служебные апдейты
   подтверждаются HTTP 200 без ответа. Не-текстовые апдейты ловятся событийным роутингом:
   `bot.addEvent('photo' | 'voice' | 'callback' | 'inline' | 'message_edited' | 'channel_post', ...)`
-  (полный список типов — в api-reference.md, раздел «Событийный роутинг»).
+  (полный список типов — в api-reference.md, раздел «Событийный роутинг»). Сообщение `/start <параметр>`
+  (переход по `t.me/<бот>?start=<параметр>`) приходит событием `start`, параметр — в `ctx.payload`.
 - **Inline-кнопки без payload (`options.inline`).** Кнопка без `payload` и `url` по умолчанию
   уходит обычной reply-клавиатурой. С опцией `{ inline: true }` она показывается inline-кнопкой под
   сообщением, а нажатие приходит боту как текст кнопки: `this.buttons.addBtn('Каталог', '', '', { inline: true })`.
@@ -803,7 +808,7 @@ class MyAdapter extends BasePlatformAdapter {
   восстанавливается адаптером из клавиатуры сообщения. На `request_contact` / `request_location`
   опция не действует — Telegram принимает их только в обычной клавиатуре. Проекты, сгенерированные
   через `npx umbot create from-flow`, выставляют опцию всем кнопкам Telegram.
-- **Webhook-reply (opt-in).** `new TelegramAdapter('TOKEN', { telegram_webhook_reply: true })`: простой текстовый ответ уходит телом webhook-ответа (`{method: 'sendMessage', ...}`) — Telegram выполнит его сам, экономится один исходящий POST на запрос. По образцу grammy: opt-in (по умолчанию выключено), не применяется к callback/inline-запросам и ответам с карточками/звуками — они уходят штатным путём. Учтите: ошибки отправки при этом недиагностируемы (Telegram подтверждает webhook раньше реального выполнения метода).
+- **Webhook-reply (opt-in).** `new TelegramAdapter('TOKEN', { telegram_webhook_reply: true })`: простой текстовый ответ уходит телом webhook-ответа (`{method: 'sendMessage', ...}`) — Telegram выполнит его сам, экономится один исходящий POST на запрос. По образцу grammy: opt-in (по умолчанию выключено), не применяется к callback/inline-запросам, ответам с карточками/звуками и к `bot.send()` — они уходят штатным путём. Учтите: ошибки отправки при этом недиагностируемы (Telegram подтверждает webhook раньше реального выполнения метода).
 
 ```ts
 import { Bot } from 'umbot';
@@ -841,6 +846,8 @@ botMd.addCommand('whoami', ['кто я'], (_, ctx) => {
 - **Имя пользователя берётся из кэша.** Результат `users.get` (имя для `nlu.getUserName()`) кэшируется в памяти процесса на 1 час (до 5000 записей; ошибки API не кэшируются). Отключить загрузку можно опцией адаптера `new VkAdapter(token, { vk_load_user_info: false })` — тогда `getUserName()` вернёт `null`, зато на ответ уходит один запрос к VK вместо двух. Сбросить кэш (тесты, смена имени) — `clearVkUserCache()` из `umbot/plugins`.
 - **Callback-кнопки подтверждаются через `messages.sendMessageEventAnswer`.** На нажатие callback-кнопки (`message_event`) адаптер подтверждает событие (`sendMessageEvent` без `event_data` — у пользователя пропадает индикатор загрузки на кнопке), а ответ обработчика отправляет обычным сообщением (`messages.send`). Если бизнес-логика завершилась ошибкой, вместо сообщения показывается snackbar с текстом ошибки. Чтобы показать свой snackbar, вызовите `controller.api.answerCallback(text)`. ID события хранится в `platformOptions.requestData.vk.eventId` (с fallback в `platformOptions.eventId`).
 - **Payload callback-кнопок нормализуется.** Строка `'buy'` или JSON `{"command":"buy"}` в payload попадает в `userCommand` как `buy` и срабатывает как обычная команда — без ручного разбора `requestObject`.
+- **Ссылка `vk.me/<сообщество>?ref=<параметр>`.** Первое сообщение после перехода по ссылке приходит событием
+  `start`, параметр `ref` — в `ctx.payload` (`ref_source` — в `requestObject.object.message`).
 - **Раскладка кнопок.** `buttons.row()` завершает ряд (до 5 кнопок; `location`/`vkpay`/`open_app` занимают ряд
   целиком); кнопки с одинаковым `options._group` (строка или число) тоже встают в один ряд.
 - **Цвет кнопок.** `options.color: 'primary' | 'secondary' | 'positive' | 'negative'`.
@@ -858,7 +865,8 @@ botMd.addCommand('whoami', ['кто я'], (_, ctx) => {
   `delivered`/`seen`/`failed` (подтверждаются без ошибки), `conversation_started` и событие
   `webhook` при регистрации вебхука (см. «Настройку» выше). Через событийный роутинг
   (`bot.addEvent('start' | 'subscribed' | 'unsubscribed', ...)`) на них можно навесить свою
-  логику; типы медиа-сообщений пользователя доступны как `photo`/`video`/`document`/
+  логику; параметр `context` ссылки `viber://pa?chatURI=<бот>&context=<параметр>` приходит в `ctx.payload`
+  события `start`; типы медиа-сообщений пользователя доступны как `photo`/`video`/`document`/
   `contact`/`location`/`sticker` (подробности — в `controller.payload` и `requestObject`).
 
 ### MAX
@@ -923,18 +931,22 @@ botMd.addCommand('whoami', ['кто я'], (_, ctx) => {
 объявляет перечень поддерживаемых событий (`supportedEvents`) — `bot.addEvent` предупреждает
 об опечатке или событии, которого не поддерживает ни одна подключённая платформа:
 
-| Платформа | События (`supportedEvents`)                                                                                                                |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Telegram  | `message`, `photo`, `voice`, `video`, `document`, `location`, `contact`, `sticker`, `callback`, `inline`, `message_edited`, `channel_post` |
-| VK        | `message`, `callback`                                                                                                                      |
-| MAX       | `message`, `callback`, `start`, `message_edited`                                                                                           |
-| Viber     | `message`, `photo`, `video`, `document`, `contact`, `location`, `sticker`, `start`, `subscribed`, `unsubscribed`                           |
-| Алиса     | `message`, `auth`                                                                                                                          |
-| Маруся    | `message`, `auth`                                                                                                                          |
-| SmartApp  | `message`, `start`, `rating`                                                                                                               |
+| Платформа | События (`supportedEvents`)                                                                                                                         |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Telegram  | `message`, `photo`, `voice`, `video`, `document`, `location`, `contact`, `sticker`, `callback`, `inline`, `message_edited`, `channel_post`, `start` |
+| VK        | `message`, `callback`, `start`                                                                                                                      |
+| MAX       | `message`, `callback`, `start`, `message_edited`                                                                                                    |
+| Viber     | `message`, `photo`, `video`, `document`, `contact`, `location`, `sticker`, `start`, `subscribed`, `unsubscribed`                                    |
+| Алиса     | `message`, `auth`                                                                                                                                   |
+| Маруся    | `message`, `auth`                                                                                                                                   |
+| SmartApp  | `message`, `start`, `rating`                                                                                                                        |
 
 Кастомная платформа, унаследованная от `BasePlatform`, объявляет собственный
 `supportedEvents` (базовое значение — `['message']`) и автоматически участвует в валидации.
+
+Ссылка-приглашение с параметром (`t.me/<бот>?start=`, `vk.me/<сообщество>?ref=`, `max.ru/<бот>?start=`,
+`viber://pa?chatURI=<бот>&context=`) на всех четырёх платформах приходит событием `start` с параметром в
+`ctx.payload` — таблица ссылок и правила — в api-reference.md, раздел «Ссылка-приглашение (событие `start`)».
 
 ### API платформы (`controller.api`)
 
@@ -1037,6 +1049,66 @@ import { T_TELEGRAM } from 'umbot/plugins';
 // Отправка сообщения пользователю в Telegram
 const result = await bot.send('123456789', 'Привет! Это рассылка.', T_TELEGRAM);
 ```
+
+### Результат отправки
+
+`bot.send()` возвращает `false`, если сообщение не дошло: платформа отклонила запрос (пользователь
+заблокировал бота, неверный id, ошибка 4xx/5xx), сеть недоступна или истёк таймаут. Причина — в логе
+(`logError` клиента API). При успешной отправке возвращается `'ok'`. `false` возвращается и для платформ без
+рассылок (Алиса, Маруся, SmartApp) и для незарегистрированной платформы.
+
+Ответ из нескольких сообщений (текст, затем карточки) считается недоставленным, если платформа отклонила хотя бы
+одно из них: часть ответа при этом могла дойти, поэтому повтор отправит её ещё раз.
+
+Текст с кнопками можно отправить без сборки контроллера — объектом `{ text, tts?, buttons? }`; кнопка — строка или
+`{ title, url?, payload?, options? }` (payload кнопки с данными — `action.payload(data)` из `bot.defineAction`).
+Карточки и звуки по-прежнему отправляются контроллером.
+
+```ts
+await bot.send(
+    userId,
+    { text: 'Комната готова', buttons: ['Открыть', { title: 'Сайт', url: 'https://example.com' }] },
+    T_TELEGRAM,
+);
+```
+
+`bot.send(userId, контроллер, platform)` отправляет контроллер именно `userId`: один контроллер можно по очереди
+отправить разным людям (параллельно — нельзя, создавайте свой на каждого получателя).
+
+### Рассылка многим пользователям (`bot.broadcast`)
+
+`bot.broadcast(userIds, message, platform, { onResult })` отправляет сообщение всем получателям и возвращает, кому
+оно дошло: `{ sent, failed }`. Сообщение — строка, объект `{ text, buttons }` или фабрика
+`(userId) => сообщение | контроллер` (текст под получателя, карточки, звуки); `onResult(userId, ok)` вызывается после каждой отправки — для прогресса или отметки в БД.
+
+```ts
+const { sent, failed } = await bot.broadcast(
+    subscribers,
+    { text: 'Новый выпуск', buttons: [{ title: 'Читать', url: 'https://example.com/news' }] },
+    T_TELEGRAM,
+    { onResult: (userId, ok) => markDelivered(userId, ok) },
+);
+console.log(`Доставлено ${sent.length} из ${subscribers.length}`);
+```
+
+Темп отправки ограничен лимитом платформы, поэтому рассылка на сотни получателей не получает отказов 429 /
+«Too many requests»: Telegram — 30 сообщений в секунду, VK — 20, MAX — 30 (поверх очереди 500 мс на диалог), у
+Viber ограничения нет. Лимит действует на `bot.send()` и `bot.broadcast()`, ответы на входящие сообщения очередь не
+ждут. Переопределить лимит — опция адаптера `send_rate_limit` (сообщений в секунду):
+
+```ts
+bot.use(new TelegramAdapter(token, { send_rate_limit: 20 }));
+```
+
+Для большого списка получателей используйте `bot.broadcast`, а не `Promise.all` по `bot.send()`: `Promise.all` сразу
+занимает очередь на всех получателей, и `bot.send()` из обработчиков ждёт до конца рассылки; `broadcast` держит в
+очереди не больше 10 сообщений.
+
+Ограничение «одно сообщение в секунду в один чат» у Telegram очередь не учитывает: при частых сообщениях одному
+пользователю Telegram ответит 429, адаптер один раз повторит отправку, если пауза не больше 5 секунд.
+
+`telegram_webhook_reply` на `bot.send()` не влияет: входящего запроса нет, поэтому сообщение всегда уходит
+запросом к Bot API.
 
 ## Лучшие практики
 

@@ -1,23 +1,23 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { generateFromFlow, validateFlowSchema } from './../../cli/flowGenerator';
 import { expectProjectToTypeCheck } from '../helpers/typecheck';
 import { loadEnvFile } from '../../src/utils';
 
-const TEST_DIR = path.join(__dirname, '__test_output__');
-const JSON_DIR = path.join(TEST_DIR, 'json');
+// Уникальная папка на каждый тест в системном tmp: общая папка внутри репозитория
+// давала EPERM при очистке на Windows (tsc прошлого теста ещё держал файлы).
+let TEST_DIR: string;
+let JSON_DIR: string;
 
 beforeEach(() => {
-    if (fs.existsSync(TEST_DIR)) {
-        fs.rmSync(TEST_DIR, { recursive: true });
-    }
+    TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'umbot-flowgen-'));
+    JSON_DIR = path.join(TEST_DIR, 'json');
     fs.mkdirSync(JSON_DIR, { recursive: true });
 });
 
 afterEach(() => {
-    if (fs.existsSync(TEST_DIR)) {
-        fs.rmSync(TEST_DIR, { recursive: true });
-    }
+    fs.rmSync(TEST_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
 function writeJsonAndGenerate(

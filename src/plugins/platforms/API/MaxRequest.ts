@@ -28,10 +28,9 @@ const maxLastMessageAt = new Map<string, number>();
  * Создаёт неблокирующую процесс задержку для соблюдения лимита MAX.
  */
 function waitForMaxInterval(timeout: number): Promise<void> {
-    return new Promise((resolve) => {
-        const timer = setTimeout(resolve, timeout);
-        timer.unref();
-    });
+    // Без unref(): отправку ждут, и в скрипте без сервера (cron) процесс иначе
+    // завершился бы, не отправив сообщение. Пауза — не больше 500 мс.
+    return new Promise((resolve) => setTimeout(resolve, timeout));
 }
 
 /**

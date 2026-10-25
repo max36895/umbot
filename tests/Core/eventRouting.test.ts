@@ -360,6 +360,53 @@ describe('Bot.addEvent: валидация по supportedEvents подключё
     });
 });
 
+describe('Событие start по ссылке-приглашению (Telegram)', () => {
+    function makeBot(): { bot: Bot; sent: string[] } {
+        const bot = new Bot();
+        bot.initBotController(TestController);
+        bot.setLogger({ log: () => {}, error: () => {}, warn: () => {} });
+        bot.use(new TelegramAdapter('1:t'));
+        const sent: string[] = [];
+        bot.getAppContext().httpClient = async (_url, options): Promise<Response> => {
+            sent.push(String(options?.body ?? ''));
+            return Response.json({ ok: true, result: { message_id: 1 } });
+        };
+        return { bot, sent };
+    }
+
+    const update = (text: string): string =>
+        JSON.stringify({
+            update_id: 1,
+            message: {
+                message_id: 1,
+                from: { id: 42, is_bot: false, first_name: 'U' },
+                chat: { id: 42, type: 'private' },
+                text,
+            },
+        });
+
+    it('обработчик start получает параметр ссылки', async () => {
+        const { bot, sent } = makeBot();
+        bot.addEvent('start', (ctx) => {
+            ctx.text = `Комната ${String(ctx.payload)}`;
+        });
+        await bot.run('telegram', update('/start K7M2QX'));
+        expect(sent.some((body) => body.includes('Комната K7M2QX'))).toBe(true);
+        await bot.close();
+    });
+
+    it('обработчик start вернул false — срабатывает команда по тексту /start', async () => {
+        const { bot, sent } = makeBot();
+        bot.addEvent('start', () => false);
+        bot.addCommand('start_cmd', ['/start'], (_t, ctx) => {
+            ctx.text = 'Команда /start';
+        });
+        await bot.run('telegram', update('/start K7M2QX'));
+        expect(sent.some((body) => body.includes('Команда /start'))).toBe(true);
+        await bot.close();
+    });
+});
+
 function isEventType(event: string): boolean {
     return (ALL_EVENT_TYPES as readonly string[]).includes(event);
 }

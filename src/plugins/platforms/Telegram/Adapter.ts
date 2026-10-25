@@ -45,6 +45,24 @@ type ITelegramRequestData = Record<string, unknown> & {
 };
 
 /**
+ * Параметр ссылки `t.me/<бот>?start=<параметр>`: Telegram присылает его текстом
+ * «/start <параметр>» (в группах — «/start@бот <параметр>»).
+ * @param text Текст сообщения
+ * @returns Параметр с исходным регистром или null, если это не переход по ссылке с параметром
+ */
+function getStartParam(text: string | undefined): string | null {
+    if (!text?.startsWith('/start')) {
+        return null;
+    }
+    const space = text.indexOf(' ');
+    const command = space === -1 ? '' : text.slice(0, space);
+    if (command !== '/start' && !command.startsWith('/start@')) {
+        return null;
+    }
+    return text.slice(space + 1).trim() || null;
+}
+
+/**
  * Адаптер, обеспечивающий поддержку платформы Telegram. Позволяет разрабатывать чат-ботов для Телеграм на TypeScript с использованием кросс-платформенного функционала: обработка текстовых запросов, работа с карточками и кнопками.
  *
  * Подключение адаптера не требует изменения существующей бизнес-логики: после интеграции
@@ -106,6 +124,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         'inline',
         'message_edited',
         'channel_post',
+        'start',
     ];
     /**
      * Telegram — чат-платформа (не голосовая).
@@ -115,6 +134,11 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
      * Лимит запросов/сек для входящего rateLimiter (лимит Telegram Bot API).
      */
     limit = 30;
+    /**
+     * Рассылка через `bot.send()`: Telegram допускает около 30 сообщений в секунду разным
+     * пользователям (Bots FAQ), при превышении отвечает 429.
+     */
+    sendLimit = 30;
     signatureName = 'x-telegram-bot-api-secret-token';
 
     /**
@@ -473,6 +497,12 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         controller.originalUserCommand = message.text || '';
         controller.messageId = message.message_id;
         controller.eventType = telegramMessageEvent(message);
+        // Как у MAX: переход по ссылке с параметром — событие start, параметр в payload.
+        const startParam = getStartParam(message.text);
+        if (startParam) {
+            controller.eventType = 'start';
+            controller.payload = startParam;
+        }
 
         // Данные пользователя берём у отправителя (from), а не у чата: в группах
         // chat.username — это публичный юзернейм группы, а не человека.
@@ -675,7 +705,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         // используем его как текст: иначе Telegram не получал вообще ничего.
         const text = getChatText(controller.text, controller.tts);
         if (text) {
-            await telegramApi.sendMessage(chatId, text, params);
+            this.checkSendResult(controller, await telegramApi.sendMessage(chatId, text, params));
             return;
         }
         const hasKeyboard = hasOtherContent.buttons || params.reply_markup;
@@ -710,7 +740,7 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
             controller,
         );
         if (media) {
-            await telegramApi.sendMediaGroup(chatId, media);
+            this.checkSendResult(controller, await telegramApi.sendMediaGroup(chatId, media));
         }
     }
 
@@ -824,7 +854,11 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         controller: BotController,
         requestData: ITelegramRequestData,
     ): Record<string, unknown> | null {
-        if (this._platformOptions?.telegram_webhook_reply !== true || this.#isPolling) {
+        if (
+            this._platformOptions?.telegram_webhook_reply !== true ||
+            this.#isPolling ||
+            controller.platformOptions.isProactive
+        ) {
             return null;
         }
         // Callback-запросы требуют answerCallbackQuery — Telegram сам их не

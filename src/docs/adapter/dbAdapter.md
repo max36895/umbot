@@ -48,7 +48,8 @@
   внешние пакеты [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter) (SQL через Knex.js) и
   [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter) (YDB).
 
-`ensureSchema` получает `DB_TABLES_SCHEMA` (экспортируется из `umbot`): имя таблицы, первичный ключ, `uniqueKeys`,
+`ensureSchema` получает `DB_TABLES_SCHEMA` (экспортируется из `umbot`), а следом — таблицы приложения из
+`appConfig.dbTables`, если они заданы: имя таблицы, первичный ключ, `uniqueKeys`,
 поля с типами (`string` с `maxLength` / `text`) и наборы полей для индексов. Метод должен быть идемпотентным
 (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`); при сбое верните `false` или бросьте исключение —
 фреймворк запишет ошибку в лог и продолжит работу. Полный пример для PostgreSQL — в
