@@ -1067,10 +1067,15 @@ getRatingContext(controller: BotController): Promise<object> {
 
 Базовый `send()` помечает контроллер флагом `platformOptions.isProactive = true`: входящего запроса нет,
 поэтому `getContent` не должен отвечать телом вебхука (как `telegram_webhook_reply`) — только запросом к API.
+По этому же флагу выбирайте адресата — везде, где отправка выбирает чат (текст, карточки, звуки, загрузка
+медиа): при `isProactive` получатель — аргумент `send()` (`controller.userId`), а чат, сохранённый из
+входящего запроса (`requestData.chatId`/`peerId`), принадлежит прошлому диалогу и не должен перехватывать
+рассылку.
 Чтобы `bot.send()` сообщал о недоставленном сообщении, передайте результат запроса отправки в
 `this.checkSendResult(controller, result)`: при `null`/`false` он выставит `controller.platformOptions.sendFailed`,
 и `send()` вернёт `false`. Тело ответа на вебхук при этом не меняется: вернуть ошибку из `getContent` нельзя, иначе
-платформа повторит доставку.
+платформа повторит доставку. Пустой ответ (нет ни текста, ни карточек, ни звуков — отправлять нечего) тоже
+отмечайте недоставкой: `this.checkSendResult(controller, null)`, иначе `broadcast()` посчитает его успешным.
 
 ```ts
 this.checkSendResult(controller, await myApi.sendMessage(controller.userId, controller.text));
@@ -1086,6 +1091,19 @@ return 'ok';
 class MyAdapter extends BasePlatformAdapter {
     sendLimit = 20; // лимит API платформы на исходящие сообщения
 }
+```
+
+Если одна отправка делает несколько вызовов API платформы (например, загрузка медиа перед отправкой, как у
+карточек VK), резервируйте дополнительные слоты лимита методом `consumeSendLimit(count)` — очередь рассылки
+разредится, и общий лимит запросов платформы не будет превышен. Вызывайте его перед вспомогательными вызовами:
+слот самой отправки `send()` учитывает сам. Без заданного лимита метод ничего не делает. Из обработчиков
+карточек и звуков удобнее хелпер `pUtils.consumeUploadRate(controller, platformName, apiCalls)` — он сам
+находит адаптер платформы в реестре (встроенные адаптеры VK и MAX используют именно его).
+
+```ts
+// Отправка с загрузкой файла: два вызова подготовки + сама отправка
+this.consumeSendLimit(2);
+const upload = await myApi.uploadPhoto(controller, path);
 ```
 
 ### Единый формат ошибок API (`getErrorMsg`, `getErrorToken`)

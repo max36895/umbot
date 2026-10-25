@@ -481,15 +481,54 @@ export abstract class BasePlatform<TQuery = unknown>
      * @returns Сколько миллисекунд ждать до отправки (0 — сразу)
      */
     #reserveSendSlot(): number {
-        const option = Number(this._platformOptions?.send_rate_limit);
-        const limit = option > 0 ? option : this.sendLimit;
-        if (!limit || limit <= 0) {
+        const limit = this.#resolveSendLimit();
+        if (limit <= 0) {
             return 0;
         }
         const now = Date.now();
         const sendAt = Math.max(now, this.#nextSendAt);
         this.#nextSendAt = sendAt + 1000 / limit;
         return sendAt - now;
+    }
+
+    /**
+     * Разрешённый лимит отправок в секунду: опция адаптера `send_rate_limit`, иначе {@link sendLimit}.
+     * Нечисловое значение трактуется как «без ограничения».
+     * @returns Лимит (0 — без ограничения)
+     */
+    #resolveSendLimit(): number {
+        const option = Number(this._platformOptions?.send_rate_limit);
+        const limit = option > 0 ? option : (this.sendLimit ?? 0);
+        return Number.isFinite(limit) && limit > 0 ? limit : 0;
+    }
+
+    /**
+     * Учитывает дополнительные вызовы API платформы в лимите отправки ({@link sendLimit}),
+     * не ожидая очереди.
+     *
+     * Один {@link send} — не всегда один вызов API: например, отправка карточки VK с
+     * незакэшированной картинкой — это ещё и загрузка (photos.getMessagesUploadServer,
+     * photos.saveMessagesPhoto), а методами платформы делится общий лимит запросов/с.
+     * Вызывайте перед вспомогательными API-вызовами своей отправки (из `getContent`
+     * адаптера или обработчика карточек) — очередь рассылки разредится, и платформа
+     * не ответит ошибкой «Too many requests».
+     *
+     * @param count Сколько дополнительных вызовов API сейчас будет сделано
+     *
+     * @example
+     * ```ts
+     * // Адаптер с загрузкой медиа: две подготовки + сама отправка
+     * // (отправку send() учтёт сам)
+     * this.consumeSendLimit(2);
+     * const upload = await myApi.uploadPhoto(controller, path);
+     * ```
+     */
+    public consumeSendLimit(count: number): void {
+        const limit = this.#resolveSendLimit();
+        if (limit <= 0 || !Number.isFinite(count) || count <= 0) {
+            return;
+        }
+        this.#nextSendAt = Math.max(Date.now(), this.#nextSendAt) + (count * 1000) / limit;
     }
 
     /**

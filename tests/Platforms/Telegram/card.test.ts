@@ -102,6 +102,55 @@ describe('Telegram Card', () => {
             expect(sendPhotoSpy).toHaveBeenCalledWith(-100500, 'cached_photo_id', 'Фото');
         });
 
+        it('протактивная отправка: фото уходит адресату send(), а не чату входящего запроса', async () => {
+            getPlatformRequestData<{ chatId?: number }>(controller, 'telegram').chatId = -100500;
+            controller.platformOptions.isProactive = true;
+            const sendPhotoSpy = jest
+                .spyOn(TelegramRequest.prototype, 'sendPhoto')
+                .mockResolvedValue({ ok: true, result: null });
+
+            await TelegramCard.cardProcessing(
+                {
+                    usedGallery: false,
+                    images: [{ imageToken: 'cached_photo_id', desc: 'Фото' }],
+                    buttons: controller.buttons,
+                    title: null,
+                    description: null,
+                },
+                controller,
+            );
+
+            // controller.userId — адресат, которого подставляет BasePlatform.send()
+            expect(sendPhotoSpy).toHaveBeenCalledWith(12345, 'cached_photo_id', 'Фото');
+        });
+
+        it('протактивная отправка URL-картинки: sendPhoto уходит адресату send()', async () => {
+            getPlatformRequestData<{ chatId?: number }>(controller, 'telegram').chatId = -100500;
+            controller.platformOptions.isProactive = true;
+            const sendPhotoSpy = jest
+                .spyOn(TelegramRequest.prototype, 'sendPhoto')
+                .mockResolvedValue({
+                    ok: true,
+                    result: {
+                        message_id: 100,
+                        photo: [{ file_id: 'f1', width: 100, height: 100 }],
+                    } as never,
+                });
+
+            await TelegramCard.cardProcessing(
+                {
+                    usedGallery: false,
+                    images: [{ imageDir: 'https://example.com/pic.jpg', desc: 'Фото' }],
+                    buttons: controller.buttons,
+                    title: null,
+                    description: null,
+                },
+                controller,
+            );
+
+            expect(sendPhotoSpy).toHaveBeenCalledWith(12345, 'https://example.com/pic.jpg', 'Фото');
+        });
+
         it('возвращает массив ITelegramMedia для нескольких изображений', async () => {
             const cardInfo: ICardInfo = {
                 usedGallery: true,

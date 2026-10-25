@@ -719,6 +719,11 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
                         : ''),
             );
         }
+        if (!hasOtherContent.cards && !hasOtherContent.sounds) {
+            // Карточек и звуков не будет — пользователю не уходит ничего. Отмечаем
+            // недоставку: send()/broadcast() обязаны видеть это как failure, а не «ok».
+            this.checkSendResult(controller, null);
+        }
     }
 
     /**
@@ -773,7 +778,13 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         requestData: ITelegramRequestData,
     ): Promise<void> {
         const params = this.#buildMessageParams(controller);
-        const chatId = (requestData.chatId ?? controller.userId) as TTelegramChatId;
+        // Адресат протактивной отправки — аргумент send(): chatId входящего запроса
+        // принадлежит чату этого запроса (возможно, групповому), а не получателю.
+        const chatId = (
+            controller.platformOptions.isProactive
+                ? controller.userId
+                : (requestData.chatId ?? controller.userId)
+        ) as TTelegramChatId;
 
         await this.#answerCallback(controller, telegramApi, requestData);
 

@@ -913,11 +913,14 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
         if (!text && params.template !== undefined) {
             text = this.#getCarouselText(controller);
         }
-        const sent = await vkApi.messagesSend(
-            (requestData.peerId ?? controller.userId) as string,
-            Text.resize(text, 4096),
-            params,
-        );
+        // Адресат протактивной отправки — аргумент send(): peerId входящего запроса
+        // принадлежит чату этого запроса, а не получателю рассылки.
+        const peerId = (
+            controller.platformOptions.isProactive
+                ? controller.userId
+                : (requestData.peerId ?? controller.userId)
+        ) as string;
+        const sent = await vkApi.messagesSend(peerId, Text.resize(text, 4096), params);
         this.checkSendResult(controller, sent);
         return 'ok';
     }

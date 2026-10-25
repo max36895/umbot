@@ -70,13 +70,19 @@
 - **VK uploads** — photos (`photos.getMessagesUploadServer`) must be uploaded in the multipart
   field `photo`, documents/voice in `file`. `docs.save` returns `{type, doc | audio_message}` —
   ids live in the nested object. Carousel elements must share one structure (same button count)
-  and the message text is mandatory with a carousel.
+  and the message text is mandatory with a carousel. A photo or voice cache miss burns 2 extra
+  `api.vk.com` slots (getMessagesUploadServer + save; the multipart POST goes to the upload
+  server, not the API) — `Vk/Card.ts` and `Vk/Sound.ts` reserve them via
+  `pUtils.consumeUploadRate(controller, T_VK, 2)` so media broadcasts respect the shared
+  20 rps token limit.
 - **MAX uploads** — the upload-server response for `audio`/`video` is `retval` (not JSON); their
   token comes from the `POST /uploads` step. Never cache the one-time upload `url` as a token.
   A message sent right after an upload may be rejected with `attachment.not.ready` — `MaxRequest`
   retries it (0.5/1/2 s). `POST /answers` with `message` REPLACES the message with the pressed
   button; the adapter acknowledges with `{}` and replies via `POST /messages` unless
-  `max_callback_edit_message: true`.
+  `max_callback_edit_message: true`. An image/audio cache miss is 1 extra Bot API call
+  (`POST /uploads`) — `Max/Card.ts` and `Max/Sound.ts` reserve it via
+  `pUtils.consumeUploadRate(controller, T_MAX_APP, 1)`.
 - **SpeechKit TTS** — body `application/x-www-form-urlencoded`, auth `Api-Key <key>` or
   `Bearer <IAM>`; the `OAuth` scheme belongs to the Dialogs API only.
 - **Telegram button `style`** — only `danger`, `success`, `primary`.

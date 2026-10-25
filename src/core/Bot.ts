@@ -455,7 +455,8 @@ export interface IBroadcastResult {
 
 /**
  * Данные кнопки действия ({@link Bot.defineAction}): плоский объект, который уходит в payload
- * кнопки и возвращается обработчику при нажатии.
+ * кнопки и возвращается обработчику при нажатии. Ключи `action` и `command` зарезервированы
+ * для маршрутизации нажатия — они игнорируются в данных кнопки.
  */
 export type TActionData = Record<string, string | number | boolean | null>;
 
@@ -485,9 +486,10 @@ export interface IButtonAction<
     readonly name: string;
     /**
      * Payload кнопки этого действия — для `card.addButton()` и других мест, где кнопка
-     * создаётся не через {@link IButtonAction.addBtn}.
+     * создаётся не через {@link IButtonAction.addBtn}. Зарезервированные ключи `action` и
+     * `command` из данных исключаются: маршрутизация нажатия всегда ведёт на это действие.
      * @param data Данные кнопки
-     * @returns `{ action: name, ...data }`
+     * @returns `{ action: name, ...data }` без зарезервированных ключей
      */
     payload(data?: TData): Record<string, unknown>;
     /**
@@ -1522,6 +1524,9 @@ export class Bot<
      * до 64 байт (предупреждение — при создании кнопки), VK — до 255 (при превышении VK-адаптер
      * предупреждает и пропускает кнопку при сериализации клавиатуры перед отправкой).
      *
+     * Ключи `action` и `command` в данных зарезервированы для маршрутизации нажатия и
+     * игнорируются (с предупреждением в лог): кнопка всегда ведёт на своё действие.
+     *
      * @param actionName Имя действия
      * @returns Действие: `addBtn`, `payload`, `handle`
      *
@@ -1542,9 +1547,30 @@ export class Bot<
         TBotController extends BotController = BotController,
     >(actionName: string): IButtonAction<TData, TBotController> {
         const appContext = this.#appContext;
+        // Ключи action/command маршрутизируют нажатие: данные кнопки не могут
+        // их перезаписать, иначе кнопка уводила бы запрос в другое действие.
+        const reservedWarned = new Set<string>();
         const action: IButtonAction<TData, TBotController> = {
             name: actionName,
-            payload: (data) => ({ action: actionName, ...data }),
+            payload: (data) => {
+                const payload: Record<string, unknown> = { action: actionName };
+                if (data) {
+                    for (const key of Object.keys(data)) {
+                        if (key === 'action' || key === 'command') {
+                            const warnKey = `${actionName}:${key}`;
+                            if (!reservedWarned.has(warnKey)) {
+                                reservedWarned.add(warnKey);
+                                appContext.logWarn(
+                                    `Bot.defineAction(): ключ "${key}" в данных действия "${actionName}" зарезервирован для маршрутизации и игнорируется — кнопка всегда ведёт на само действие.`,
+                                );
+                            }
+                            continue;
+                        }
+                        payload[key] = data[key];
+                    }
+                }
+                return payload;
+            },
             addBtn: (buttons, title, data, options = {}) => {
                 const payload = action.payload(data);
                 if (appContext.platforms?.telegram) {
@@ -2147,7 +2173,9 @@ export class Bot<
     }
 
     /**
-     * Удаляет **все** зарегистрированные шаги.
+     * Удаляет **все** зарегистрированные шаги и вместе с ними — реестр форм (`addForm`):
+     * форма живёт на шагах, и `startForm` после очистки честно вернёт `false`, а не задаст
+     * вопрос, на который некому ответить.
      *
      * > ⚠️ Это **глобальная операция**: все сценарии станут недоступны.
      * > Используйте с осторожностью (например, при перезагрузке логики приложения).
@@ -2161,6 +2189,7 @@ export class Bot<
      */
     public clearSteps(): this {
         this.#appContext.command.clearSteps();
+        this.#forms.clear();
         return this;
     }
 

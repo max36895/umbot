@@ -145,4 +145,38 @@ describe('bot.defineAction', () => {
         act.addBtn(new Buttons(bot.getAppContext()), 'Кнопка', { text: 'короткий' });
         expect(warns).toEqual([]);
     });
+
+    it('ключи action/command в данных зарезервированы: кнопка ведёт на своё действие', async () => {
+        const bot = new Bot();
+        const warns: string[] = [];
+        bot.setLogger({ log: () => {}, error: () => {}, warn: (m) => warns.push(String(m)) });
+        bot.use(new AlisaAdapter());
+        let menuRan = false;
+        bot.addCommand('menu', ['menu'], () => {
+            menuRan = true;
+        });
+        const vote = bot.defineAction<{ command: string; action: string; n: number }>('vote');
+        let received: unknown = null;
+        vote.handle((data) => {
+            received = data;
+            return 'voted';
+        });
+
+        // Зарезервированные ключи не переопределяют маршрут нажатия
+        expect(vote.payload({ command: 'menu', action: 'other', n: 3 })).toEqual({
+            action: 'vote',
+            n: 3,
+        });
+        expect(await answer(bot, press(vote.payload({ command: 'menu', n: 3 })))).toBe('voted');
+        expect(received).toEqual({ n: 3 });
+        expect(menuRan).toBe(false);
+        expect(warns.some((w) => w.includes('"command"') && w.includes('vote'))).toBe(true);
+        expect(warns.some((w) => w.includes('"action"') && w.includes('vote'))).toBe(true);
+
+        // Предупреждение — один раз на ключ действия, а не на каждую кнопку
+        warns.length = 0;
+        vote.payload({ command: 'menu', action: 'other', n: 4 });
+        expect(warns).toEqual([]);
+        await bot.close();
+    });
 });

@@ -549,4 +549,15 @@ describe('Bot.startForm и расширенные поля формы', () => {
         bot.removeForm('tmp');
         expect(bot.startForm(new BotController(bot.getAppContext()), 'tmp')).toBe(false);
     });
+
+    it('clearSteps чистит и реестр форм: startForm возвращает false, а не сломанный вопрос', () => {
+        const bot = makeBot();
+        bot.addForm('tmp', { fields: [{ name: 'a', prompt: 'A?' }], onComplete: () => {} });
+        expect(bot.startForm(new BotController(bot.getAppContext()), 'tmp')).toBe(true);
+        bot.clearSteps();
+        expect(bot.getAppContext().command.steps.has('__form_tmp_0')).toBe(false);
+        // Реестр форм очищен вместе со шагами: иначе startForm вернул бы true,
+        // задал первый вопрос, а ответ пользователя ушёл бы обычным командам.
+        expect(bot.startForm(new BotController(bot.getAppContext()), 'tmp')).toBe(false);
+    });
 });

@@ -9,14 +9,18 @@ import { Bot, BaseBotController } from '../../src';
 import {
     AlisaAdapter,
     MaxAdapter,
+    MaxRequest,
     T_ALISA,
     T_MAX_APP,
     T_TELEGRAM,
     T_VIBER,
     T_VK,
     TelegramAdapter,
+    TelegramRequest,
     ViberAdapter,
     VkAdapter,
+    VkRequest,
+    VkSound,
 } from '../../src/plugins';
 
 interface ICall {
@@ -40,6 +44,12 @@ const json =
     (): Promise<Response> =>
         Promise.resolve(Response.json(data, { status }));
 const networkError = (): Promise<Response> => Promise.reject(new Error('ECONNRESET'));
+
+// Спайны на прототипах API-классов переживают тест: без восстановления они
+// подменяют sendMessage/messagesSend в следующих тестах этого файла.
+afterEach(() => {
+    jest.restoreAllMocks();
+});
 
 describe('bot.send(): Telegram', () => {
     function setup(
@@ -381,5 +391,247 @@ describe('bot.send / broadcast с сообщением { text, buttons }', () =>
         );
         expect([...result.sent].sort()).toEqual(['1', '2']);
         expect(calls.every((call) => call.body.includes('reply_markup'))).toBe(true);
+    });
+});
+
+describe('bot.send(): контроллер входящего запроса уходит адресату send()', () => {
+    it('Telegram: chat_id входящего чата не перехватывает рассылку', async () => {
+        const { bot } = makeBot(json({ ok: true, result: { message_id: 1 } }));
+        bot.use(new TelegramAdapter('1:t'));
+        const adapter = bot.getAppContext().platforms[T_TELEGRAM]!;
+        const sendMessage = jest
+            .spyOn(TelegramRequest.prototype, 'sendMessage')
+            .mockResolvedValue({ message_id: 1 });
+        const ctx = new BaseBotController(bot.getAppContext());
+        await adapter.setQueryData(
+            {
+                update_id: 1,
+                message: {
+                    message_id: 1,
+                    from: { id: 42, is_bot: false, first_name: 'U' },
+                    chat: { id: 4242, type: 'private' },
+                    text: 'привет',
+                },
+            },
+            ctx,
+        );
+        ctx.text = 'Ответ';
+        // Ответ на вебхук идёт в чат запроса
+        await adapter.getContent(ctx);
+        expect(sendMessage.mock.calls[0]?.[0]).toBe(4242);
+        // Рассылка тем же контроллером — адресату send(), не в чат запроса
+        await bot.send(99, ctx, T_TELEGRAM);
+        expect(sendMessage.mock.calls[1]?.[0]).toBe(99);
+        // После send() контроллер восстановлен
+        expect(ctx.userId).toBe(42);
+        expect(ctx.platformOptions.isProactive).toBeUndefined();
+    });
+
+    it('VK: peer_id входящего чата не перехватывает рассылку', async () => {
+        const { bot } = makeBot(json({ response: 1 }));
+        bot.use(new VkAdapter('t', { vk_load_user_info: false }));
+        const adapter = bot.getAppContext().platforms[T_VK]!;
+        const messagesSend = jest
+            .spyOn(VkRequest.prototype, 'messagesSend')
+            .mockResolvedValue({ message_id: 1 });
+        const ctx = new BaseBotController(bot.getAppContext());
+        await adapter.setQueryData(
+            {
+                type: 'message_new',
+                group_id: '1',
+                object: { message: { from_id: 12345, peer_id: 4242, id: 1, text: 'привет' } },
+            },
+            ctx,
+        );
+        ctx.text = 'Ответ';
+        await adapter.getContent(ctx);
+        expect(messagesSend.mock.calls[0]?.[0]).toBe(4242);
+        await bot.send(99, ctx, T_VK);
+        expect(messagesSend.mock.calls[1]?.[0]).toBe(99);
+        expect(ctx.userId).toBe(12345);
+    });
+
+    it('MAX: chat_id входящего группового чата не перехватывает рассылку', async () => {
+        const { bot } = makeBot(json({}));
+        bot.use(new MaxAdapter('max-token'));
+        const adapter = bot.getAppContext().platforms[T_MAX_APP]!;
+        const messagesSend = jest
+            .spyOn(MaxRequest.prototype, 'messagesSend')
+            .mockResolvedValue(null);
+        const ctx = new BaseBotController(bot.getAppContext());
+        await adapter.setQueryData(
+            {
+                update_type: 'message_created',
+                timestamp: 1,
+                message: {
+                    body: { text: 'привет' },
+                    sender: { user_id: 42 },
+                    recipient: { chat_id: 4242, chat_type: 'chat' },
+                    message_id: 1,
+                },
+            } as never,
+            ctx,
+        );
+        ctx.text = 'Ответ';
+        await adapter.getContent(ctx);
+        expect(messagesSend.mock.calls[0]?.[0]).toBe(4242);
+        expect(messagesSend.mock.calls[0]?.[3]).toBe('chat');
+        await bot.send(99, ctx, T_MAX_APP);
+        expect(messagesSend.mock.calls[1]?.[0]).toBe(99);
+        expect(messagesSend.mock.calls[1]?.[3]).toBe('user');
+        expect(ctx.userId).toBe(42);
+    });
+
+    it('Telegram: одиночное фото карточки тоже уходит адресату send(), а не чату запроса', async () => {
+        const { bot } = makeBot(json({ ok: true, result: { message_id: 1 } }));
+        bot.use(new TelegramAdapter('1:t'));
+        const adapter = bot.getAppContext().platforms[T_TELEGRAM]!;
+        const sendMessage = jest
+            .spyOn(TelegramRequest.prototype, 'sendMessage')
+            .mockResolvedValue({ message_id: 1 });
+        const sendPhoto = jest
+            .spyOn(TelegramRequest.prototype, 'sendPhoto')
+            .mockResolvedValue({ ok: true, result: null });
+        const ctx = new BaseBotController(bot.getAppContext());
+        await adapter.setQueryData(
+            {
+                update_id: 1,
+                message: {
+                    message_id: 1,
+                    from: { id: 42, is_bot: false, first_name: 'U' },
+                    chat: { id: 4242, type: 'private' },
+                    text: 'привет',
+                },
+            },
+            ctx,
+        );
+        ctx.text = 'Смотрите фото';
+        ctx.card.addImage('cached_photo_id', 'Фото');
+        await bot.send(99, ctx, T_TELEGRAM);
+        // Текст и фото — оба адресату send(), чат 4242 ничего не получает
+        expect(sendMessage.mock.calls[0]?.[0]).toBe(99);
+        expect(sendPhoto.mock.calls[0]?.[0]).toBe(99);
+    });
+});
+
+describe('bot.send(): пустой ответ — недоставка, а не «ok»', () => {
+    it('Telegram: ответ без текста, карточек и звуков — false', async () => {
+        const { bot, calls } = makeBot(json({ ok: true, result: { message_id: 1 } }));
+        bot.use(new TelegramAdapter('1:t'));
+        await expect(
+            bot.send('42', new BaseBotController(bot.getAppContext()), T_TELEGRAM),
+        ).resolves.toBe(false);
+        expect(calls).toHaveLength(0);
+    });
+
+    it('Telegram: клавиатура без текста тоже ничего не доставляет — false', async () => {
+        const { bot, calls } = makeBot(json({ ok: true, result: { message_id: 1 } }));
+        bot.use(new TelegramAdapter('1:t'));
+        const ctx = new BaseBotController(bot.getAppContext());
+        ctx.buttons.addBtn('Да');
+        await expect(bot.send('42', ctx, T_TELEGRAM)).resolves.toBe(false);
+        expect(calls).toHaveLength(0);
+    });
+
+    it('Viber: ответ без текста и карточек — false', async () => {
+        const { bot, calls } = makeBot(json({ status: 0, status_message: 'ok' }));
+        bot.use(new ViberAdapter('viber-token', { viber_sender: 'Бот' }));
+        await expect(
+            bot.send('u1', new BaseBotController(bot.getAppContext()), T_VIBER),
+        ).resolves.toBe(false);
+        expect(calls).toHaveLength(0);
+    });
+
+    it('broadcast считает пустое сообщение недоставленным', async () => {
+        const { bot } = makeBot(json({ ok: true, result: { message_id: 1 } }));
+        bot.use(new TelegramAdapter('1:t'));
+        const result = await bot.broadcast(
+            ['1', '2'],
+            () => new BaseBotController(bot.getAppContext()),
+            T_TELEGRAM,
+        );
+        expect(result).toEqual({ sent: [], failed: ['1', '2'] });
+    });
+});
+
+describe('Лимит отправки учитывает загрузку медиа VK', () => {
+    it('карточка с незакэшированной картинкой занимает дополнительные слоты лимита', async () => {
+        const { bot } = makeBot(json({ response: 1 }));
+        const times: number[] = [];
+        bot.getAppContext().httpClient = async (url): Promise<Response> => {
+            if (String(url).includes('messages.send')) {
+                times.push(Date.now());
+                return json({ response: 1 })();
+            }
+            // Без upload_url загрузка не состоится, но слоты лимита уже
+            // зарезервированы — резерв делается до вызовов API.
+            return json({ response: {} })();
+        };
+        bot.use(new VkAdapter('t', { vk_load_user_info: false, send_rate_limit: 10 }));
+
+        const withCard = new BaseBotController(bot.getAppContext());
+        withCard.text = 'Смотрите';
+        withCard.card.addImage('https://example.com/pic.jpg');
+        const plain = new BaseBotController(bot.getAppContext());
+        plain.text = 'Просто текст';
+
+        await bot.send(1, withCard, T_VK);
+        await bot.send(2, plain, T_VK);
+        expect(times).toHaveLength(2);
+        // Слоты: сама отправка (100 мс) + 2 слота загрузки = не меньше ~300 мс
+        expect((times[1] as number) - (times[0] as number)).toBeGreaterThanOrEqual(280);
+    });
+
+    it('загрузка голосового VK занимает дополнительные слоты лимита', async () => {
+        const { bot } = makeBot(json({ response: 1 }));
+        const times: number[] = [];
+        bot.getAppContext().httpClient = async (url): Promise<Response> => {
+            if (String(url).includes('messages.send')) {
+                times.push(Date.now());
+                return json({ response: 1 })();
+            }
+            // docs.getMessagesUploadServer без upload_url — загрузка не состоится,
+            // но два слота уже зарезервированы (резерв идёт до вызовов API).
+            return json({ response: {} })();
+        };
+        bot.use(new VkAdapter('t', { vk_load_user_info: false, send_rate_limit: 10 }));
+
+        await bot.send(1, 'первая', T_VK);
+        const ctx = new BaseBotController(bot.getAppContext());
+        ctx.userId = 2;
+        // Cache miss голосового: docs.getMessagesUploadServer + docs.save — 2 слота
+        await VkSound.getSoundInDB(ctx, '/voice.ogg');
+        await bot.send(3, 'вторая', T_VK);
+
+        expect(times).toHaveLength(2);
+        expect((times[1] as number) - (times[0] as number)).toBeGreaterThanOrEqual(280);
+    });
+
+    it('consumeSendLimit: дополнительные вызовы API сдвигают следующую отправку', async () => {
+        const okTelegram = json({ ok: true, result: { message_id: 1 } });
+        const { bot } = makeBot(okTelegram);
+        const times: number[] = [];
+        bot.getAppContext().httpClient = async (): Promise<Response> => {
+            times.push(Date.now());
+            return okTelegram();
+        };
+        bot.use(new TelegramAdapter('1:t', { send_rate_limit: 10 }));
+        const adapter = bot.getAppContext().platforms[T_TELEGRAM] as TelegramAdapter;
+
+        await bot.send(1, 'первая', T_TELEGRAM);
+        adapter.consumeSendLimit(2);
+        await bot.send(2, 'вторая', T_TELEGRAM);
+
+        expect(times).toHaveLength(2);
+        expect((times[1] as number) - (times[0] as number)).toBeGreaterThanOrEqual(280);
+    });
+
+    it('consumeSendLimit без лимита отправки — no-op', async () => {
+        const { bot, calls } = makeBot(json({}));
+        bot.use(new AlisaAdapter());
+        const adapter = bot.getAppContext().platforms[T_ALISA] as AlisaAdapter;
+        expect(() => adapter.consumeSendLimit(3)).not.toThrow();
+        await expect(bot.send('u1', 'Привет', T_ALISA)).resolves.toBe(false);
+        expect(calls).toHaveLength(0);
     });
 });

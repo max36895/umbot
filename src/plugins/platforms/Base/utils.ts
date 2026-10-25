@@ -154,6 +154,38 @@ export async function getSoundToken(
     return null;
 }
 
+/**
+ * Учитывает дополнительные вызовы API платформы в лимите отправки адаптера.
+ *
+ * Вызывайте из обработчиков карточек и звуков перед загрузкой медиа (cache miss):
+ * вызовы загрузки делят общий лимит запросов платформы с отправкой сообщений, и без
+ * резерва рассылка медиа ловит «Too many requests», даже если `sendLimit` соблюдён.
+ * Слот самой отправки учитывает `BasePlatform.send()` — резервируйте только вызовы
+ * загрузки (getUploadServer / save / POST /uploads), а не POST на сервер загрузки.
+ *
+ * Если у адаптера лимит не задан (`sendLimit`/`send_rate_limit`), метод ничего не делает.
+ *
+ * @param controller Контроллер текущей отправки
+ * @param platformName Имя платформы адаптера (`T_VK`, `T_MAX_APP`, ...)
+ * @param apiCalls Сколько вызовов API платформы сделает загрузка
+ *
+ * @example
+ * ```ts
+ * // Загрузка фото VK — два вызова api.vk.com (getUploadServer + save)
+ * consumeUploadRate(controller, T_VK, 2);
+ * const server = await api.photosGetMessagesUploadServer(peerId);
+ * ```
+ */
+export function consumeUploadRate(
+    controller: BotController,
+    platformName: string,
+    apiCalls: number,
+): void {
+    const adapter = controller.appContext.platforms?.[platformName] as
+        { consumeSendLimit?: (count: number) => void } | undefined;
+    adapter?.consumeSendLimit?.(apiCalls);
+}
+
 const PAUSE_REG = /#pause_<\[(\d+)]>#/g;
 
 /**

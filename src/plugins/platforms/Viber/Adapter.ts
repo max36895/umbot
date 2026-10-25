@@ -413,6 +413,7 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
             );
         }
 
+        let delivered = Boolean(text);
         if (controller.isCardInit() && controller.card.images.length) {
             const res = controller.card.getCards(cardProcessing, controller);
             // `cardProcessing` может вернуть одиночный объект (для одной картинки) или массив (для галереи)
@@ -422,11 +423,17 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
                     controller,
                     await viberApi.richMedia(<string>controller.userId, list),
                 );
+                delivered = true;
             }
         }
 
         if (controller.isSoundInit() && controller.sound.sounds.length) {
             await controller.sound.getSounds(controller.tts, soundProcessing, controller);
+        }
+        if (!delivered) {
+            // Ничего не отправлено: send()/broadcast() обязаны видеть это как failure,
+            // а не «ok». Звуки не в счёт: у Viber нет отправки аудио.
+            this.checkSendResult(controller, null);
         }
         return 'ok';
     }

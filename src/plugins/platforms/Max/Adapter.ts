@@ -450,9 +450,12 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
         const requestData = getPlatformRequestData<IMaxRequestData>(controller, this.platformName);
         // MAX Bot API ограничивает текст сообщения 4000 символами
         // Если в запросе был chat_id (групповой чат/канал) — используем его,
-        // иначе отправляем в личный диалог по user_id
+        // иначе отправляем в личный диалог по user_id. Для протактивной отправки
+        // chat_id входящего запроса не учитывается: адресат — аргумент send()
+        // (platformOptions.chatId остаётся ручным переопределением).
         const chatId =
-            requestData.chatId ?? (controller.platformOptions.chatId as number | undefined);
+            (controller.platformOptions.isProactive ? undefined : requestData.chatId) ??
+            (controller.platformOptions.chatId as number | undefined);
         const peerId: string | number = chatId ?? controller.userId ?? '';
         if (peerId === '') {
             controller.appContext.logWarn(

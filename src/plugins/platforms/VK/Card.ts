@@ -5,7 +5,12 @@ import { ICardInfo, ImageTokens, BotController, Text } from '../../../index';
 
 import { buttonProcessing } from './Button';
 import { VkRequest } from '../API';
-import { getImageToken, getPlatformRequestData, cacheMediaToken } from '../Base/utils';
+import {
+    getImageToken,
+    getPlatformRequestData,
+    cacheMediaToken,
+    consumeUploadRate,
+} from '../Base/utils';
 import { IVkButton, IVkButtonObject, IVkCard, IVkCardElement } from './interfaces/IVkPlatform';
 import { T_VK, VK_MAX_CAROUSEL_ELEMENTS } from './constants';
 
@@ -20,12 +25,22 @@ export async function getImageInDB(
     path: string,
 ): Promise<string | null> {
     return getImageToken(path, T_VK, controller, async (model: ImageTokens) => {
+        // Callback выполняется только при cache miss: впереди загрузка — два лишних
+        // вызова api.vk.com (getMessagesUploadServer + saveMessagesPhoto) — резервируем
+        // под них слоты лимита отправки.
+        consumeUploadRate(controller, T_VK, 2);
         const api = new VkRequest(controller.appContext);
         const requestData = getPlatformRequestData<Record<string, unknown> & { peerId?: number }>(
             controller,
             T_VK,
         );
-        const peerId = (requestData.peerId ?? controller.userId) as string;
+        // Адресат протактивной отправки — аргумент send(): peerId входящего
+        // запроса принадлежит чату этого запроса, а не получателю рассылки.
+        const peerId = (
+            controller.platformOptions.isProactive
+                ? controller.userId
+                : (requestData.peerId ?? controller.userId)
+        ) as string;
         const server = await api.photosGetMessagesUploadServer(peerId);
         if (!server?.upload_url) {
             return null;

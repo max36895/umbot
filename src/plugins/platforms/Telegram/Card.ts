@@ -18,7 +18,13 @@ function getChatId(controller: BotController): TTelegramChatId {
         controller,
         T_TELEGRAM,
     );
-    return requestData.chatId ?? (controller.userId as TTelegramChatId);
+    // Адресат протактивной отправки — аргумент send(): chatId входящего запроса
+    // принадлежит чату этого запроса, а не получателю рассылки.
+    return (
+        controller.platformOptions.isProactive
+            ? controller.userId
+            : (requestData.chatId ?? controller.userId)
+    ) as TTelegramChatId;
 }
 
 /**
