@@ -1,6 +1,7 @@
 /**
  * Тесты безопасности файлового адаптера по итогам аудита:
- * - правила модели (query.rules) ограничивают размер ключа/значения на вставке и обновлении;
+ * - правила модели (query.rules) ограничивают размер значения, ключи длиннее max
+ *   отклоняются целиком (обрезка меняла бы идентичность записи);
  * - prototype-ключи в update.data не подменяют прототип строки в кэше;
  * - гонка select→insert в Base.save не теряет правки (повторный update).
  */
@@ -30,22 +31,89 @@ describe('FileAdapter: безопасность записи', () => {
         await removeTestDir(dir);
     });
 
-    it('правила модели обрезают ключ и значение по max (защита от раздутия таблицы)', () => {
+    it('вставка с ключевым полем длиннее max отклоняется, таблица не растёт', () => {
+        const query: IQuery = {
+            tableName: 'UsersData',
+            primaryKeyName: 'userId',
+            uniqueKeys: ['platform'],
+            rules: [{ name: ['userId', 'data'], type: 'string', max: 250 }],
+        };
+        const huge = 'x'.repeat(1000 * 1000);
+        const inserted = adapter._insert({
+            ...query,
+            query: { platform: 'alisa', userId: huge },
+            data: { platform: 'alisa', userId: huge, data: '{"v":"1"}' },
+        });
+        expect(inserted).toBe(false);
+        // Ключ в 1 МБ не записался и не обрезан, а отклонён целиком
+        expect(adapter.getFileData('UsersData')).toEqual({});
+        // Чтение по тому же ключу согласовано: записи нет ни под каким видом
+        const res = adapter._select({ ...query }, { platform: 'alisa', userId: huge }, true);
+        expect(res.status).toBe(false);
+    });
+
+    it('значение (не ключ) обрезается по max, запись находит по исходному ключу', () => {
+        const query: IQuery = {
+            tableName: 'UsersData',
+            primaryKeyName: 'userId',
+            rules: [{ name: ['data'], type: 'string', max: 250 }],
+        };
+        adapter._insert({
+            ...query,
+            query: { userId: 'u1' },
+            data: { userId: 'u1', data: 'd'.repeat(1000) },
+        });
+        const res = adapter._select({ ...query }, { userId: 'u1' }, true);
+        expect(res.status).toBe(true);
+        expect((res.data as { data: string }).data).toBe('d'.repeat(250));
+    });
+
+    it('строки с длинным ключом, записанные прежними версиями, доступны на чтение, обновление и удаление', () => {
+        // Прежние версии (до применения правил) хранили ключ целиком
+        const longId = 'y'.repeat(300);
+        writeFileSync(
+            join(dir, 'UsersData.json'),
+            JSON.stringify({ [longId]: { userId: longId, data: '{"v":"legacy"}' } }),
+            'utf8',
+        );
+        const query: IQuery = {
+            tableName: 'UsersData',
+            primaryKeyName: 'userId',
+            rules: [{ name: ['userId'], type: 'string', max: 250 }],
+        };
+        const found = adapter._select({ ...query }, { userId: longId }, true);
+        expect(found.status).toBe(true);
+        const updated = adapter._update({
+            ...query,
+            query: { userId: longId },
+            data: { data: '{"v":"new"}' },
+        });
+        expect(updated).toBe(true);
+        const removed = adapter._remove({ ...query, query: { userId: longId } });
+        expect(removed).toBe(true);
+        expect(adapter.getFileData('UsersData')).toEqual({});
+    });
+
+    it('обновление с ключевым полем длиннее max в data отклоняется, строка не меняется', () => {
         const query: IQuery = {
             tableName: 'UsersData',
             primaryKeyName: 'userId',
             rules: [{ name: ['userId', 'data'], type: 'string', max: 250 }],
         };
-        const huge = 'x'.repeat(1000 * 1000);
         adapter._insert({
             ...query,
-            query: { userId: huge },
-            data: { userId: huge, data: '{"v":"1"}' },
+            query: { userId: 'u2' },
+            data: { userId: 'u2', data: '{"v":"1"}' },
         });
-        const res = adapter._select({ ...query }, { userId: 'x'.repeat(250) }, true);
-        expect(res.status).toBe(true);
-        // Ключ в 1 МБ не записался: хранимое значение обрезано до max
-        expect(adapter.getFileData('UsersData')['x'.repeat(250)]).toBeDefined();
+        const updated = adapter._update({
+            ...query,
+            query: { userId: 'u2' },
+            data: { userId: 'z'.repeat(300), data: '{"v":"2"}' },
+        });
+        expect(updated).toBe(false);
+        const row = adapter.getFileData('UsersData')['u2'];
+        expect(row.userId).toBe('u2');
+        expect(row.data).toBe('{"v":"1"}');
     });
 
     it('prototype-ключи в update.data не подменяют прототип строки', () => {
