@@ -202,6 +202,7 @@ bot.addCommand('debug', ['debug'], (_, ctx) => {
 **Что делает:**
 
 - Присваивает `ctx.platformOptions.requestId = crypto.randomUUID()` (или fallback на timestamp+random для старых рантаймов).
+- Сохраняет тот же id в `bot.getAppContext().lastRequestId` — последний выданный ID доступен и вне обработки запроса (для логов без доступа к `ctx`).
 - Все логи для одного запроса теперь можно связать через общий ID.
 
 ---

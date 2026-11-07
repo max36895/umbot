@@ -102,6 +102,10 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
      */
     supportedEvents: readonly TEventType[] = ['message', 'callback', 'start', 'message_edited'];
     /**
+     * Известные опции адаптера (для предупреждения о неизвестных ключах — см. BasePlatform).
+     */
+    protected _knownPlatformOptions: readonly string[] = ['max_callback_edit_message', 'secret'];
+    /**
      * MAX — чат-платформа (не голосовая).
      */
     isVoice = false;
@@ -466,7 +470,15 @@ export class MaxAdapter extends BasePlatform<string | IMaxRequestContent> {
         }
         const text = Text.resize(getChatText(controller.text, controller.tts), 4000);
         const callbackId = requestData.callbackId;
-        if (callbackId && this._platformOptions?.max_callback_edit_message === true) {
+        // Протактивную отправку через callback-edit не ведём: переиспользуемый
+        // контроллер несёт callbackId исходного нажатия, POST /answers редактирует
+        // сообщение в чате нажатия — адресат send() не получил бы ничего, хотя
+        // send() отчитался бы успехом. Ответ уходит через messagesSend.
+        if (
+            callbackId &&
+            !controller.platformOptions.isProactive &&
+            this._platformOptions?.max_callback_edit_message === true
+        ) {
             // Opt-in: ответ заменяет сообщение с нажатой кнопкой (POST /answers с message).
             this.checkSendResult(
                 controller,

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { YandexRequest } from './YandexRequest';
 import { AppContext, fwrite } from '../../../index';
 import { join } from 'node:path';
@@ -359,9 +360,12 @@ export class YandexSpeechKit extends YandexRequest {
         if (!audioData) {
             return null;
         }
+        // randomUUID вместо Date.now()+random(100): параллельные синтезы получали
+        // одинаковое имя (пространство 100 значений на миллисекунду) и перетирали
+        // чужой файл — пользователю уходило чужое или обрезанное аудио.
         const fileName = `${
             this._appContext.appConfig.error_log || join(__dirname, '..', '..', 'logs')
-        }/tts_${Date.now()}_${Math.floor(Math.random() * 100)}.ogg`;
+        }/tts_${randomUUID()}.ogg`;
         await fwrite(fileName, new Uint8Array(audioData), 'w');
         return {
             fileName,

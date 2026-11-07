@@ -100,6 +100,12 @@ describe('middleware', () => {
                 (ctx2.platformOptions as Record<string, unknown>).requestId,
             );
         });
+
+        it('сохраняет последний id в appContext.lastRequestId', async () => {
+            const ctx = makeCtx();
+            await requestId()(ctx, () => Promise.resolve());
+            expect(ctx.appContext.lastRequestId).toBe(ctx.platformOptions.requestId);
+        });
     });
 
     describe('maintenance', () => {

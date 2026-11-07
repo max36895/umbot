@@ -95,6 +95,8 @@ function resizeMarusiaTts(tts: string | null): string {
  * @see BotController
  * @see BasePlatform
  *
+ * @deprecated
+ *
  * @group Адаптеры платформ
  */
 export class MarusiaAdapter extends BasePlatform<string | IMarusiaWebhookRequest> {
@@ -106,6 +108,10 @@ export class MarusiaAdapter extends BasePlatform<string | IMarusiaWebhookRequest
      * Универсальные события Маруси: текстовые сообщения и привязка аккаунта (auth).
      */
     supportedEvents: readonly TEventType[] = ['message', 'auth'];
+    /**
+     * Известных опций у адаптера нет: любой переданный ключ даст предупреждение (см. BasePlatform).
+     */
+    protected _knownPlatformOptions: readonly string[] = [];
 
     /**
      * Предупреждение о нескольких хранилищах state уже выведено (один раз на адаптер).

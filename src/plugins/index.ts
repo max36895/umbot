@@ -23,7 +23,44 @@ export { SmartAppAdapter } from './platforms/SmartApp/Adapter';
  * Константы адаптера Сбер SmartApp: лимит bubble-текста 250 символов.
  */
 export * as SmartAppConstants from './platforms/SmartApp/constants';
-export * from './platforms/SmartApp/interfaces/ISmartAppPlatform';
+export type {
+    ISberRating,
+    ISberRatingStatusCode,
+    ISberSmartAppAnnotations,
+    ISberSmartAppAppInfo,
+    ISberSmartAppBubble,
+    ISberSmartAppCard,
+    ISberSmartAppCardAction,
+    ISberSmartAppCardImage,
+    ISberSmartAppCardItem,
+    ISberSmartAppCardPadding,
+    ISberSmartAppCardText,
+    ISberSmartAppCharacterInfo,
+    ISberSmartAppDeviceInfo,
+    ISberSmartAppEntities,
+    ISberSmartAppItem,
+    ISberSmartAppMessageInfo,
+    ISberSmartAppMetaInfo,
+    ISberSmartAppRequestPayload,
+    ISberSmartAppResponsePayload,
+    ISberSmartAppSelectedItem,
+    ISberSmartAppServerAction,
+    ISberSmartAppSession,
+    ISberSmartAppSuggestionAction,
+    ISberSmartAppSuggestionButton,
+    ISberSmartAppUuId,
+    ISberSmartAppWebhookRequest,
+    ISberSmartAppWebhookResponse,
+    ISberSmartImageParam,
+    TMessageName,
+    TSberResponseMessageName,
+    TSberSmartAppEmotionId,
+    TSberSmartAppExpandPolicy,
+    TSberSmartAppPadding,
+    TSberSmartAppTextColor,
+    TSberSmartAppType,
+    TSberSmartAppTypeface,
+} from './platforms/SmartApp/interfaces/ISmartAppPlatform';
 /**
  * Построение кнопок SmartApp: до 8 кнопок-подсказок с server_action и deep_link.
  */
@@ -39,7 +76,31 @@ export * as SmartAppCard from './platforms/SmartApp/Card';
 export { T_SMART_APP } from './platforms/SmartApp/constants';
 
 export { TelegramAdapter } from './platforms/Telegram/Adapter';
-export * from './platforms/Telegram/interfaces/ITelegramPlatform';
+export type {
+    IFileInfo,
+    ITelegramAudio,
+    ITelegramChat,
+    ITelegramContent,
+    ITelegramDocument,
+    ITelegramFrom,
+    ITelegramInlineKeyboard,
+    ITelegramKeyboard,
+    ITelegramMedia,
+    ITelegramMessage,
+    ITelegramMessageChat,
+    ITelegramMessageFrom,
+    ITelegramParams,
+    ITelegramPhoto,
+    ITelegramPoll,
+    ITelegramReplyButton,
+    ITelegramResult,
+    ITelegramResultContent,
+    ITelegramThumb,
+    ITelegramVideo,
+    TButtonPayload,
+    TTelegramChatId,
+    TTelegramQuestionType,
+} from './platforms/Telegram/interfaces/ITelegramPlatform';
 /**
  * Построение кнопок Telegram: inline-клавиатуры до 40 кнопок, callback_data 1–64 байта, style (Bot API 9.4+).
  */
@@ -67,7 +128,24 @@ export { MarusiaAdapter } from './platforms/Marusia/Adapter';
  * Константы адаптера Маруси: лимиты текста/TTS (1024) и состояния (3584 байта).
  */
 export * as MarusiaConstants from './platforms/Marusia/constants';
-export * from './platforms/Marusia/interfaces/IMarusiaPlatform';
+export type {
+    IMarusiaBigImage,
+    IMarusiaButton,
+    IMarusiaButtonCard,
+    IMarusiaEntities,
+    IMarusiaImage,
+    IMarusiaImageGallery,
+    IMarusiaItemsList,
+    IMarusiaNlu,
+    IMarusiaRequest,
+    IMarusiaRequestMeta,
+    IMarusiaRequestState,
+    IMarusiaResponse,
+    IMarusiaSession,
+    IMarusiaSessionResponse,
+    IMarusiaWebhookRequest,
+    IMarusiaWebhookResponse,
+} from './platforms/Marusia/interfaces/IMarusiaPlatform';
 /**
  * Построение кнопок Маруси: лимит 10 кнопок, title до 64 символов, payload до 4096 байт.
  */
@@ -87,7 +165,23 @@ export { AlisaAdapter } from './platforms/Alisa/Adapter';
  * Константы адаптера Алисы: лимиты текста/TTS (1024) и состояния (1 КБ на тип).
  */
 export * as AlisaConstants from './platforms/Alisa/constants';
-export * from './platforms/Alisa/interfaces/IAlisaPlatform';
+export type {
+    IAlisaBigImage,
+    IAlisaButton,
+    IAlisaButtonCard,
+    IAlisaEntities,
+    IAlisaImage,
+    IAlisaImageGallery,
+    IAlisaItemsList,
+    IAlisaNlu,
+    IAlisaRequest,
+    IAlisaRequestMeta,
+    IAlisaRequestState,
+    IAlisaResponse,
+    IAlisaSession,
+    IAlisaWebhookRequest,
+    IAlisaWebhookResponse,
+} from './platforms/Alisa/interfaces/IAlisaPlatform';
 /**
  * Построение кнопок Алисы: лимит 10 кнопок, title до 64 символов, payload до 4096 байт, URL до 1024 байт.
  */
@@ -103,7 +197,14 @@ export * as AlisaCard from './platforms/Alisa/Card';
 export { T_ALISA } from './platforms/Alisa/constants';
 
 export { ViberAdapter } from './platforms/Viber/Adapter';
-export * from './platforms/Viber/interfaces/IViberPlatform';
+export type {
+    IViberButton,
+    IViberButtonObject,
+    IViberCard,
+    IViberContent,
+    IViberMessage,
+    IViberUser,
+} from './platforms/Viber/interfaces/IViberPlatform';
 /**
  * Построение кнопок Viber: rich_media-сетка 6×7, до 6 кнопок в текущей реализации адаптера.
  */
@@ -119,7 +220,15 @@ export * as ViberCard from './platforms/Viber/Card';
 export { T_VIBER } from './platforms/Viber/constants';
 
 export { MaxAdapter } from './platforms/Max/Adapter';
-export * from './platforms/Max/interfaces/IMaxPlatform';
+export type {
+    IMaxAttachment,
+    IMaxButton,
+    IMaxButtonObject,
+    IMaxMessage,
+    IMaxMessageBody,
+    IMaxRequestContent,
+    IMaxSender,
+} from './platforms/Max/interfaces/IMaxPlatform';
 /**
  * Построение кнопок MAX: до 30 рядов по одной кнопке, текст обязателен, URL до 2048 символов.
  */
@@ -135,7 +244,17 @@ export * as MaxCard from './platforms/Max/Card';
 export { T_MAX_APP } from './platforms/Max/constants';
 
 export { VkAdapter, clearVkUserCache } from './platforms/VK/Adapter';
-export * from './platforms/VK/interfaces/IVkPlatform';
+export type {
+    IVkButton,
+    IVkButtonAction,
+    IVkButtonObject,
+    IVkCard,
+    IVkCardElement,
+    IVkClientInfo,
+    IVkMessage,
+    IVkRequestContent,
+    IVkRequestObject,
+} from './platforms/VK/interfaces/IVkPlatform';
 /**
  * Построение клавиатуры VK: label до 40 символов, payload до 255 байт, цвета и группировка в ряды.
  */
@@ -150,11 +269,78 @@ export * as VkSound from './platforms/VK/Sound';
 export * as VkCard from './platforms/VK/Card';
 export { T_VK } from './platforms/VK/constants';
 
-export * from './platforms/API/index';
+export {
+    getErrorMsg,
+    getErrorToken,
+    MarusiaRequest,
+    MaxRequest,
+    prepareTelegramMessageText,
+    TelegramRequest,
+    ViberRequest,
+    VkRequest,
+    YandexImageRequest,
+    YandexRequest,
+    YandexSoundRequest,
+    YandexSpeechKit,
+} from './platforms/API/index';
+export type {
+    IMarusiaApiAudioUpdateLink,
+    IMarusiaApiCreateAudio,
+    IMarusiaApiPictureUpdateLink,
+    IMarusiaApiRemove,
+    IMarusiaApiSavePicture,
+    IMaxAppApi,
+    IMaxAudio,
+    IMaxCard,
+    IMaxFile,
+    IMaxParams,
+    IMaxSendMessage,
+    IMaxUploadFile,
+    IMaxVideo,
+    ITelegramWarnContext,
+    ITTSResult,
+    IViberApi,
+    IViberGetUserDetails,
+    IViberParams,
+    IViberRichMediaParams,
+    IViberSender,
+    IViberUserInfo,
+    IViberWebhookParams,
+    IVkApi,
+    IVkAudioMessage,
+    IVkAudioMessageInfo,
+    IVKDoc,
+    IVkDocSave,
+    IVkGraffiti,
+    IVkParams,
+    IVkParamsUsersGet,
+    IVkPhotosSave,
+    IVkPreview,
+    IVKSendMessage,
+    IVkUploadFile,
+    IVkUploadServer,
+    IVkUsersGet,
+    IVkUsersIds,
+    IYandexApi,
+    IYandexCheckOutPlace,
+    IYandexImagesCheckOutPlaceRequest,
+    IYandexRemoveRequest,
+    IYandexRequestDownloadImage,
+    IYandexRequestDownloadImageRequest,
+    IYandexRequestDownloadImagesRequest,
+    IYandexRequestDownloadSound,
+    IYandexRequestDownloadSoundRequest,
+    IYandexRequestDownloadSoundsRequest,
+    IYandexSoundsCheckOutPlaceRequest,
+    TMaxUploadFile,
+    TVkDocType,
+    TVkPeerId,
+} from './platforms/API/index';
 
 export { voicePlatforms } from './platforms/voicePlatforms';
 export { fullPlatforms } from './platforms/fullPlatforms';
 export { botPlatforms } from './platforms/botPlatforms';
 export { adapters } from './platforms/adapters';
 
-export * from './db';
+export { BaseDbAdapter, FileAdapter, MongoAdapter } from './db';
+export type { IDBFileData, IDBFileInfo, IFileDbInfo, IMongoDbInfo, TFileData } from './db';

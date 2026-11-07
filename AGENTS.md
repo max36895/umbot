@@ -15,9 +15,21 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    ├── test.ts # PUBLIC ENTRY POINT (umbot/test). Export utilities for local console testing (BotTest).
    ├── Preload.ts # PUBLIC ENTRY POINT (umbot/preload). Pre-uploading images/sounds to platform servers to get cached tokens.
    ├── core/ # THE CORE OF THE FRAMEWORK. Has no dependencies on the plugins/ folder.
-   │ ├── Bot.ts # Main orchestrator class. Manages the lifecycle, middleware, and command registration.
+   │ ├── Bot.ts # Main orchestrator class (facade). Manages the lifecycle, middleware, and command registration. Internal subsystems live in core/utils/ as delegate classes — Bot.ts keeps public methods and delegates.
    │ ├── AppContext.ts # State storage: configs, tokens, plugin registry, logger, metrics.
    │ ├── utils/MemorySessionStorage.ts # In-process userData session (LRU + TTL, no timers): isLocalStorage on platforms without localStorage and no DB adapter.
+   │ ├── utils/DeliveryDedup.ts # INTERNAL. Deduplication of platform webhook deliveries (retries).
+   │ ├── utils/UserQueues.ts # INTERNAL. Per-user sequential execution of requests.
+   │ ├── utils/PollingRunner.ts # INTERNAL. Long-polling loops for Telegram/VK/MAX.
+   │ ├── utils/WebhookServer.ts # INTERNAL. Built-in HTTP webhook server (Bot.start/close).
+   │ ├── utils/FormWizard.ts # INTERNAL. Multi-step forms engine (addForm/startForm).
+   │ ├── utils/menu.ts # INTERNAL. Menu-from-screens factory (defineMenu).
+   │ ├── utils/actions.ts # INTERNAL. Button-action factory (defineAction).
+   │ ├── utils/outbound.ts # INTERNAL. Proactive outbound messages (send/broadcast).
+   │ ├── utils/ShutdownSignals.ts # INTERNAL. SIGTERM/SIGINT subscriptions for graceful shutdown.
+   │ ├── utils/http.ts # INTERNAL. HTTP helpers: readRequestData, send/defaultSend, getBearerToken, MAX_REQUEST_SIZE.
+   │ ├── utils/promise.ts # INTERNAL. waitWithLimit, delayUnlessAborted.
+   │ ├── utils/errors.ts # INTERNAL. BotBadRequestError.
    │ └── interfaces/ # Strict TypeScript contracts (IAppConfig, IAppParam, IPlatformAdapter, etc.).
    ├── controller/ # USER BUSINESS LOGIC.
    │ ├── BotController.ts# Base class that the user inherits. Contains text, buttons, card, nlu, userData, and state.
@@ -67,8 +79,19 @@ You are an AI agent working with the umbot framework codebase. Your task is to m
    Export decision: every new helper, type or constant needs a conscious answer to "does anyone outside the framework need this?". Users write their own platform adapters, DB adapters and middleware; a missing export forces them to copy our logic, and a needless export must be supported forever. Both are mistakes.
    What to export (and document): what an extension author needs to do the same job as a built-in adapter/middleware: helpers the built-in adapters share (`pUtils` in `umbot/plugins`), types of a contract (`IButtonRowItem`, `IDbTableSchema`), values users pass or compare against. Test: "if a user writes their own Telegram-like adapter, would they have to re-implement this?" — if yes, export it.
    Keep module-private: implementation details that may change (internal markers like the `buttons.row()` group prefix, caches, retry delays, private state), and anything that only makes sense inside one class.
-   Export chain: Most folders reach an entry point through `export *` (src/components → src/index.ts, src/plugins/platforms/Base/utils.ts → `pUtils`), so ANY `export` in such a module is public API automatically. Check the chain before adding `export`; an exported symbol gets JSDoc with `@example`, a mention in the relevant doc (for adapter helpers — `src/docs/adapter/platformAdapter.md`) and a CHANGELOG `Добавлено` entry.
+   Export chain: public entry points and the barrels leading to them (src/index.ts, src/plugins.ts, src/utils/index.ts, src/core/index.ts, src/components/_, src/models/_, etc.) list exports EXPLICITLY — no `export *`: any symbol added deep in the tree does not become public API by accident. The export set of every entry point is pinned by the snapshot test tests/PublicApi/publicApi.test.ts (compares dist/*.d.ts against the committed snapshot) — adding or removing a public symbol fails CI and must show up in review. A new public symbol gets JSDoc with `@example`, a mention in the relevant doc (for adapter helpers — `src/docs/adapter/platformAdapter.md`) and a CHANGELOG `Добавлено` entry.
    Encapsulation: Use private fields (#field) for internal class state. The "any" type is prohibited. Use "unknown" with type narrowing or strict interfaces.
+   Where a new feature lives (growth rule — default answer is "outside Bot"): ask three questions in order.
+    1. Can it be implemented on the public API without quality loss? Yes → outside: middleware (request handling), a component (UX primitive), or a plugin in `umbot/plugins` (a ready-made scenario — e.g. `expressServer(bot)`: `webhookHandle` already works as an express middleware, so web-framework integrations do not belong in the core). "Out of the box" is about the package, not the class: a plugin in `umbot/plugins` is also out of the box.
+    2. Needs internals AND is about correctness/security/performance of the pipeline itself (user queue, delivery dedup, ReDoS, timeouts)? Yes → into the core, but as a separate internal class in `src/core/utils/` with a thin delegate on `Bot` (like DeliveryDedup, UserQueues, PollingRunner, WebhookServer, FormWizard).
+    3. Needs internals but is a convenience/scenario (forms, menus)? First check whether a core extension point (hook) lets the scenario live outside. Into the core only if the hook would cost more than the feature itself — record that as a conscious, justified exception.
+       Existing scenario features were audited against this rule; decisions (feature → stays/moves, reason):
+    - FormWizard (addForm/startForm) — stays in `core/utils/`: works through the step registry and `userData` internals of the request pipeline; public API has no equivalent extension point.
+    - defineMenu/defineAction, send/broadcast — stay as thin delegates on `Bot`: implementable on the public API, but they ARE the public API since 3.1.6, so moving them to `umbot/plugins` is a breaking change (major-version candidates only).
+    - Preload — stays a separate `umbot/preload` entry point: a ready-made scenario over the public API, already outside `Bot`.
+    - Navigation — stays in `components/standard/`: a UX primitive, correct placement by the rule.
+    - TTS via SpeechKit — stays in `plugins/platforms/API/`: a platform API client, not core.
+      Nothing moves mid-cycle; the rule decides where NEW features go.
 3. Workflow (Strict Algorithm)
    When you receive a code modification task, perform the steps strictly in the specified order. Do not proceed to the next step if the previous one is not completed successfully.
    Step 3.1 Analysis: Identify the affected files using the structure map from Section 1. Look for an existing spec or notes for the task BEFORE designing (untracked `*.md` in the root from `git status`, `audit/`): finding a spec after the implementation means redoing it.

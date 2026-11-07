@@ -1,0 +1,38 @@
+{
+    "update_id": 812345681,
+    "my_chat_member": {
+        "chat": {
+            "id": 424242,
+            "first_name": "Иван",
+            "username": "ivan_p",
+            "type": "private"
+        },
+        "from": {
+            "id": 424242,
+            "is_bot": false,
+            "first_name": "Иван",
+            "username": "ivan_p",
+            "language_code": "ru"
+        },
+        "date": 1761724900,
+        "old_chat_member": {
+            "status": "member",
+            "user": {
+                "id": 777000,
+                "is_bot": true,
+                "first_name": "Demo Bot",
+                "username": "demo_bot"
+            }
+        },
+        "new_chat_member": {
+            "status": "kicked",
+            "user": {
+                "id": 777000,
+                "is_bot": true,
+                "first_name": "Demo Bot",
+                "username": "demo_bot"
+            },
+            "until_date": 0
+        }
+    }
+}

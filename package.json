@@ -1,6 +1,6 @@
 {
     "name": "umbot",
-    "version": "3.1.6",
+    "version": "3.1.7",
     "description": "Мультиплатформенный фреймворк для создания голосовых навыков и чат-ботов с единой бизнес-логикой. Встроенная поддержка ВКонтакте, Telegram, Viber, MAX, Яндекс Алисы, Сбер Салюта (SmartApp) и Маруси. Архитектура на адаптерах позволяет подключать любые другие платформы без изменения основного кода.",
     "keywords": [
         "vk",
@@ -149,7 +149,7 @@
         "live": "node live-test"
     },
     "engines": {
-        "node": ">=20.19.0"
+        "node": ">=20.20.2"
     },
     "bugs": {
         "url": "https://github.com/max36895/umbot/issues"
@@ -160,22 +160,22 @@
     "devDependencies": {
         "@eslint/js": "^10.0.1",
         "@types/jest": "^30.0.0",
-        "@types/node": "^20.19.30",
-        "@typescript-eslint/eslint-plugin": "^8.71.0",
-        "@typescript-eslint/parser": "^8.71.0",
-        "eslint": "^10.11.0",
+        "@types/node": "^20.19.43",
+        "@typescript-eslint/eslint-plugin": "^8.72.1",
+        "@typescript-eslint/parser": "^8.72.1",
+        "eslint": "^10.13.0",
         "eslint-config-prettier": "^10.1.8",
-        "eslint-plugin-security": "^4.1.0",
+        "eslint-plugin-security": "^4.2.0",
         "globals": "^17.13.0",
         "jest": "^30.5.2",
         "mongodb": "^7.7.0",
-        "prettier": "^3.9.9",
-        "ts-jest": "^29.4.14",
+        "prettier": "^3.9.10",
+        "ts-jest": "^29.4.15",
         "typedoc": "^0.28.20",
-        "typescript-eslint": "^8.71.0"
+        "typescript-eslint": "^8.72.1"
     },
     "peerDependencies": {
-        "mongodb": "^7.1.1",
+        "mongodb": "^7.7.0",
         "typescript": ">=5.0.0"
     },
     "peerDependenciesMeta": {

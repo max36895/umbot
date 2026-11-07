@@ -5,7 +5,8 @@
 import { TAppType } from './interfaces/IAppContext';
 
 import { BotController, IUserData, BaseBotController } from '../controller';
-import { Bot, TBotControllerClass, TRunResult } from './Bot';
+import { Bot, TBotControllerClass } from './Bot';
+import type { TRunResult } from './interfaces/IBot';
 import { stdin } from '../utils/';
 import { performance } from 'node:perf_hooks';
 

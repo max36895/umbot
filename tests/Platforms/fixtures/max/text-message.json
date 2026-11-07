@@ -1,0 +1,26 @@
+{
+    "update_type": "message_created",
+    "timestamp": 1761724800000,
+    "message": {
+        "body": {
+            "mid": "mid.0000000001.c816a09e",
+            "seq": 12,
+            "text": "привет"
+        },
+        "sender": {
+            "user_id": 424242,
+            "name": "Иван Петров",
+            "username": "ivan_p",
+            "is_bot": false,
+            "last_activity_time": 1761724700000
+        },
+        "recipient": {
+            "chat_id": 424242,
+            "chat_type": "dialog",
+            "user_id": 424242
+        },
+        "timestamp": 1761724800000,
+        "link": null,
+        "stat": { "views": 1 }
+    }
+}

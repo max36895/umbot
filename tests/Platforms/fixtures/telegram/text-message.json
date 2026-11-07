@@ -1,0 +1,23 @@
+{
+    "update_id": 812345678,
+    "message": {
+        "message_id": 101,
+        "from": {
+            "id": 424242,
+            "is_bot": false,
+            "first_name": "Иван",
+            "last_name": "Петров",
+            "username": "ivan_p",
+            "language_code": "ru"
+        },
+        "chat": {
+            "id": 424242,
+            "first_name": "Иван",
+            "last_name": "Петров",
+            "username": "ivan_p",
+            "type": "private"
+        },
+        "date": 1761724800,
+        "text": "привет"
+    }
+}

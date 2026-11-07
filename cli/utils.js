@@ -1,5 +1,23 @@
 'use strict';
 const fs = require('fs');
+const path = require('path');
+
+/**
+ * Проверяет, что .env указан в .gitignore проекта.
+ * @param {string} cwd Каталог проекта
+ * @returns {boolean} true, если правило для .env найдено
+ */
+function isEnvIgnored(cwd) {
+    const gitignore = path.join(cwd, '.gitignore');
+    if (!fs.existsSync(gitignore)) {
+        return false;
+    }
+    return fs
+        .readFileSync(gitignore, 'utf8')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .some((line) => ['.env', '/.env', '.env*', '*.env', '.env.*'].includes(line));
+}
 
 /**
  * Метод используется для проверки существования файла.
@@ -81,4 +99,10 @@ exports.utils = {
      * @param mode
      */
     write,
+    /**
+     * Проверяет, что .env указан в .gitignore проекта.
+     * @param {string} cwd Каталог проекта
+     * @returns {boolean}
+     */
+    isEnvIgnored,
 };

@@ -1,6 +1,8 @@
 'use strict';
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const path = require('node:path');
+const { utils } = require(path.join(__dirname, '..', 'utils.js'));
 
 /** Таймаут запроса к API платформы при регистрации вебхука, мс. */
 const REQUEST_TIMEOUT = 10_000;
@@ -113,7 +115,17 @@ function writeEnvValue(envPath, name, value) {
     } else {
         lines[index] = `${name}=${value}`;
     }
-    fs.writeFileSync(envPath, lines.join(eol) + eol, 'utf8');
+    // mode 0600: в .env лежат секрет вебхука и токены платформ; на
+    // многопользовательском POSIX-хосте файл, читаемый всеми, раскрывает их
+    fs.writeFileSync(envPath, lines.join(eol) + eol, { encoding: 'utf8', mode: 0o600 });
+    // Уже существующему файлу права выставить mode не может — делаем это явно
+    if (fs.existsSync(envPath)) {
+        try {
+            fs.chmodSync(envPath, 0o600);
+        } catch {
+            // Файловая система без поддержки прав (Windows) — пропускаем
+        }
+    }
 }
 
 /**
@@ -132,7 +144,10 @@ function writeEnvValue(envPath, name, value) {
  * @returns {Promise<{secretCreated: boolean}>} Создан ли новый секрет
  */
 async function setupWebhook({ platform, url, envPath = '.env', fetchImpl = fetch }) {
-    const config = PLATFORMS[String(platform || '').toLowerCase()];
+    // Только собственные ключи: ключ __proto__ иначе проходил как «известная
+    // платформа» через унаследованное Object.prototype
+    const platformKey = String(platform || '').toLowerCase();
+    const config = Object.hasOwn(PLATFORMS, platformKey) ? PLATFORMS[platformKey] : undefined;
     if (!config) {
         throw new Error(
             'Укажите платформу: telegram или max. Для VK секретный ключ задаётся в настройках ' +
@@ -168,9 +183,11 @@ async function setupWebhook({ platform, url, envPath = '.env', fetchImpl = fetch
             signal: AbortSignal.timeout(REQUEST_TIMEOUT),
         });
     } catch (e) {
-        throw new Error(`${config.title} не ответил: ${e && e.message ? e.message : e}`, {
-            cause: e,
-        });
+        // Токен из URL запроса не должен попасть в текст ошибки (как в doctor)
+        throw new Error(
+            `${config.title} не ответил: ${maskSecret(e && e.message ? e.message : e, token)}`,
+            { cause: e },
+        );
     }
     let body = {};
     try {
@@ -180,13 +197,32 @@ async function setupWebhook({ platform, url, envPath = '.env', fetchImpl = fetch
     }
     if (!response.ok || !config.isSuccess(body)) {
         const reason = body.description || body.message || `HTTP ${response.status}`;
-        throw new Error(`${config.title} отклонил регистрацию вебхука: ${reason}`);
+        throw new Error(
+            `${config.title} отклонил регистрацию вебхука: ${maskSecret(reason, token)}`,
+        );
     }
 
     if (!existingSecret) {
         writeEnvValue(envPath, config.secretEnv, secret);
+        // Секрет в .env, не покрытой .gitignore, уйдёт в коммит; doctor такую
+        // проверку делает, а команда, создающая секрет, обязана тоже
+        if (!utils.isEnvIgnored(path.dirname(path.resolve(envPath)))) {
+            console.warn(
+                'ВНИМАНИЕ: .env не найден в .gitignore — секрет вебхука может попасть в коммит. Добавьте ".env" в .gitignore.',
+            );
+        }
     }
     return { secretCreated: !existingSecret };
+}
+
+/**
+ * Убирает секрет из текста ошибки: сообщение могло включать URL запроса с токеном.
+ * @param {unknown} text Текст ошибки
+ * @param {string | undefined} secret Секрет (токен)
+ * @returns {string} Текст с замаскированным секретом
+ */
+function maskSecret(text, secret) {
+    return secret ? String(text).split(secret).join('***') : String(text);
 }
 
 module.exports = { setupWebhook, readEnv };

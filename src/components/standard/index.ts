@@ -26,4 +26,5 @@
  * const pageElements = navigation.getPageElements(elements);
  * ```
  */
-export * from './Navigation';
+export { Navigation } from './Navigation';
+export type { TElementType, TKeys } from './Navigation';

@@ -134,9 +134,33 @@
  * > методам BotController, которые обеспечивают правильную интеграцию с платформами.
  */
 
-export * from './button';
-export * from './card';
-export * from './image/Image';
-export * from './nlu';
-export * from './sound';
-export * from './standard';
+export { Buttons, getButton, getLinkButton } from './button';
+export type {
+    IButton,
+    IButtonOptions,
+    IButtonType,
+    TBtnPayload,
+    TButton,
+    TButtonPayload,
+} from './button';
+export { Card } from './card';
+export { getImage, initButton } from './image/Image';
+export type { IImageParams, IImageType } from './image/Image';
+export { Nlu } from './nlu';
+export type {
+    IBaseEntities,
+    IBaseNlu,
+    INlu,
+    INluDateTime,
+    INluFIO,
+    INluGeo,
+    INluIntent,
+    INluIntents,
+    INluResult,
+    INluSlot,
+    INluThisUser,
+} from './nlu';
+export { Sound, SoundConstants } from './sound';
+export type { IEffect, ISound } from './sound';
+export { Navigation } from './standard';
+export type { TElementType, TKeys } from './standard';

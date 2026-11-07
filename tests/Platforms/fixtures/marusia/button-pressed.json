@@ -1,0 +1,41 @@
+{
+    "meta": {
+        "locale": "ru-RU",
+        "timezone": "Europe/Moscow",
+        "client_id": "MailRu-VC/1.20.1",
+        "interfaces": {
+            "screen": {}
+        },
+        "_city_ru": "Москва"
+    },
+    "request": {
+        "command": "",
+        "original_utterance": "",
+        "nlu": {
+            "tokens": [],
+            "entities": [],
+            "intents": {}
+        },
+        "payload": {
+            "command": "buy"
+        },
+        "type": "ButtonPressed"
+    },
+    "session": {
+        "message_id": 6,
+        "session_id": "f1d2c3b4-a596-8778-f0e1-d2c3b4a59687",
+        "skill_id": "a1b2c3d4-e5f6-0718-293a-b4c5d6e7f809",
+        "application": {
+            "application_id": "marusia-app-id-424242",
+            "application_type": "mobile"
+        },
+        "new": false,
+        "user_id": "marusia-user-id-424242"
+    },
+    "state": {
+        "session": {},
+        "user": {},
+        "application": {}
+    },
+    "version": "1.0"
+}

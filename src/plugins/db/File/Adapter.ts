@@ -5,6 +5,7 @@ import {
     IQuery,
     IModelRes,
     IDatabaseInfo,
+    Text,
     getFileInfoSync,
     freadSync,
     keysCount,
@@ -404,11 +405,45 @@ export class FileAdapter extends Base<IFileDbInfo> {
     #mergeRow(row: IQueryData, update: IQueryData | null | undefined): IQueryData {
         const result = { ...row };
         for (const [field, value] of Object.entries(update ?? {})) {
-            if (value !== undefined) {
+            // Прототипные ключи не мержим: update.data может нести значения из
+            // payload, а подмена прототипа строки в кэше читается всеми select-ами
+            // (симметрично защите Mongo-адаптера в #isSafeMongoQuery).
+            if (value !== undefined && !this.#isForbiddenKey(field)) {
                 result[field] = value;
             }
         }
         return result;
+    }
+
+    /**
+     * Ограничивает строковые значения по правилам модели (query.rules): без этого
+     * ключ или значение любого размера записывается в таблицу целиком и переписывается
+     * на диске при каждом сохранении (Mongo-адаптер те же правила применяет в validate).
+     * Экранирование escapeString здесь не применяется: файл хранит JSON как есть.
+     * @param query Запрос: источник правил валидации
+     * @param element Валидируемый элемент (мутируется)
+     */
+    #applyRules(query: IQuery, element: IQueryData | null): void {
+        if (!element) {
+            return;
+        }
+        for (const rule of query.rules ?? []) {
+            if (rule.max === undefined) {
+                continue;
+            }
+            const isString = rule.type === 'string' || rule.type === 'text';
+            if (!isString) {
+                continue;
+            }
+            for (const field of rule.name) {
+                const value = element[field];
+                if (typeof value === 'string') {
+                    // Без эллипсиса: хранимое значение — чистый префикс, «…»
+                    // испортил бы ключ строки и JSON в поле data.
+                    element[field] = Text.resize(value, rule.max, false);
+                }
+            }
+        }
     }
 
     /**
@@ -421,6 +456,8 @@ export class FileAdapter extends Base<IFileDbInfo> {
         const select = updateData.query;
         const data = this.getFileData(updateData.tableName);
         if (select) {
+            this.#applyRules(updateData, update);
+            this.#applyRules(updateData, select);
             const idVal = select[updateData.primaryKeyName as string] as string;
             if (idVal !== undefined) {
                 if (this.#isForbiddenKey(idVal)) {
@@ -448,6 +485,7 @@ export class FileAdapter extends Base<IFileDbInfo> {
         const insert = insertData.data;
         const data = this.getFileData(insertData.tableName);
         if (insert) {
+            this.#applyRules(insertData, insert);
             const idVal = insert[insertData.primaryKeyName as string] as string;
             if (idVal) {
                 if (this.#isForbiddenKey(idVal)) {
@@ -619,10 +657,7 @@ export class FileAdapter extends Base<IFileDbInfo> {
                 data: result,
             };
         }
-        return {
-            status: false,
-            error: 'Не удалось получить данные',
-        };
+        return { status: false };
     }
 
     /**

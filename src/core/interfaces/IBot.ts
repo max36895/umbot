@@ -6,7 +6,14 @@
 import { AppContext } from '../AppContext';
 import { BotController, IControllerApi } from '../../controller';
 import { IncomingMessage, type ServerResponse } from 'node:http';
-import { IButtonType, Buttons, IImageType, ISound } from '../../components';
+import {
+    IButtonType,
+    Buttons,
+    IButtonOptions,
+    IImageType,
+    ISound,
+    TButtonPayload,
+} from '../../components';
 import { IModelRes, TQueryCb, IQuery, IQueryData, IDbTableSchema } from '../../models';
 import { Bot } from '../Bot';
 import type { TEventType } from '../events';
@@ -795,3 +802,367 @@ export type TSoundProcessing<TResult = string | Promise<string> | Promise<string
  *  - group - Режим, при котором все регулярные выражения группируются.
  */
 export type TCommandGroupMode = 'auto' | 'no-group' | 'group';
+
+/**
+ * Контекст формы — данные, переданные в {@link Bot.startForm} (например, id комнаты).
+ * Хранится в `userData` между шагами, поэтому должен сериализоваться в JSON.
+ */
+export type TFormContext = Record<string, unknown>;
+
+/**
+ * Результат `parse` поля формы: преобразованное значение либо текст ошибки
+ * (тогда вопрос задаётся повторно).
+ */
+export type TFormParseResult = { value: unknown } | { error: string };
+
+/**
+ * Описание одного поля формы в {@link Bot.addForm}.
+ *
+ * @template TBotController Контроллер (по умолчанию `BotController`)
+ */
+export interface IAddFormField<TBotController extends BotController = BotController> {
+    /**
+     * Имя поля. Станет ключом в объекте ответов, который получит `onComplete`.
+     * Должно быть валидным ключом объекта.
+     * @example 'name', 'email', 'age'
+     */
+    name: string;
+
+    /**
+     * Текст, который бот отправит пользователю с просьбой ввести это поле.
+     * Может быть строкой или функцией от контроллера и контекста формы (см. {@link Bot.startForm}).
+     * @example 'Как вас зовут?' | (ctx, context) => `Комната ${context.roomId}. Ваше имя?`
+     */
+    prompt: string | ((ctx: TBotController, context: TFormContext) => string);
+
+    /**
+     * Варианты ответа: показываются кнопками, ответ должен совпасть с одним из них (без учёта
+     * регистра). В ответы попадает вариант в написании из списка. Иначе вопрос задаётся
+     * повторно с текстом `invalidOptionText` формы.
+     * @example ['Утро', 'День', 'Вечер']
+     */
+    options?: string[];
+
+    /**
+     * Необязательное поле: к вопросу добавляется кнопка `skipText` формы («Пропустить»).
+     * Пропущенное поле не попадает в ответы.
+     */
+    optional?: boolean;
+
+    /**
+     * Валидатор пользовательского ввода.
+     *
+     * Может быть синхронным или асинхронным.
+     * Возвращаемое значение:
+     * - `true` — значение принято, переходим к следующему полю.
+     * - `false` — валидация не прошла, повторяем prompt без сообщения об ошибке.
+     * - `string` — эта строка отправляется пользователю как текст ошибки.
+     *
+     * @example
+     * ```ts
+     * // Синхронная валидация
+     * validate: (v) => v.length > 0
+     *
+     * // Сообщение, если неверно
+     * validate: (v) => /\S+@\S+/.test(v) || 'Некорректный email'
+     *
+     * // Асинхронная (например, проверка через API)
+     * validate: async (v) => {
+     *     const exists = await db.users.findOne({ email: v });
+     *     return exists ? 'Email уже занят' : true;
+     * }
+     * ```
+     */
+    validate?: (value: string) => boolean | string | Promise<boolean | string>;
+
+    /**
+     * Проверка с преобразованием ответа (вызывается после `validate`): вернуть `{ value }` —
+     * в ответы попадёт `value`; `{ error }` — вопрос задаётся повторно с этим текстом.
+     * Значение хранится в `userData` до конца формы, поэтому должно сериализоваться в JSON
+     * (дату возвращайте строкой ISO).
+     *
+     * @example
+     * ```ts
+     * parse: (v) => (Number.isInteger(+v) && +v > 0 ? { value: +v } : { error: 'Нужно целое число' })
+     * ```
+     */
+    parse?: (value: string, ctx: TBotController) => TFormParseResult | Promise<TFormParseResult>;
+}
+
+/**
+ * Ключевые параметры метода {@link Bot.addForm} — регистрации многошаговой формы.
+ *
+ * @template TBotController Контроллер
+ * @template TAnswers Тип ответов в `onComplete` (по умолчанию — строки)
+ */
+export interface IAddFormOptions<
+    TBotController extends BotController = BotController,
+    TAnswers extends Record<string, unknown> = Record<string, string>,
+> {
+    /**
+     * Список полей формы. Обрабатываются последовательно — каждое поле становится своим шагом.
+     */
+    fields: IAddFormField<TBotController>[];
+
+    /**
+     * Колбек, вызываемый после того как заполнены ВСЕ поля.
+     * Может быть синхронным или асинхронным — фреймворк дождётся его завершения
+     * перед формированием ответа.
+     *
+     * @param ctx BotController — имеет доступ к userData, тексту, кнопкам и т.д.
+     * @param answers Объект с ответами: ключ — name поля, значение — введённый текст
+     *   (или результат `parse`). Пропущенных необязательных полей в нём нет.
+     * @param context Контекст, переданный в {@link Bot.startForm} (`{}`, если форма запущена иначе)
+     *
+     * @example
+     * ```ts
+     * onComplete: (ctx, answers) => {
+     *     ctx.text = `Спасибо, ${answers.name}! Мы вас записали (${answers.email}).`;
+     * }
+     * ```
+     */
+    onComplete: (
+        ctx: TBotController,
+        answers: TAnswers,
+        context: TFormContext,
+    ) => void | Promise<void>;
+
+    /**
+     * Текст, который получит пользователь при отмене формы.
+     * @defaultValue 'Форма отменена.'
+     */
+    cancelText?: string;
+
+    /**
+     * Список команд, которые отменяют форму. Работают в любом регистре.
+     * @defaultValue ['отмена', 'cancel']
+     */
+    cancelCommands?: string[];
+
+    /**
+     * Надпись кнопки пропуска необязательного поля (`optional`). Работает и как текст ответа.
+     * @defaultValue 'Пропустить'
+     */
+    skipText?: string;
+
+    /**
+     * Текст ошибки, когда ответ не совпал ни с одним из `options` поля.
+     * @defaultValue 'Выберите один из вариантов.'
+     */
+    invalidOptionText?: string;
+
+    /**
+     * Выход по чужой кнопке или команде: нажатие callback-кнопки или текст, точно совпавший
+     * с зарегистрированной командой (`addCommand`/`addAction`), если это не вариант ответа
+     * поля, завершает форму без `onComplete`, и запрос уходит обычному конвейеру (команды,
+     * интенты). Без опции такой ввод считается ответом на вопрос.
+     * @defaultValue false
+     */
+    escape?: boolean;
+}
+
+/**
+ * Результат выполнения запроса от платформы - ответ, который будет отправлен пользователю
+ * Может быть ответом для Алисы, Маруси или текстовым сообщением
+ *
+ * @example
+ * ```ts
+ * // Ответ для Алисы
+ * const alisaResponse: TRunResult = {
+ *   response: {
+ *     text: 'Привет!',
+ *     end_session: false
+ *   },
+ *   version: '1.0'
+ * };
+ *
+ * // Ответ для Маруси
+ * const marusiaResponse: TRunResult = {
+ *   response: {
+ *     text: 'Привет!',
+ *     end_session: false
+ *   },
+ *   version: '1.0'
+ * };
+ *
+ * // Простой текстовый ответ
+ * const textResponse: TRunResult = 'Привет!';
+ * ```
+ */
+export type TRunResult = object | string;
+/**
+ * Кнопка сообщения {@link ISendMessage}: как аргументы `buttons.addBtn(title, url, payload, options)`.
+ */
+export interface ISendButton {
+    /** Текст кнопки */
+    title: string;
+    /** Ссылка (кнопка-ссылка) */
+    url?: string;
+    /** Payload кнопки — например, `action.payload(data)` из {@link Bot.defineAction} */
+    payload?: TButtonPayload;
+    /** Опции кнопки */
+    options?: IButtonOptions;
+}
+
+/**
+ * Сообщение для {@link Bot.send} и {@link Bot.broadcast} без ручной сборки контроллера.
+ *
+ * @example
+ * ```ts
+ * await bot.send(userId, { text: 'Комната готова', buttons: ['Открыть', { title: 'Сайт', url: 'https://example.com' }] }, T_TELEGRAM);
+ * ```
+ */
+export interface ISendMessage {
+    /** Текст сообщения */
+    text: string;
+    /** Текст для озвучки (TTS), где платформа его поддерживает */
+    tts?: string;
+    /** Кнопки: строка — обычная кнопка с этим текстом */
+    buttons?: (string | ISendButton)[];
+}
+
+/**
+ * Параметры {@link Bot.broadcast}.
+ */
+export interface IBroadcastOptions {
+    /**
+     * Вызывается после каждой отправки: прогресс рассылки, отметка в БД.
+     * @param userId Получатель
+     * @param ok `true` — доставлено, `false` — нет (причина в логе)
+     */
+    onResult?: (userId: string | number, ok: boolean) => void | Promise<void>;
+}
+
+/**
+ * Результат {@link Bot.broadcast}.
+ */
+export interface IBroadcastResult {
+    /** Кому сообщение доставлено */
+    sent: (string | number)[];
+    /** Кому не доставлено: пользователь заблокировал бота, неверный id, сбой сети */
+    failed: (string | number)[];
+}
+
+/**
+ * Данные кнопки действия ({@link Bot.defineAction}): плоский объект, который уходит в payload
+ * кнопки и возвращается обработчику при нажатии. Ключи `action` и `command` зарезервированы
+ * для маршрутизации нажатия — они игнорируются в данных кнопки.
+ */
+export type TActionData = Record<string, string | number | boolean | null>;
+
+/**
+ * Действие кнопки с данными — результат {@link Bot.defineAction}. Одно описание служит и для
+ * создания кнопки (payload `{ action: name, ...data }`), и для обработчика нажатия, который
+ * получает уже разобранные данные.
+ *
+ * @template TData Данные кнопки
+ * @template TBotController Контроллер
+ *
+ * @example
+ * ```ts
+ * const kick = bot.defineAction<{ p: string }>('kick');
+ * kick.handle((data, ctx) => {
+ *     ctx.text = `Исключаем участника ${data.p}`;
+ * });
+ * // в обработчике, который показывает список участников:
+ * kick.addBtn(ctx.buttons, 'Исключить', { p: participant.id });
+ * ```
+ */
+export interface IButtonAction<
+    TData extends TActionData = TActionData,
+    TBotController extends BotController = BotController,
+> {
+    /** Имя действия */
+    readonly name: string;
+    /**
+     * Payload кнопки этого действия — для `card.addButton()` и других мест, где кнопка
+     * создаётся не через {@link IButtonAction.addBtn}. Зарезервированные ключи `action` и
+     * `command` из данных исключаются: маршрутизация нажатия всегда ведёт на это действие.
+     * @param data Данные кнопки
+     * @returns `{ action: name, ...data }` без зарезервированных ключей
+     */
+    payload(data?: TData): Record<string, unknown>;
+    /**
+     * Добавляет кнопку действия. Если payload длиннее 64 байт и подключён Telegram, пишет
+     * предупреждение: Telegram такую кнопку не примет.
+     * @param buttons Кнопки ответа (`ctx.buttons`)
+     * @param title Текст кнопки
+     * @param data Данные кнопки
+     * @param options Опции кнопки (как у `buttons.addBtn`)
+     * @returns `buttons` для цепочки
+     */
+    addBtn(buttons: Buttons, title: string, data?: TData, options?: IButtonOptions): Buttons;
+    /**
+     * Регистрирует обработчик нажатия (через {@link Bot.addAction}).
+     * @param cb Обработчик: данные кнопки (payload без поля `action`) и контроллер;
+     *   может вернуть строку-ответ, поддерживает `async`
+     * @returns Это же действие
+     */
+    handle(
+        cb: (data: TData, ctx: TBotController) => void | string | Promise<void | string>,
+    ): IButtonAction<TData, TBotController>;
+}
+
+/**
+ * Кнопка экрана меню ({@link Bot.defineMenu}). Задайте одно из полей `to`, `url` или `payload`.
+ */
+export interface IMenuButton {
+    /** Текст кнопки; его же пользователь может сказать или написать */
+    title: string;
+    /** Экран, на который ведёт кнопка */
+    to?: string;
+    /** Ссылка (кнопка-ссылка) */
+    url?: string;
+    /** Payload другого действия — например, `action.payload(data)` из {@link Bot.defineAction} */
+    payload?: TButtonPayload;
+}
+
+/**
+ * Экран меню ({@link Bot.defineMenu}).
+ */
+export interface IMenuScreen<TBotController extends BotController = BotController> {
+    /** Текст экрана: строка или функция от контроллера (баланс, имя пользователя) */
+    text: string | ((ctx: TBotController) => string);
+    /** Кнопки экрана в порядке показа */
+    buttons?: IMenuButton[];
+    /** Экран, куда ведёт кнопка «Назад»; без поля кнопки нет */
+    parent?: string;
+    /**
+     * Вызывается после того, как текст и кнопки экрана заданы: карточки, список с
+     * `Navigation`, запуск формы. Может быть `async`.
+     */
+    onShow?: (ctx: TBotController) => void | Promise<void>;
+}
+
+/**
+ * Параметры {@link Bot.defineMenu}.
+ */
+export interface IMenuOptions<TBotController extends BotController = BotController> {
+    /** Экраны по именам */
+    screens: Record<string, IMenuScreen<TBotController>>;
+    /** Экран по умолчанию; без поля — первый в `screens` */
+    start?: string;
+    /** Текст кнопки возврата (по умолчанию «Назад») */
+    backText?: string;
+}
+
+/**
+ * Меню, созданное {@link Bot.defineMenu}.
+ */
+export interface IMenu<TBotController extends BotController = BotController> {
+    /** Имя меню */
+    readonly name: string;
+    /**
+     * Показывает экран: текст, кнопки, «Назад», затем `onShow`.
+     * @param ctx Контроллер запроса
+     * @param screen Имя экрана; без него или для неизвестного — экран по умолчанию
+     * @returns Промис, только если `onShow` экрана асинхронный
+     */
+    show(ctx: TBotController, screen?: string): void | Promise<void>;
+    /**
+     * Payload кнопки перехода на экран — для кнопок вне меню (`buttons.addBtn`, `bot.send`).
+     * @param screen Имя экрана
+     * @returns `{ action, s: screen }`
+     */
+    payload(screen: string): Record<string, unknown>;
+}

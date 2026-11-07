@@ -19,8 +19,8 @@ declare module '../controller/BotController' {
  * Полезно для сквозного трейсинга запросов — логгеры, Sentry и другие инструменты
  * могут связать все логи одного входящего запроса.
  *
- * Также сохраняет requestId в скрытом поле `appContext.__lastRequestId` —
- * последний выданный ID (для логирования вне обработки запроса).
+ * Также сохраняет requestId в `appContext.lastRequestId` — последний выданный ID
+ * (для логирования вне обработки запроса).
  *
  * @example
  * ```ts
@@ -42,14 +42,9 @@ export function requestId(): (ctx: BotController, next: MiddlewareNext) => Promi
             id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         }
         ctx.platformOptions.requestId = id;
-        // Сохраняем в AppContext для логов вне текущего контекста (если кто-то логирует
-        // без доступа к ctx). Не перетираем race — нам безразлично, чей именно id
-        // крайний.
-        try {
-            (ctx.appContext as unknown as Record<string, unknown>).__lastRequestId = id;
-        } catch {
-            // ignore — если контекст заморожен или readonly, просто пропускаем
-        }
+        // Последний выданный id доступен и вне ctx — для логов вне обработки запроса.
+        // Гонка параллельных запросов не важна: безразлично, чей именно id крайний.
+        ctx.appContext.lastRequestId = id;
         // next() обязано дождаться выполнения цепочки — иначе middleware после
         // этой не выполнятся.
         await next();

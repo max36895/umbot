@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import {
     IVkApi,
     IVkDocSave,
@@ -21,7 +22,7 @@ import { getErrorMsg, getErrorToken } from './constants';
 const VK_API_VERSION = '5.199';
 const VK_MESSAGE_MAX_LENGTH = 4096;
 /**
- * Таймаут загрузки файлов на сервера VK.
+ * Тайм-аут загрузки файлов на сервера VK.
  * Файлы могут передаваться долго, поэтому для upload он увеличен
  * относительно стандартных 5.5 с.
  */
@@ -259,7 +260,7 @@ export class VkRequest {
         this._request.isAttachContent = this.isAttachContent;
         this._request.header = Request.HEADER_FORM_DATA;
         // Загрузка файла — тяжёлая операция: на медленном восходящем канале дефолтные
-        // 5.5 с обрывали загрузку по AbortSignal, и карточка молча терялась.
+        // 5.5с обрывали загрузку по AbortSignal, и карточка молча терялась.
         // Telegram для тех же операций использует 30 с.
         const previousTimeout = this._request.maxTimeQuery;
         this._request.maxTimeQuery = VK_UPLOAD_TIMEOUT;
@@ -603,8 +604,10 @@ export class VkRequest {
      * VK API ограничивает random_id диапазоном int32 (-2^31 .. 2^31-1).
      */
     #generateRandomId(): number {
-        // 2^31 - 1 = 2 147 483 647 — верхняя граница int32
-        return Math.floor(Math.random() * 2_147_483_647);
+        // crypto.randomInt вместо Math.random(): random_id — ключ дедупликации VK,
+        // коллизии по парадоксу дней рождения ожидались от ~54 тыс. сообщений,
+        // и VK молча терял дубликат (рассылки на большие базы).
+        return randomInt(0, 2_147_483_647);
     }
 
     /**

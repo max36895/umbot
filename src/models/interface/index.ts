@@ -20,4 +20,4 @@
  * const res: IModelRes = { status: true, data: { userId: '123' } };
  * ```
  */
-export * from './IModel';
+export type { IDataValue, IModelRes, IModelRules, TModelRulesType, TQueryCb } from './IModel';

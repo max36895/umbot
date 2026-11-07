@@ -1,0 +1,22 @@
+{
+    "update_id": 812345680,
+    "message": {
+        "message_id": 1,
+        "from": {
+            "id": 424242,
+            "is_bot": false,
+            "first_name": "Иван",
+            "username": "ivan_p",
+            "language_code": "ru"
+        },
+        "chat": {
+            "id": 424242,
+            "first_name": "Иван",
+            "username": "ivan_p",
+            "type": "private"
+        },
+        "date": 1761724800,
+        "text": "/start K7M2QX",
+        "entities": [{ "offset": 0, "length": 6, "type": "bot_command" }]
+    }
+}

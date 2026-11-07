@@ -547,17 +547,6 @@ function findGroupStart(pattern: string, closeIndex: number): number {
 }
 
 /**
- * Проверяет тело группы на источники катастрофического бэктрекинга:
- * НЕОГРАНИЧЕННЫЙ квантификатор (`+`, `*`, `{n,}`), альтернативу `|` или
- * «любой символ» `.` вне символьных классов.
- *
- * Ограниченные интервалы (`{n}`, `{n,m}`) перебора разбиений не порождают:
- * `(\d{1,3}\.){3}\d{1,3}` (IP-адрес) и `(a{1,3}){3}` — легитимные паттерны,
- * каждый повтор группы имеет фиксированную длину. Разделение проведено по
- * той же границе, что и в readQuantifier: `{n,}` без верхней границы —
- * неограниченный, `{n}`/`{n,m}` — ограниченные.
- */
-/**
  * Пропускает префикс конструкции группы: (?:, (?=, (?!, (?<=, (?<!, (?<name>.
  * Иначе '?' из '(?:' ложно принимался за квантификатор внутри группы.
  */
@@ -572,6 +561,18 @@ function skipGroupPrefix(body: string): number {
     return 2;
 }
 
+/**
+ * Проверяет тело группы на источники катастрофического бэктрекинга:
+ * НЕОГРАНИЧЕННЫЙ квантификатор (`+`, `*`, `{n,}`), альтернативу `|` или
+ * «любой символ» `.` вне символьных классов.
+ *
+ * Ограниченные интервалы (`{n}`, `{n,m}`) перебора разбиений сами по себе
+ * не порождают: `(\d{1,3}\.){3}\d{1,3}` (IP-адрес) — легитимный паттерн.
+ * Неоднозначные разбиения без `+`/`|`/`.` в теле проверяет
+ * isAmbiguousLoopBody: `(?:a?b?)+c` перебирает ~2^n разбиений. Разделение
+ * проведено по той же границе, что и в readQuantifier: `{n,}` без верхней
+ * границы — неограниченный, `{n}`/`{n,m}` — ограниченные.
+ */
 function isExplosiveGroupBody(body: string): boolean {
     const start = skipGroupPrefix(body);
     let inClass = false;
@@ -618,6 +619,273 @@ function isExplosiveGroupBody(body: string): boolean {
 }
 
 /**
+ * Атом тела группы при токенизации: литеральный символ (в том числе
+ * экранированный вроде `\.` или `\x41`) или «прочее» — символьный класс,
+ * escape-класс (`\d`, `\w`), вложенная группа.
+ */
+interface ILoopAtom {
+    isLiteral: boolean;
+    char: string;
+    /** Атом повторяется переменное число раз: `?` или `{n,m}` с max > min. */
+    variable: boolean;
+    /** Переменность задана квантификатором `?` (варианты {c, ''}), а не интервалом. */
+    optional: boolean;
+}
+
+/**
+ * Индекс символа за закрывающей `]` символьного класса, открытого на позиции
+ * `start` (с учётом экранирования), либо -1, если класс не закрыт.
+ */
+function skipCharClass(body: string, start: number): number {
+    let j = start + 1;
+    if (body.charAt(j) === '^') {
+        j++;
+    }
+    if (body.charAt(j) === ']') {
+        j++;
+    }
+    while (j < body.length && body.charAt(j) !== ']') {
+        if (body.charAt(j) === '\\') {
+            j++;
+        }
+        j++;
+    }
+    return j < body.length ? j + 1 : -1;
+}
+
+/**
+ * Индекс символа за закрывающей скобкой группы, открытой на позиции `start`
+ * (префикс `(?:`/`(?<name>` пропускается), либо -1, если группа не закрыта.
+ */
+function skipGroupBody(body: string, start: number): number {
+    let depth = 1;
+    let j = start + 1;
+    if (body.charAt(j) === '?') {
+        if (body.charAt(j + 1) === '<') {
+            const close = body.indexOf('>', j + 2);
+            if (close === -1) {
+                return -1;
+            }
+            j = close + 1;
+        } else {
+            j += 2;
+        }
+    }
+    while (j < body.length && depth > 0) {
+        if (body.charAt(j) === '\\') {
+            j += 2;
+            continue;
+        }
+        if (body.charAt(j) === '[') {
+            const afterClass = skipCharClass(body, j);
+            if (afterClass === -1) {
+                return -1;
+            }
+            j = afterClass;
+            continue;
+        }
+        if (body.charAt(j) === '(') {
+            depth++;
+        }
+        if (body.charAt(j) === ')') {
+            depth--;
+        }
+        j++;
+    }
+    return depth === 0 ? j : -1;
+}
+
+/**
+ * Односимвольные escape с реальным символом: буквенное обозначение совпадает
+ * с самим литералом (`\t` — таб и т.д.). Остальные буквенные escape (`\d`,
+ * `\p`, `\c`, неизвестные) — не одиночный символ.
+ */
+const ESCAPE_CHAR_MAP: Readonly<Record<string, string>> = {
+    t: '\t',
+    n: '\n',
+    r: '\r',
+    f: '\f',
+    v: '\v',
+};
+
+/**
+ * Разбирает escape-последовательность в атом тела цикла. Литеральные escape
+ * хранят РЕАЛЬНЫЙ символ (`\x41` — «A», а не буква «x»): иначе проверка
+ * соседних литералов в isAmbiguousLoopBody сравнивала бы не те символы и
+ * пропускала паттерны вида `(?:A?\x41)+` — эквивалент опасного `(?:A?A)+`.
+ * Не поддаётся декодированию — не-литеральный атом (консервативно опасная
+ * сторона).
+ */
+function readEscapeAtom(body: string, k: number): { atom: ILoopAtom; length: number } | null {
+    const next = body.charAt(k + 1);
+    if (!next) {
+        return null;
+    }
+    const literal = (char: string, length: number): { atom: ILoopAtom; length: number } => ({
+        atom: { isLiteral: true, char, variable: false, optional: false },
+        length,
+    });
+    const notLiteral = (length: number): { atom: ILoopAtom; length: number } => ({
+        atom: { isLiteral: false, char: '', variable: false, optional: false },
+        length,
+    });
+    // До 4 hex-цифр: BMP — ровно один JS-символ. Суррогатные пары (\u{...}
+    // из 5-6 цифр) посимвольной модели не соответствуют — консервативно
+    // не-литерал.
+    const hex = (text: string): string | null =>
+        /^[0-9a-fA-F]{1,4}$/.test(text) ? String.fromCharCode(parseInt(text, 16)) : null;
+    if (next === 'x') {
+        const char = hex(body.slice(k + 2, k + 4));
+        return char !== null && body.slice(k + 2, k + 4).length === 2
+            ? literal(char, 4)
+            : notLiteral(2);
+    }
+    if (next === 'u') {
+        if (body.charAt(k + 2) === '{') {
+            const close = body.indexOf('}', k + 3);
+            const char = close === -1 ? null : hex(body.slice(k + 3, close));
+            return char !== null ? literal(char, close + 1 - k) : notLiteral(2);
+        }
+        const char = hex(body.slice(k + 2, k + 6));
+        return char !== null && body.slice(k + 2, k + 6).length === 4
+            ? literal(char, 6)
+            : notLiteral(2);
+    }
+    // Цифры — ссылки назад/восьмеричные: совпадение зависит от контекста,
+    // фиксированным литералом считать нельзя
+    if (next >= '0' && next <= '9') {
+        return notLiteral(2);
+    }
+    const mapped = ESCAPE_CHAR_MAP[next];
+    if (mapped) {
+        return literal(mapped, 2);
+    }
+    // \d/\w/\s/\p/\c и прочие буквенные — классы или конструкции с широким набором
+    if (/[a-zA-Z]/.test(next)) {
+        return notLiteral(2);
+    }
+    // Экранированная пунктуация — литерал самой себя (\. — точка)
+    return literal(next, 2);
+}
+
+/**
+ * Разбирает тело группы на атомы с учётом квантификаторов. Вложенные группы
+ * консервативно считаются единым не-литеральным атомом (префикс `(?:`/`(?<name>`
+ * не литерал). Возвращает null, если тело не разобралось, — вызывающий считает
+ * его опасным.
+ */
+function tokenizeLoopBody(body: string): ILoopAtom[] | null {
+    const atoms: ILoopAtom[] = [];
+    let k = skipGroupPrefix(body);
+    while (k < body.length) {
+        const ch = body.charAt(k);
+        if (ch === '\\') {
+            const escaped = readEscapeAtom(body, k);
+            if (!escaped) {
+                return null;
+            }
+            atoms.push(escaped.atom);
+            k += escaped.length;
+        } else if (ch === '[') {
+            const afterClass = skipCharClass(body, k);
+            if (afterClass === -1) {
+                return null;
+            }
+            atoms.push({ isLiteral: false, char: '', variable: false, optional: false });
+            k = afterClass;
+        } else if (ch === '(') {
+            const afterGroup = skipGroupBody(body, k);
+            if (afterGroup === -1) {
+                return null;
+            }
+            atoms.push({ isLiteral: false, char: '', variable: false, optional: false });
+            k = afterGroup;
+        } else {
+            atoms.push({ isLiteral: true, char: ch, variable: false, optional: false });
+            k++;
+        }
+        const last = atoms[atoms.length - 1];
+        if (!last) {
+            return null;
+        }
+        if (body.charAt(k) === '?') {
+            last.variable = true;
+            last.optional = true;
+            k++;
+            if (body.charAt(k) === '?') {
+                k++; // ленивый модификатор
+            }
+        } else if (body.charAt(k) === '{') {
+            const bounds = getIntervalBounds(body, k);
+            if (bounds) {
+                if (bounds.max > bounds.min) {
+                    last.variable = true;
+                }
+                k = skipInterval(body, k);
+            }
+        }
+        // +/*/{n,} сюда не доходят: isExplosiveGroupBody отсеивает их раньше
+    }
+    return atoms;
+}
+
+/**
+ * Может ли повторяемое тело (под неограниченным квантификатором или большим
+ * фиксированным интервалом) разбивать строку НЕОДНОЗНАЧНО — источник перебора
+ * разбиений без `+`/`|`/`.` в теле. При переменной длине повтора число
+ * разбиений растёт как числа Фибоначчи: `(?:\d\d?)+` — каждый повтор съедает
+ * 1 или 2 цифры того же класса, 40 символов блокируют поток на ~20 с;
+ * `(?:a?b?)+` — ~2^n.
+ *
+ * Два и более переменных атомов — всегда неоднозначно. Один переменный атом
+ * безопасен, только если тело целиком литеральное и его соседние литералы
+ * отличны от него (с учётом перехода через границу повторов): части
+ * разбиения привязаны к позициям обязательных символов. `(ab?)`, `(a?b)`,
+ * `(a?)` — безопасны; `(aa?)`, `(aba?)`, `(\d\d?)`, `([ab]a?)`,
+ * `(\d{4}(-\d{2})?)` — неоднозначны. Одиночный атом с `?` даёт варианты
+ * {c, ''}: пустая итерация завершает цикл, разбиение одно; одиночный атом с
+ * интервалом (`(a{1,3})`) даёт несколько непустых вариантов длины —
+ * неоднозначен (трибоначчи под 100 повторами).
+ */
+function isAmbiguousLoopBody(body: string): boolean {
+    const atoms = tokenizeLoopBody(body);
+    if (!atoms) {
+        return true;
+    }
+    const variableCount = atoms.filter((a) => a.variable).length;
+    if (variableCount === 0) {
+        return false;
+    }
+    if (variableCount >= 2) {
+        // Переменные атомы дают несколько вариантов длины на каждый повтор —
+        // соседние литералы не спасают: (a?b?) перебирает разбиения даже
+        // с различными соседями
+        return true;
+    }
+    // Единственный переменный атом: доказательство однозначности — только
+    // для тела из одних литералов
+    if (!atoms.every((a) => a.isLiteral)) {
+        return true;
+    }
+    const index = atoms.findIndex((a) => a.variable);
+    const atom = atoms[index];
+    if (!atom) {
+        return true;
+    }
+    if (atoms.length === 1) {
+        // Единственный литеральный атом: безопасен только квантификатор '?'
+        // (варианты {c, ''}); интервал даёт несколько непустых вариантов
+        return !atom.optional;
+    }
+    const prev = atoms[index - 1] ?? atoms[atoms.length - 1];
+    const next = atoms[index + 1] ?? atoms[0];
+    if (!prev || !next) {
+        return true;
+    }
+    return prev.char === atom.char || next.char === atom.char;
+}
+
+/**
  * Ищет квантифицированные группы с внутренними источниками катастрофического
  * бэктрекинга: НЕОГРАНИЧЕННЫЙ квантификатор (`+`, `*`, `{n,}`), альтернативу `|`
  * или «любой символ» `.` внутри группы, которая сама квантифицирована —
@@ -631,6 +899,14 @@ function isExplosiveGroupBody(body: string): boolean {
  *
  * И ещё один: повтор переменной длины (`{n,m}`, `?`) внутри группы с переменным
  * внешним интервалом — `(a{1,10}){1,10}`, `(a?){2,8}`.
+ *
+ * И два последних без `+`/`|`/`.` в теле группы: два и более атомов переменной
+ * длины (`?`, `{n,m}`) под неограниченным внешним квантификатором —
+ * `(?:a?b?)+`, `(?:\d?\w?)+@`; фиксированный внешний интервал с `max >= 10`
+ * и неоднозначным разбиением тела — `(?:a?b?){26}`, `(a{1,3}){100}`
+ * (заякоренные тела вида `(a{1,3}b){20}` остаются разрешёнными). Порог 10:
+ * при меньшем числе повторов перебор разбиений полиномиален и потока
+ * не блокирует.
  *
  * Простые `(abc)+` и `(.{2})` с фиксированным интервалом безопасны.
  */
@@ -668,6 +944,19 @@ function hasDangerousQuantifiedGroup(pattern: string): boolean {
         // на 40 символах блокирует поток на ~20 с.
         const outer = getIntervalBounds(pattern, i + 1);
         if (outer && outer.max > outer.min && outer.max >= 2 && hasVariableRepetition(body)) {
+            return true;
+        }
+        // Неоднозначное разбиение строки под неограниченным внешним квантификатором:
+        // (?:a?b?)+ (~2^n), (?:\d\d?)+ (числа Фибоначчи — 40 символов ~20 с).
+        if (quant.isUnbounded && isAmbiguousLoopBody(body)) {
+            return true;
+        }
+        // Фиксированный или открытый внешний интервал с max >= 10 и неоднозначным
+        // разбиением тела: (?:a?b?){26}, (a{1,3}){100} — число разбиений
+        // экспоненциально по числу повторов. Проверка однозначности, а не
+        // «есть переменный атом»: литеральный якорь в теле ((a{1,3}b){20})
+        // разбиение привязывает — такой паттерн остаётся разрешённым.
+        if (outer && outer.max >= 10 && isAmbiguousLoopBody(body)) {
             return true;
         }
     }

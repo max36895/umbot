@@ -1,6 +1,6 @@
 /**
  * Модуль содержащий класс для отправки запросов
  */
-export * from './interfaces/IRequest';
+export type { IRequestSend } from './interfaces/IRequest';
 // Базовый класс для HTTP-запросов
-export * from './request/Request';
+export { Request } from './request/Request';

@@ -264,18 +264,27 @@ describe('from-flow: приветствие и справка из настро�
 });
 
 describe('from-flow: режим бота', () => {
-    it.each(['dev', 'prod', 'strict_prod'])('режим %s из настроек попадает в код', (mode) => {
-        const { code, outputPath } = generate(`mode_${mode}`, flow(`mode-${mode}`, { mode }));
-        expect(code).toContain(`bot.setAppMode('${mode}');`);
-        if (mode === 'strict_prod') {
+    // flow.json — недоверенный вход: поле mode игнорируется, режим всегда strict_prod
+    it.each(['dev', 'prod', 'strict_prod'])(
+        'режим %s из настроек игнорируется — генерируется strict_prod',
+        (mode) => {
+            const { code, outputPath } = generate(`mode_${mode}`, flow(`mode-${mode}`, { mode }));
+            expect(code).toContain("bot.setAppMode('strict_prod');");
+            if (mode !== 'strict_prod') {
+                expect(code).not.toContain(`setAppMode('${mode}')`);
+            }
             expectProjectToTypeCheck(outputPath);
-        }
-    });
+        },
+    );
 
     it('неизвестный или отсутствующий режим заменяется на strict_prod', () => {
         const bad = generate('mode_bad', flow('mode-bad', { mode: "prod'); evil('" })).code;
         expect(bad).not.toContain('evil');
         expect(bad).toContain("bot.setAppMode('strict_prod');");
+        // mode: dev из недоверенного flow.json не отключает ReDoS-защиту
+        const dev = generate('mode_dev_ignored', flow('mode-dev-ignored', { mode: 'dev' })).code;
+        expect(dev).toContain("bot.setAppMode('strict_prod');");
+        expect(dev).not.toContain("setAppMode('dev')");
         const doc = flow('mode-none', {});
         delete doc.mode;
         expect(generate('mode_none', doc).code).toContain("bot.setAppMode('strict_prod');");

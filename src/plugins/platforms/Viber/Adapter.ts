@@ -74,6 +74,10 @@ export class ViberAdapter extends BasePlatform<IViberContent | string> {
         'unsubscribed',
     ];
     /**
+     * Известные опции адаптера (для предупреждения о неизвестных ключах — см. BasePlatform).
+     */
+    protected _knownPlatformOptions: readonly string[] = ['viber_api_version', 'viber_sender'];
+    /**
      * Viber — чат-платформа (не голосовая).
      */
     isVoice = false;

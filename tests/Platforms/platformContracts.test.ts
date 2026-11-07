@@ -378,6 +378,30 @@ describe('Контракты платформ', () => {
             expect(messagesSend).not.toHaveBeenCalled();
         });
 
+        it('протактивная отправка переиспользуемым контроллером идёт через messagesSend, а не /answers', async () => {
+            // Регресс: bot.send(target, callbackController) с включённым edit-режимом
+            // отвечал на callbackId исходного нажатия, а POST /answers редактирует
+            // сообщение в чате нажатия — адресат send() не получал ничего,
+            // хотя send() отчитывался успехом.
+            const { adapter, controller, answerCallback, messagesSend } = setup({
+                max_callback_edit_message: true,
+            });
+            await adapter.setQueryData(callbackQuery, controller);
+
+            const result = await adapter.send('other-user', controller);
+
+            // Нажатие может подтверждаться пустым телом, но текст сообщения
+            // не должен уйти в /answers вместо получателя
+            expect(answerCallback).not.toHaveBeenCalledWith(
+                'callback-id',
+                'Подтверждено',
+                {},
+                expect.anything(),
+            );
+            expect(messagesSend).toHaveBeenCalledWith('other-user', 'Подтверждено', {}, 'user');
+            expect(result).not.toBe(false);
+        });
+
         it('не подтверждает повторно, если обработчик уже вызвал api.answerCallback()', async () => {
             const { adapter, controller, answerCallback, messagesSend } = setup();
             await adapter.setQueryData(callbackQuery, controller);

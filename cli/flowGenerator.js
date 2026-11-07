@@ -114,9 +114,6 @@ const BUTTON_ACTION_PREFIX = '[go:';
  */
 const START_SLOT = '/start';
 
-/** Режимы приложения, которые принимает Bot.setAppMode. */
-const APP_MODES = new Set(['dev', 'prod', 'strict_prod']);
-
 /** Поля узла, которые генератор обходит как массивы. */
 const ARRAY_NODE_FIELDS = ['actions', 'conditions', 'buttons', 'slots'];
 
@@ -500,7 +497,10 @@ const SYSTEM_VARS = {
  * @returns {boolean} true если имя является системной переменной
  */
 function isSystemVar(name) {
-    return name && name.startsWith('__') && SYSTEM_VARS[name];
+    // Только собственные ключи: {{__proto__}} иначе проходит как «системная
+    // переменная» через унаследованное Object.prototype и вставляет в код
+    // '[object Object]' (сломанная компиляция сгенерированного проекта).
+    return !!name && name.startsWith('__') && Object.hasOwn(SYSTEM_VARS, name);
 }
 
 /**
@@ -509,7 +509,7 @@ function isSystemVar(name) {
  * @returns {string} JS-выражение (например, "new Date().toLocaleTimeString(...)")
  */
 function getSystemVarExpr(name) {
-    return SYSTEM_VARS[name] || name;
+    return Object.hasOwn(SYSTEM_VARS, name) ? SYSTEM_VARS[name] : name;
 }
 
 /**
@@ -612,9 +612,26 @@ function getUrlOriginError(url) {
         return null;
     }
     return (
-        `переменная ${firstVar[0]} стоит в адресе сервера URL "${url}". Переменные сценария ` +
+        `переменная ${firstVar[0]} стоит в адресе сервера URL "${maskUrlQuery(url)}". Переменные сценария ` +
         'допустимы только после хоста (в пути и параметрах); адрес сервера задайте литералом или {{env.NAME}}'
     );
+}
+
+/**
+ * Скрывает query и фрагмент URL в сообщениях об ошибках: сообщение печатается
+ * в консоль до extractHttpSecrets, и ключ API в query уехал бы в терминал/лог CI.
+ * @param {string} url — исходный URL
+ * @returns {string} URL с заменёнными query и фрагментом
+ */
+function maskUrlQuery(url) {
+    // Скрываем всё после первого ? или #: секрет может быть и во фрагменте
+    const queryStart = url.indexOf('?');
+    const hashIndex = url.indexOf('#', queryStart === -1 ? 0 : queryStart);
+    const cut = queryStart !== -1 ? queryStart : hashIndex;
+    if (cut === -1) {
+        return url;
+    }
+    return `${url.slice(0, cut)}<скрыто>`;
 }
 
 /**
@@ -642,6 +659,15 @@ function formatEnvValue(value) {
     const needsQuotes = /\s#|^\s|\s$|^["']|["']$/.test(clean);
     if (!needsQuotes) return clean;
     return clean.includes('"') ? `'${clean}'` : `"${clean}"`;
+}
+
+/** decodeURIComponent без броска: битая последовательность остаётся как есть. */
+function decodeURIComponentSafely(value) {
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
 }
 
 /**
@@ -682,11 +708,39 @@ function extractHttpSecrets(doc) {
         typeof value === 'string' &&
         value !== '' &&
         !value.includes('{{');
+    // Значение секрета с подстановкой {{var}} нельзя вынести в .env: подстановка
+    // раскрывается на данные пользователя в рантайме, .env зафиксировал бы литерал.
+    // Такое значение остаётся в коде — предупреждаем, что оно попадёт в src/index.ts.
+    const warnedRefSecrets = new Set();
+    const warnSecretWithRef = (name, value, node, where) => {
+        if (
+            !SECRET_NAME_PATTERN.test(name) ||
+            typeof value !== 'string' ||
+            value === '' ||
+            !value.includes('{{') ||
+            /^\{\{env\.[A-Z0-9_]+\}\}$/.test(value.trim())
+        ) {
+            return;
+        }
+        // Предупреждаем только когда в значении есть литеральная часть вне {{…}}:
+        // чистая подстановка вида {{user.jwt}} секрета в flow.json не содержит
+        const literalPart = value.replace(/\{\{[^}]*\}\}/g, '').trim();
+        if (literalPart === '') {
+            return;
+        }
+        const key = `${node.name || node.id}:${name}`;
+        if (warnedRefSecrets.has(key)) return;
+        warnedRefSecrets.add(key);
+        console.warn(
+            `  Блок "${node.name || node.id}": ${where} «${name}» похоже на секрет, но содержит подстановку {{…}} — литеральная часть значения останется в src/index.ts открытым текстом. Перенесите литеральное значение секрета в .env вручную.`,
+        );
+    };
     const replaceInBody = (value, node) => {
         if (Array.isArray(value)) return value.map((item) => replaceInBody(item, node));
         if (!value || typeof value !== 'object') return value;
         const out = {};
         for (const [key, item] of Object.entries(value)) {
+            warnSecretWithRef(key, item, node, 'поле тела');
             out[key] = isLiteralSecret(key, item)
                 ? toEnvRef(key, item, node, 'поле тела')
                 : replaceInBody(item, node);
@@ -698,6 +752,7 @@ function extractHttpSecrets(doc) {
         const headers = parseHttpHeaders(action.headers, node.name || action.url);
         if (headers) {
             for (const [name, value] of Object.entries(headers)) {
+                warnSecretWithRef(name, value, node, 'заголовок');
                 if (isLiteralSecret(name, value)) {
                     headers[name] = toEnvRef(name, value, node, 'заголовок');
                 }
@@ -705,26 +760,41 @@ function extractHttpSecrets(doc) {
         }
         action.headers = headers;
 
-        if (typeof action.url === 'string' && action.url.includes('?')) {
-            const hashIndex = action.url.indexOf('#');
-            const end = hashIndex === -1 ? action.url.length : hashIndex;
+        if (
+            typeof action.url === 'string' &&
+            (action.url.includes('?') || action.url.includes('#'))
+        ) {
+            // Секреты ищем и в query, и во фрагменте после #: фрагмент остаётся
+            // в URL запроса и сканируется даже при отсутствии query
             const queryStart = action.url.indexOf('?');
-            if (queryStart < end) {
-                const query = action.url
-                    .slice(queryStart + 1, end)
+            const hashIndex = action.url.indexOf('#', queryStart === -1 ? 0 : queryStart);
+            const queryEnd = hashIndex === -1 ? action.url.length : hashIndex;
+            const scanUrlPairs = (text, where) =>
+                text
                     .split('&')
                     .map((pair) => {
                         const eq = pair.indexOf('=');
                         if (eq === -1) return pair;
                         const name = pair.slice(0, eq);
                         const value = pair.slice(eq + 1);
+                        warnSecretWithRef(name, decodeURIComponentSafely(value), node, where);
                         return isLiteralSecret(name, value)
-                            ? `${name}=${toEnvRef(name, value, node, 'параметр URL')}`
+                            ? `${name}=${toEnvRef(name, value, node, where)}`
                             : pair;
                     })
                     .join('&');
-                action.url = action.url.slice(0, queryStart + 1) + query + action.url.slice(end);
+            let newUrl = action.url.slice(0, queryStart + 1);
+            if (queryStart !== -1) {
+                const query = scanUrlPairs(
+                    action.url.slice(queryStart + 1, queryEnd),
+                    'параметр URL',
+                );
+                newUrl += query;
             }
+            if (hashIndex !== -1) {
+                newUrl += `#${scanUrlPairs(action.url.slice(hashIndex + 1), 'фрагмент URL')}`;
+            }
+            action.url = newUrl;
         }
 
         if (action.body && typeof action.body === 'object') {
@@ -1261,20 +1331,63 @@ function generateButtonCode(buttons, indent, shuffle = false, doc = null) {
     return lines;
 }
 
+// Результаты blockNeedsAsync и индекс исходящих рёбер кэшируются по объекту doc:
+// без кэша обход цепочек на каждый блок даёт квадратичное время генерации —
+// сценарий из 2000 блоков уходил в минуты CPU.
+const asyncNeedsCache = new WeakMap();
+const outgoingIndexCache = new WeakMap();
+
+/**
+ * Индекс исходящих рёбер (next/branch_true/branch_false) документа: Map<from, Set<to>>.
+ * @param {Object} doc — FlowDocument
+ * @returns {Map<string, Set<string>>} индекс рёбер
+ */
+function getOutgoingIndex(doc) {
+    let index = outgoingIndexCache.get(doc);
+    if (!index) {
+        index = new Map();
+        if (Array.isArray(doc.edges)) {
+            for (const e of doc.edges) {
+                if (
+                    e &&
+                    (e.type === 'next' || e.type === 'branch_true' || e.type === 'branch_false')
+                ) {
+                    if (!index.has(e.from)) index.set(e.from, new Set());
+                    index.get(e.from).add(e.to);
+                }
+            }
+        }
+        outgoingIndexCache.set(doc, index);
+    }
+    return index;
+}
+
 /**
  * Рекурсивно проверяет, нужен ли async для блока (HTTP в нём или в связанных блоках).
+ * Результат кэшируется по id блока, поэтому каждый блок вычисляется один раз.
  * @param {Object} block — проверяемый блок
  * @param {Object} doc — FlowDocument
  * @param {Array} connectedBlocks — связанные блоки
- * @param {Set} visited — посещённые блоки (защита от циклов)
+ * @param {Set} computing — блоки на текущем пути (защита от циклов)
  * @returns {boolean} true если блок или его цепочка требуют async
  */
-function blockNeedsAsync(block, doc, connectedBlocks, visited = new Set()) {
-    if (visited.has(block.id)) return false;
-    visited.add(block.id);
-    if ((block.actions || []).some((a) => a.type === 'http_request')) return true;
-    const outgoing = findOutgoingBlocks(doc, block.id, connectedBlocks);
-    return outgoing.some((b) => blockNeedsAsync(b, doc, connectedBlocks, visited));
+function blockNeedsAsync(block, doc, connectedBlocks, computing = new Set()) {
+    let cache = asyncNeedsCache.get(doc);
+    if (!cache) {
+        cache = new Map();
+        asyncNeedsCache.set(doc, cache);
+    }
+    if (cache.has(block.id)) return cache.get(block.id);
+    if (computing.has(block.id)) return false;
+    computing.add(block.id);
+    let result = (block.actions || []).some((a) => a.type === 'http_request');
+    if (!result) {
+        const outgoing = findOutgoingBlocks(doc, block.id, connectedBlocks);
+        result = outgoing.some((b) => blockNeedsAsync(b, doc, connectedBlocks, computing));
+    }
+    computing.delete(block.id);
+    cache.set(block.id, result);
+    return result;
 }
 
 /**
@@ -1285,14 +1398,9 @@ function blockNeedsAsync(block, doc, connectedBlocks, visited = new Set()) {
  * @returns {Array} массив outgoing блоков
  */
 function findOutgoingBlocks(doc, nodeId, connectedBlocks) {
-    return connectedBlocks.filter((b) =>
-        doc.edges.some(
-            (e) =>
-                e.from === nodeId &&
-                e.to === b.id &&
-                (e.type === 'next' || e.type === 'branch_true' || e.type === 'branch_false'),
-        ),
-    );
+    const targets = getOutgoingIndex(doc).get(nodeId);
+    if (!targets) return [];
+    return connectedBlocks.filter((b) => targets.has(b.id));
 }
 
 /**
@@ -1738,19 +1846,13 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
     // Проверяем нужны ли setText/setTTS
     const needsTTS =
         doc.nodes.some((n) => {
-            if (
+            return !!(
                 ((n.type === 'command' || n.type === 'response') && n.response?.tts) ||
                 (n.type === 'step' && n.prompt?.tts)
-            ) {
-                return true;
-            }
-            return false;
+            );
         }) ||
         connectedBlocks.some((n) => {
-            if (n.response?.tts || n.prompt?.tts) {
-                return true;
-            }
-            return false;
+            return !!(n.response?.tts || n.prompt?.tts);
         });
     const utilsImports = ['setText'];
     if (needsTTS) utilsImports.push('setTTS');
@@ -1805,12 +1907,17 @@ function generateIndexTs(doc, useCloud = false, outputPath = '.') {
 
     lines.push(``);
     lines.push(`const bot = new Bot();`);
-    // Режим из настроек бота. Без поля (или с неизвестным значением) —
-    // strict_prod: сгенерированный проект — это прод-код, и опасные регулярные
-    // выражения в нём должны отклоняться. Режим задаётся до регистрации команд:
-    // strict_prod проверяет выражения в момент регистрации.
-    const appMode = APP_MODES.has(doc.mode) ? doc.mode : 'strict_prod';
-    lines.push(`bot.setAppMode('${appMode}');`);
+    // Режим всегда strict_prod: flow.json — недоверенный вход (его можно скачать
+    // из чужого редактора), и поле mode из него не должно понижать безопасность
+    // сгенерированного бота (mode: dev отключает отклонение ReDoS-регулярок).
+    // Режим задаётся до регистрации команд: strict_prod проверяет выражения
+    // в момент регистрации. Dev-режим разработчик ставит в src/index.ts сам.
+    if (doc.mode !== undefined) {
+        console.warn(
+            '  Поле "mode" в flow.json игнорируется: генерируется bot.setAppMode(\'strict_prod\'). Режим для локальной разработки задайте вручную в src/index.ts.',
+        );
+    }
+    lines.push(`bot.setAppMode('strict_prod');`);
     lines.push(``);
 
     // Регистрация платформ
@@ -2418,7 +2525,9 @@ const PLATFORM_README = {
  */
 function generateReadme(doc, useCloud, httpEnvNames = []) {
     const platforms = (Array.isArray(doc.platforms) ? doc.platforms : []).filter(
-        (p) => PLATFORM_README[p],
+        // Только собственные ключи: ключ __proto__ из flow.json иначе проходит
+        // через унаследованное Object.prototype и роняет generateReadme
+        (p) => Object.hasOwn(PLATFORM_README, p),
     );
     const hostname = String(doc.hostname || 'localhost');
     const requestedPort = Number(doc.port);
@@ -2427,7 +2536,13 @@ function generateReadme(doc, useCloud, httpEnvNames = []) {
             ? requestedPort
             : 3000;
     const out = [];
-    out.push(`# ${doc.name}`);
+    // Имя из недоверенного flow.json: без вычищенных переводов строк и разметки
+    // name с '\n## injected' дописывал бы в README свои заголовки
+    out.push(
+        `# ${String(doc.name ?? '')
+            .replace(/[\r\n]+/g, ' ')
+            .replace(/[#*`_[\]]/g, '')}`,
+    );
     out.push('');
     out.push(
         'Бот сгенерирован из flow.json командой `umbot create from-flow` ([umbot](https://github.com/max36895/umbot)). ' +
@@ -2754,7 +2869,10 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
     // [A-Z0-9_]: иначе ключ с переводами строк ломал структуру serverless.yml
     // (YAML-инъекция) и .env.
     const sanitizeEnvName = (platform) => {
-        if (TOKEN_ENV_NAMES[platform]) return TOKEN_ENV_NAMES[platform];
+        // Только собственные ключи: ключ __proto__ из tokens иначе проходит как
+        // «известная платформа» через унаследованное Object.prototype и пишет
+        // в .env мусорную строку '[object Object]=…'
+        if (Object.hasOwn(TOKEN_ENV_NAMES, platform)) return TOKEN_ENV_NAMES[platform];
         return String(platform)
             .toUpperCase()
             .replace(/[^A-Z0-9_]/g, '_');
@@ -2770,7 +2888,7 @@ function generateFromFlow(flowJsonPath, outputPath, options = {}) {
     // Существующий .env не перезаписывается: пользовательские значения сохраняются,
     // недостающие переменные дописываются, пустые — заполняются токеном из flow.json.
     const platformEntries = (Array.isArray(doc.platforms) ? doc.platforms : [])
-        .filter((platform) => TOKEN_ENV_NAMES[platform])
+        .filter((platform) => Object.hasOwn(TOKEN_ENV_NAMES, platform))
         .map((platform) => ({ envName: TOKEN_ENV_NAMES[platform], value: '' }));
     const envResult = mergeEnvFile(path.join(outputPath, '.env'), [
         ...tokenEntries,
@@ -2892,6 +3010,14 @@ const environment = fs.existsSync(envPath)
               const eq = line.indexOf('=');
               if (eq === -1) return line;
               const name = line.slice(0, eq).trim();
+              // Имя проверяем наравне со значением: cmd.exe раскрывает %VAR%
+              // внутри кавычек — имя с % утекло бы в командную строку yc вместе
+              // со значениями переменных машины (видны в логах CI).
+              if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+                  console.warn('[deploy] ' + name + ': некорректное имя переменной — ' +
+                      'пара НЕ передана в --environment (допустимы латиница, цифры, _).');
+                  return null;
+              }
               const raw = parseEnvValue(line.slice(eq + 1));
               // Пустое значение фреймворк при чтении .env тоже пропускает.
               if (!raw) return null;
@@ -3019,6 +3145,37 @@ function validateFlowSchema(flowJsonPath) {
                     errors.push(`nodes[${idx}]: элементы \`${field}\` должны быть объектами`);
                 }
             }
+            // Поля ответа: строка вместо массива или null вместо объекта проходили
+            // валидацию, но роняли генерацию с TypeError в generateButtonCode/generateCardCode.
+            const response = n.response;
+            if (response && typeof response === 'object' && !Array.isArray(response)) {
+                if (
+                    response.buttons !== undefined &&
+                    response.buttons !== null &&
+                    !Array.isArray(response.buttons)
+                ) {
+                    errors.push(`nodes[${idx}]: поле \`response.buttons\` должно быть массивом`);
+                }
+                const card = response.card;
+                if (card && typeof card === 'object' && !Array.isArray(card)) {
+                    if (
+                        card.images !== undefined &&
+                        card.images !== null &&
+                        !Array.isArray(card.images)
+                    ) {
+                        errors.push(
+                            `nodes[${idx}]: поле \`response.card.images\` должно быть массивом`,
+                        );
+                    } else if (
+                        Array.isArray(card.images) &&
+                        card.images.some((img) => !img || typeof img !== 'object')
+                    ) {
+                        errors.push(
+                            `nodes[${idx}]: элементы \`response.card.images\` должны быть объектами`,
+                        );
+                    }
+                }
+            }
             if (n.saveTo && !/^[\w.]+$/.test(n.saveTo)) {
                 errors.push(
                     `nodes[${idx}]: saveTo="${n.saveTo}" — некорректный идентификатор (используйте [a-zA-Z0-9_.]+)`,
@@ -3063,6 +3220,30 @@ function validateFlowSchema(flowJsonPath) {
                     );
                 }
             }
+            // Подстановки {{var}} во всех строках узла: имя с прототипным ключом
+            // ([[__proto__]] и т.п.) читало бы унаследованное свойство Object.prototype
+            const checkUnsafeVarRefs = (value, path) => {
+                if (typeof value === 'string') {
+                    for (const match of value.matchAll(/\{\{([\w.]+)\}\}/g)) {
+                        if (!isSafeUserDataKey(match[1])) {
+                            errors.push(
+                                `nodes[${idx}]: ${path}: подстановка {{${match[1]}}} использует зарезервированное свойство прототипа`,
+                            );
+                        }
+                    }
+                    return;
+                }
+                if (Array.isArray(value)) {
+                    value.forEach((item, i) => checkUnsafeVarRefs(item, `${path}[${i}]`));
+                    return;
+                }
+                if (value && typeof value === 'object') {
+                    for (const [key, item] of Object.entries(value)) {
+                        checkUnsafeVarRefs(item, `${path}.${key}`);
+                    }
+                }
+            };
+            checkUnsafeVarRefs(n, 'nodes');
         });
 
         // Навигация в flow.json осуществляется через edges, а не через поле next —
@@ -3114,26 +3295,41 @@ function validateFlowSchema(flowJsonPath) {
         const visited = new Set();
         const inStack = new Set();
         let hasExecCycle = false;
-        const dfs = (nodeId) => {
-            visited.add(nodeId);
-            inStack.add(nodeId);
-            for (const nextId of adjacency.get(nodeId) || []) {
-                if (inStack.has(nextId)) {
-                    hasExecCycle = true;
-                    return;
+        // Итеративный DFS с явным стеком: рекурсия на цепочке из десятков тысяч
+        // блоков падала RangeError с сырым сообщением вместо ошибки валидации.
+        for (const rootId of execIds) {
+            if (hasExecCycle) break;
+            // Корень мог быть посещён DFS от предыдущего корня — это не повод
+            // бросать обход: в оставшихся компонентах бывают циклы
+            if (visited.has(rootId)) continue;
+            const stack = [{ id: rootId, iter: (adjacency.get(rootId) || []).values() }];
+            visited.add(rootId);
+            inStack.add(rootId);
+            while (stack.length > 0) {
+                const frame = stack[stack.length - 1];
+                let nextId = null;
+                for (const candidate of frame.iter) {
+                    if (inStack.has(candidate)) {
+                        hasExecCycle = true;
+                        break;
+                    }
+                    if (!visited.has(candidate)) {
+                        nextId = candidate;
+                    }
+                    if (nextId !== null) break;
                 }
-                if (!visited.has(nextId)) {
-                    dfs(nextId);
-                    if (hasExecCycle) return;
-                }
-            }
-            inStack.delete(nodeId);
-        };
-        for (const id of execIds) {
-            if (!visited.has(id)) {
-                dfs(id);
                 if (hasExecCycle) break;
+                if (nextId !== null) {
+                    visited.add(nextId);
+                    inStack.add(nextId);
+                    stack.push({ id: nextId, iter: (adjacency.get(nextId) || []).values() });
+                } else {
+                    inStack.delete(frame.id);
+                    stack.pop();
+                }
             }
+            inStack.delete(rootId);
+            if (hasExecCycle) break;
         }
         if (hasExecCycle) {
             errors.push(

@@ -1,17 +1,26 @@
 import { IAppConfig, IAppParam, TAppType, EMetric, TAppMode } from './interfaces/IAppContext';
 import {
-    IBotResponse,
+    IAddFormOptions,
     IBotResponseState,
+    IBroadcastOptions,
+    IBroadcastResult,
+    IButtonAction,
     IDatabaseAdapter,
+    IMenu,
+    IMenuOptions,
     IPlatformAdapter,
     IPlugin,
     IPluginFn,
     IPollingOptions,
+    ISendMessage,
+    TActionData,
     TBotAuth,
     TBotContent,
     TBotResponseCb,
     TCommandGroupMode,
+    TFormContext,
     TPlugin,
+    TRunResult,
 } from './interfaces/IBot';
 
 import {
@@ -23,10 +32,19 @@ import {
 } from './utils/CommandReg';
 import { ALL_EVENT_TYPES, isEventType, type TEventType } from './events';
 import { MemorySessionStorage } from './utils/MemorySessionStorage';
-import { IncomingMessage, ServerResponse, createServer, Server } from 'node:http';
-import { hash } from 'node:crypto';
+import { DeliveryDedup, type IDelivery } from './utils/DeliveryDedup';
+import { UserQueues, type IUserQueueEntry } from './utils/UserQueues';
+import { PollingRunner } from './utils/PollingRunner';
+import { BotBadRequestError } from './utils/errors';
+import { WebhookServer } from './utils/WebhookServer';
+import { ShutdownSignals } from './utils/ShutdownSignals';
+import { FormWizard } from './utils/FormWizard';
+import { MenuFactory } from './utils/menu';
+import { ActionFactory } from './utils/actions';
+import { OutboundSender } from './utils/outbound';
+import { MAX_REQUEST_SIZE, defaultSend, getBearerToken, readRequestData, send } from './utils/http';
+import { IncomingMessage, ServerResponse, type Server } from 'node:http';
 import type { BotController, IControllerApi, IPlatformData, IUserData } from '../controller';
-import type { Buttons, IButtonOptions, TButtonPayload } from '../components/button';
 import { AppContext, T_AUTO } from './AppContext';
 import {
     HELP_INTENT_NAME,
@@ -54,36 +72,6 @@ export type TBotControllerClass<
 > = new (appContext: AppContext) => BotController<TUserData, TPlatformState>;
 
 /**
- * Результат выполнения запроса от платформы - ответ, который будет отправлен пользователю
- * Может быть ответом для Алисы, Маруси или текстовым сообщением
- *
- * @example
- * ```ts
- * // Ответ для Алисы
- * const alisaResponse: TRunResult = {
- *   response: {
- *     text: 'Привет!',
- *     end_session: false
- *   },
- *   version: '1.0'
- * };
- *
- * // Ответ для Маруси
- * const marusiaResponse: TRunResult = {
- *   response: {
- *     text: 'Привет!',
- *     end_session: false
- *   },
- *   version: '1.0'
- * };
- *
- * // Простой текстовый ответ
- * const textResponse: TRunResult = 'Привет!';
- * ```
- */
-export type TRunResult = object | string;
-
-/**
  * Результат обработки входящего события серверлесс-платформы (например, Yandex Cloud Functions).
  * Содержит HTTP-статус и тело ответа, которые нужно вернуть из cloud-функции.
  */
@@ -98,10 +86,6 @@ export interface IWebhookEventResult {
     body: TRunResult | null;
 }
 
-export * from './interfaces/IBot';
-
-const MAX_REQUEST_SIZE = 1024 * 1024 * 2;
-
 /**
  * Максимальная длина пользовательской команды, урезанная до 7000 символов
  * (лимит Viber — максимум среди поддерживаемых платформ). Защита от ReDoS:
@@ -110,51 +94,29 @@ const MAX_REQUEST_SIZE = 1024 * 1024 * 2;
  */
 const MAX_USER_COMMAND_LENGTH = 7000;
 
-/**
- * Сколько запрос ждёт завершения предыдущего запроса того же пользователя, мс.
- * Предел нужен, чтобы зависший обработчик не блокировал пользователя навсегда:
- * после него запрос выполняется, не дожидаясь предыдущего.
- */
-const USER_QUEUE_MAX_WAIT = 10_000;
-
-/** Сколько ID доставок помнит дедупликация вебхуков (старые вытесняются). */
-const DELIVERY_CACHE_SIZE = 10_000;
-/**
- * Сколько помнится ID доставки, мс. Платформы повторяют доставку через секунды
- * или минуты (MAX — через 60 с, затем с множителем 2.5), час покрывает эти повторы.
- */
-const DELIVERY_CACHE_TTL = 60 * 60 * 1000;
-/**
- * Сколько повтор доставки ждёт исхода исходного запроса, который ещё обрабатывается, мс.
- * Предел не даёт повторам копить открытые соединения, если исходный запрос завис.
- */
-const DELIVERY_WAIT_LIMIT = 30_000;
-
 /** Минимальная пауза перед повторным подключением к недоступной БД, мс. */
 const DB_RETRY_MIN_DELAY = 5000;
 /** Максимальная пауза перед повторным подключением к недоступной БД, мс. */
 const DB_RETRY_MAX_DELAY = 60000;
 
 /**
- * Сколько отправок bot.broadcast ведёт одновременно: темп задаёт лимит адаптера (sendLimit),
- * а параллельность нужна, чтобы задержка сети не снижала его.
+ * Страховка принудительного выхода после graceful shutdown, мс: если event loop
+ * продолжают держать чужие дескрипторы, процесс завершится принудительно.
  */
-const BROADCAST_CONCURRENCY = 10;
+const GRACEFUL_FORCE_EXIT_TIMEOUT = 5000;
 
-/** Пауза перед первым повтором запроса обновлений после ошибки (long polling), мс. */
-const POLLING_RETRY_MIN_DELAY = 1000;
-/** Максимальная пауза между повторами запроса обновлений, мс. */
-const POLLING_RETRY_MAX_DELAY = 30_000;
 /**
- * Минимальный интервал между пустыми ответами адаптера на запрос обновлений, мс.
- * Защищает от холостого цикла, если адаптер отвечает сразу, не дожидаясь обновлений.
+ * Поверхностная копия данных memory-сессии для выдачи запросу. Снимает гонку
+ * параллельных запросов одного пользователя по собственным ключам (счётчики,
+ * шаги форм) — основной класс состояния. Вложенные объекты остаются общими:
+ * глубокая копия (structuredClone) стоит 1,5–2,5 мкс и удвоила бы стоимость
+ * запроса на memory-сессии, где весь запрос — те же 1–2 мкс.
+ * @param data Сохранённые данные сессии
+ * @returns Копия данных
  */
-const POLLING_MIN_EMPTY_INTERVAL = 500;
-/**
- * Сколько обновлений одной пачки long polling обрабатывается одновременно: пачка
- * до 1000 событий (MAX) не должна запускать 1000 обработчиков разом.
- */
-const POLLING_CONCURRENCY = 32;
+function cloneSessionData(data: object): object {
+    return { ...data };
+}
 
 /**
  * Функция для обработки следующего шага в цепочке промежуточных функций
@@ -166,39 +128,6 @@ export type MiddlewareNext = () => Promise<void>;
 export type MiddlewareFn = (ctx: BotController, next: MiddlewareNext) => void | Promise<void>;
 
 /**
- * Ошибка «запрос платформы не может быть обработан».
- * Webhook отвечает на неё 400: проблема в самом запросе, а не в сервере. Повтор
- * такой доставки не спасает, но Telegram и MAX повторяют любой ответ, кроме 2xx,
- * поэтому адаптеры мессенджеров не возвращают `false` для служебных событий,
- * а подтверждают их через `skipAutoReply`.
- */
-class BotBadRequestError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'BotBadRequestError';
-    }
-}
-
-/**
- * Состояние очереди запросов одного пользователя (см. `Bot.#runInUserQueue`).
- * Запись переиспользуется, пока пользователь активен: без удаления и повторной
- * вставки в Map на каждый запрос.
- */
-interface IUserQueueEntry {
-    /** Последний запрос пользователя — его ждёт следующий запрос */
-    run: Promise<unknown>;
-    /** Контроллер выполняющегося запроса; `null` — очередь свободна */
-    owner: object | null;
-}
-
-/**
- * Сколько записей очередей копится до чистки свободных. Свободные записи не
- * удаляются сразу: удаление и новая вставка на каждый запрос дороже, чем редкая
- * пакетная чистка.
- */
-const USER_QUEUE_SWEEP_SIZE = 1024;
-
-/**
  * Storage-состояние запроса (см. `Bot.#initRequestState`).
  */
 interface IRequestState {
@@ -206,112 +135,10 @@ interface IRequestState {
     isLocalStorage: boolean;
     /** Пользователь новый; `null` — БД не ответила, сохранять ответ нельзя */
     isNewUser: boolean | null;
-    /** Ключ сессии в памяти процесса; `null` — сессия в памяти не используется */
+    /** Хранилище сессии в памяти процесса; `null` — сессия в памяти не используется */
+    memoryStore: MemorySessionStorage<IUserData> | null;
+    /** Ключ в хранилище сессии — id пользователя */
     memoryKey: string | null;
-}
-
-/** Уже выполненный промис — начальное значение `IUserQueueEntry.run`. */
-const RESOLVED_QUEUE: Promise<unknown> = Promise.resolve();
-
-/**
- * Принятая доставка вебхука (см. `Bot.#acceptDelivery`).
- */
-interface IDelivery {
-    /** Платформа доставки */
-    platform: string;
-    /** Ключ доставки внутри платформы: ID (подписанный вебхук) или хэш тела */
-    key: string;
-    /** Время, после которого запись забывается, мс */
-    expiresAt: number;
-    /**
-     * Исход обработки: `true` — обработана, `false` — сбой сервера, повтор
-     * обрабатывается заново; `undefined` — исходный запрос ещё выполняется
-     */
-    outcome: boolean | undefined;
-    /**
-     * Повторы, ждущие исхода. Промис создаётся только для ждущего повтора —
-     * у обычной (единственной) доставки его нет вовсе.
-     */
-    waiters: ((processed: boolean) => void)[] | null;
-}
-
-/**
- * Промис исхода доставки для повтора, который его ждёт.
- * @param delivery Принятая доставка
- * @returns Промис исхода (`true` — обработана, `false` — сбой сервера)
- */
-function getDeliveryResult(delivery: IDelivery): Promise<boolean> {
-    if (delivery.outcome !== undefined) {
-        return Promise.resolve(delivery.outcome);
-    }
-    return new Promise<boolean>((resolve) => {
-        (delivery.waiters ??= []).push(resolve);
-    });
-}
-
-/**
- * Ждёт завершения промиса, но не дольше `ms`. Отказ промиса не пробрасывается.
- * @param promise Промис, завершения которого ждём
- * @param ms Предел ожидания, мс
- * @returns Значение промиса; `undefined` — промис отклонён или предел истёк
- */
-function waitWithLimit<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
-    return new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(undefined), ms);
-        timer.unref();
-        const done = (value?: T): void => {
-            clearTimeout(timer);
-            resolve(value);
-        };
-        promise.then(done, () => done());
-    });
-}
-
-/**
- * Хэш тела запроса для ключа дедупликации. Повтор доставки платформа шлёт с тем же
- * телом, а атакующий без секрета вебхука не угадает тело будущего апдейта и не
- * сможет заранее «занять» его ID (у Telegram update_id идут подряд). ID доставки
- * адаптеры берут из тела, поэтому хэш тела различает и сами доставки.
- * @param body Тело запроса
- * @returns Хэш тела
- */
-function hashBody(body: string | object): string {
-    return hash('sha1', typeof body === 'string' ? body : JSON.stringify(body), 'base64');
-}
-
-/**
- * Пауза, которая завершается досрочно при остановке по сигналу.
- * Таймер без `unref()`: пауза между запросами обновлений должна держать процесс,
- * как держит его сам запрос long polling.
- * @param ms Длительность паузы, мс
- * @param signal Сигнал остановки
- * @returns Промис, выполненный по истечении паузы или при остановке
- */
-function delayUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-        if (signal.aborted) {
-            resolve();
-            return;
-        }
-        const onAbort = (): void => {
-            clearTimeout(timer);
-            resolve();
-        };
-        const timer = setTimeout(() => {
-            signal.removeEventListener('abort', onAbort);
-            resolve();
-        }, ms);
-        signal.addEventListener('abort', onAbort, { once: true });
-    });
-}
-
-/**
- * Токен из заголовка Authorization (префикс `Bearer ` отбрасывается).
- * @param header Значение заголовка
- * @returns Токен или `null`, если заголовка нет
- */
-function getBearerToken(header: unknown): TBotAuth {
-    return header ? String(header).replace('Bearer ', '') : null;
 }
 
 /**
@@ -327,25 +154,6 @@ function truncateUserCommand(botController: BotController): void {
     if (command && command.length > MAX_USER_COMMAND_LENGTH) {
         botController.userCommand = command.slice(0, MAX_USER_COMMAND_LENGTH);
     }
-}
-
-function defaultSend(res: ServerResponse, state: IBotResponse): void {
-    res.statusCode = state.statusCode;
-    const isBodyString = typeof state.body === 'string';
-    res.setHeader('Content-Type', isBodyString ? 'text/plain' : 'application/json');
-    res.end(isBodyString ? state.body : JSON.stringify(state.body));
-}
-
-function send(
-    req: IncomingMessage,
-    res: ServerResponse,
-    state: IBotResponseState,
-    responseCb?: TBotResponseCb,
-): void {
-    if (responseCb) {
-        return responseCb(req, res, state);
-    }
-    return defaultSend(res, state);
 }
 
 interface IAppConnectStatus {
@@ -383,357 +191,6 @@ export type TPlatformResolver = (
     headers?: Record<string, unknown>,
     detect?: (uBody: unknown, headers?: Record<string, unknown>) => TAppType | null,
 ) => TAppType | null;
-
-/**
- * Зарегистрированная форма с подготовленными настройками (для шагов addForm).
- */
-interface IFormRuntime {
-    /** Имя формы */
-    name: string;
-    /** Настройки формы */
-    form: IAddFormOptions<BotController, Record<string, unknown>>;
-    /** Команды отмены в нижнем регистре */
-    cancelCommands: string[];
-    /** Текст отмены */
-    cancelText: string;
-    /** Надпись кнопки пропуска в нижнем регистре */
-    skipText: string;
-}
-
-/**
- * Кнопка сообщения {@link ISendMessage}: как аргументы `buttons.addBtn(title, url, payload, options)`.
- */
-export interface ISendButton {
-    /** Текст кнопки */
-    title: string;
-    /** Ссылка (кнопка-ссылка) */
-    url?: string;
-    /** Payload кнопки — например, `action.payload(data)` из {@link Bot.defineAction} */
-    payload?: TButtonPayload;
-    /** Опции кнопки */
-    options?: IButtonOptions;
-}
-
-/**
- * Сообщение для {@link Bot.send} и {@link Bot.broadcast} без ручной сборки контроллера.
- *
- * @example
- * ```ts
- * await bot.send(userId, { text: 'Комната готова', buttons: ['Открыть', { title: 'Сайт', url: 'https://example.com' }] }, T_TELEGRAM);
- * ```
- */
-export interface ISendMessage {
-    /** Текст сообщения */
-    text: string;
-    /** Текст для озвучки (TTS), где платформа его поддерживает */
-    tts?: string;
-    /** Кнопки: строка — обычная кнопка с этим текстом */
-    buttons?: (string | ISendButton)[];
-}
-
-/**
- * Параметры {@link Bot.broadcast}.
- */
-export interface IBroadcastOptions {
-    /**
-     * Вызывается после каждой отправки: прогресс рассылки, отметка в БД.
-     * @param userId Получатель
-     * @param ok `true` — доставлено, `false` — нет (причина в логе)
-     */
-    onResult?: (userId: string | number, ok: boolean) => void | Promise<void>;
-}
-
-/**
- * Результат {@link Bot.broadcast}.
- */
-export interface IBroadcastResult {
-    /** Кому сообщение доставлено */
-    sent: (string | number)[];
-    /** Кому не доставлено: пользователь заблокировал бота, неверный id, сбой сети */
-    failed: (string | number)[];
-}
-
-/**
- * Данные кнопки действия ({@link Bot.defineAction}): плоский объект, который уходит в payload
- * кнопки и возвращается обработчику при нажатии. Ключи `action` и `command` зарезервированы
- * для маршрутизации нажатия — они игнорируются в данных кнопки.
- */
-export type TActionData = Record<string, string | number | boolean | null>;
-
-/**
- * Действие кнопки с данными — результат {@link Bot.defineAction}. Одно описание служит и для
- * создания кнопки (payload `{ action: name, ...data }`), и для обработчика нажатия, который
- * получает уже разобранные данные.
- *
- * @template TData Данные кнопки
- * @template TBotController Контроллер
- *
- * @example
- * ```ts
- * const kick = bot.defineAction<{ p: string }>('kick');
- * kick.handle((data, ctx) => {
- *     ctx.text = `Исключаем участника ${data.p}`;
- * });
- * // в обработчике, который показывает список участников:
- * kick.addBtn(ctx.buttons, 'Исключить', { p: participant.id });
- * ```
- */
-export interface IButtonAction<
-    TData extends TActionData = TActionData,
-    TBotController extends BotController = BotController,
-> {
-    /** Имя действия */
-    readonly name: string;
-    /**
-     * Payload кнопки этого действия — для `card.addButton()` и других мест, где кнопка
-     * создаётся не через {@link IButtonAction.addBtn}. Зарезервированные ключи `action` и
-     * `command` из данных исключаются: маршрутизация нажатия всегда ведёт на это действие.
-     * @param data Данные кнопки
-     * @returns `{ action: name, ...data }` без зарезервированных ключей
-     */
-    payload(data?: TData): Record<string, unknown>;
-    /**
-     * Добавляет кнопку действия. Если payload длиннее 64 байт и подключён Telegram, пишет
-     * предупреждение: Telegram такую кнопку не примет.
-     * @param buttons Кнопки ответа (`ctx.buttons`)
-     * @param title Текст кнопки
-     * @param data Данные кнопки
-     * @param options Опции кнопки (как у `buttons.addBtn`)
-     * @returns `buttons` для цепочки
-     */
-    addBtn(buttons: Buttons, title: string, data?: TData, options?: IButtonOptions): Buttons;
-    /**
-     * Регистрирует обработчик нажатия (через {@link Bot.addAction}).
-     * @param cb Обработчик: данные кнопки (payload без поля `action`) и контроллер;
-     *   может вернуть строку-ответ, поддерживает `async`
-     * @returns Это же действие
-     */
-    handle(
-        cb: (data: TData, ctx: TBotController) => void | string | Promise<void | string>,
-    ): IButtonAction<TData, TBotController>;
-}
-
-/**
- * Кнопка экрана меню ({@link Bot.defineMenu}). Задайте одно из полей `to`, `url` или `payload`.
- */
-export interface IMenuButton {
-    /** Текст кнопки; его же пользователь может сказать или написать */
-    title: string;
-    /** Экран, на который ведёт кнопка */
-    to?: string;
-    /** Ссылка (кнопка-ссылка) */
-    url?: string;
-    /** Payload другого действия — например, `action.payload(data)` из {@link Bot.defineAction} */
-    payload?: TButtonPayload;
-}
-
-/**
- * Экран меню ({@link Bot.defineMenu}).
- */
-export interface IMenuScreen<TBotController extends BotController = BotController> {
-    /** Текст экрана: строка или функция от контроллера (баланс, имя пользователя) */
-    text: string | ((ctx: TBotController) => string);
-    /** Кнопки экрана в порядке показа */
-    buttons?: IMenuButton[];
-    /** Экран, куда ведёт кнопка «Назад»; без поля кнопки нет */
-    parent?: string;
-    /**
-     * Вызывается после того, как текст и кнопки экрана заданы: карточки, список с
-     * `Navigation`, запуск формы. Может быть `async`.
-     */
-    onShow?: (ctx: TBotController) => void | Promise<void>;
-}
-
-/**
- * Параметры {@link Bot.defineMenu}.
- */
-export interface IMenuOptions<TBotController extends BotController = BotController> {
-    /** Экраны по именам */
-    screens: Record<string, IMenuScreen<TBotController>>;
-    /** Экран по умолчанию; без поля — первый в `screens` */
-    start?: string;
-    /** Текст кнопки возврата (по умолчанию «Назад») */
-    backText?: string;
-}
-
-/**
- * Меню, созданное {@link Bot.defineMenu}.
- */
-export interface IMenu<TBotController extends BotController = BotController> {
-    /** Имя меню */
-    readonly name: string;
-    /**
-     * Показывает экран: текст, кнопки, «Назад», затем `onShow`.
-     * @param ctx Контроллер запроса
-     * @param screen Имя экрана; без него или для неизвестного — экран по умолчанию
-     * @returns Промис, только если `onShow` экрана асинхронный
-     */
-    show(ctx: TBotController, screen?: string): void | Promise<void>;
-    /**
-     * Payload кнопки перехода на экран — для кнопок вне меню (`buttons.addBtn`, `bot.send`).
-     * @param screen Имя экрана
-     * @returns `{ action, s: screen }`
-     */
-    payload(screen: string): Record<string, unknown>;
-}
-
-/**
- * Контекст формы — данные, переданные в {@link Bot.startForm} (например, id комнаты).
- * Хранится в `userData` между шагами, поэтому должен сериализоваться в JSON.
- */
-export type TFormContext = Record<string, unknown>;
-
-/**
- * Результат `parse` поля формы: преобразованное значение либо текст ошибки
- * (тогда вопрос задаётся повторно).
- */
-export type TFormParseResult = { value: unknown } | { error: string };
-
-/**
- * Описание одного поля формы в {@link Bot.addForm}.
- *
- * @template TBotController Контроллер (по умолчанию `BotController`)
- */
-export interface IAddFormField<TBotController extends BotController = BotController> {
-    /**
-     * Имя поля. Станет ключом в объекте ответов, который получит `onComplete`.
-     * Должно быть валидным ключом объекта.
-     * @example 'name', 'email', 'age'
-     */
-    name: string;
-
-    /**
-     * Текст, который бот отправит пользователю с просьбой ввести это поле.
-     * Может быть строкой или функцией от контроллера и контекста формы (см. {@link Bot.startForm}).
-     * @example 'Как вас зовут?' | (ctx, context) => `Комната ${context.roomId}. Ваше имя?`
-     */
-    prompt: string | ((ctx: TBotController, context: TFormContext) => string);
-
-    /**
-     * Варианты ответа: показываются кнопками, ответ должен совпасть с одним из них (без учёта
-     * регистра). В ответы попадает вариант в написании из списка. Иначе вопрос задаётся
-     * повторно с текстом `invalidOptionText` формы.
-     * @example ['Утро', 'День', 'Вечер']
-     */
-    options?: string[];
-
-    /**
-     * Необязательное поле: к вопросу добавляется кнопка `skipText` формы («Пропустить»).
-     * Пропущенное поле не попадает в ответы.
-     */
-    optional?: boolean;
-
-    /**
-     * Валидатор пользовательского ввода.
-     *
-     * Может быть синхронным или асинхронным.
-     * Возвращаемое значение:
-     * - `true` — значение принято, переходим к следующему полю.
-     * - `false` — валидация не прошла, повторяем prompt без сообщения об ошибке.
-     * - `string` — эта строка отправляется пользователю как текст ошибки.
-     *
-     * @example
-     * ```ts
-     * // Синхронная валидация
-     * validate: (v) => v.length > 0
-     *
-     * // Сообщение, если неверно
-     * validate: (v) => /\S+@\S+/.test(v) || 'Некорректный email'
-     *
-     * // Асинхронная (например, проверка через API)
-     * validate: async (v) => {
-     *     const exists = await db.users.findOne({ email: v });
-     *     return exists ? 'Email уже занят' : true;
-     * }
-     * ```
-     */
-    validate?: (value: string) => boolean | string | Promise<boolean | string>;
-
-    /**
-     * Проверка с преобразованием ответа (вызывается после `validate`): вернуть `{ value }` —
-     * в ответы попадёт `value`; `{ error }` — вопрос задаётся повторно с этим текстом.
-     * Значение хранится в `userData` до конца формы, поэтому должно сериализоваться в JSON
-     * (дату возвращайте строкой ISO).
-     *
-     * @example
-     * ```ts
-     * parse: (v) => (Number.isInteger(+v) && +v > 0 ? { value: +v } : { error: 'Нужно целое число' })
-     * ```
-     */
-    parse?: (value: string, ctx: TBotController) => TFormParseResult | Promise<TFormParseResult>;
-}
-
-/**
- * Ключевые параметры метода {@link Bot.addForm} — регистрации многошаговой формы.
- *
- * @template TBotController Контроллер
- * @template TAnswers Тип ответов в `onComplete` (по умолчанию — строки)
- */
-export interface IAddFormOptions<
-    TBotController extends BotController = BotController,
-    TAnswers extends Record<string, unknown> = Record<string, string>,
-> {
-    /**
-     * Список полей формы. Обрабатываются последовательно — каждое поле становится своим шагом.
-     */
-    fields: IAddFormField<TBotController>[];
-
-    /**
-     * Колбек, вызываемый после того как заполнены ВСЕ поля.
-     * Может быть синхронным или асинхронным — фреймворк дождётся его завершения
-     * перед формированием ответа.
-     *
-     * @param ctx BotController — имеет доступ к userData, тексту, кнопкам и т.д.
-     * @param answers Объект с ответами: ключ — name поля, значение — введённый текст
-     *   (или результат `parse`). Пропущенных необязательных полей в нём нет.
-     * @param context Контекст, переданный в {@link Bot.startForm} (`{}`, если форма запущена иначе)
-     *
-     * @example
-     * ```ts
-     * onComplete: (ctx, answers) => {
-     *     ctx.text = `Спасибо, ${answers.name}! Мы вас записали (${answers.email}).`;
-     * }
-     * ```
-     */
-    onComplete: (
-        ctx: TBotController,
-        answers: TAnswers,
-        context: TFormContext,
-    ) => void | Promise<void>;
-
-    /**
-     * Текст, который получит пользователь при отмене формы.
-     * @defaultValue 'Форма отменена.'
-     */
-    cancelText?: string;
-
-    /**
-     * Список команд, которые отменяют форму. Работают в любом регистре.
-     * @defaultValue ['отмена', 'cancel']
-     */
-    cancelCommands?: string[];
-
-    /**
-     * Надпись кнопки пропуска необязательного поля (`optional`). Работает и как текст ответа.
-     * @defaultValue 'Пропустить'
-     */
-    skipText?: string;
-
-    /**
-     * Текст ошибки, когда ответ не совпал ни с одним из `options` поля.
-     * @defaultValue 'Выберите один из вариантов.'
-     */
-    invalidOptionText?: string;
-
-    /**
-     * Выход по чужой кнопке или команде: нажатие callback-кнопки или текст, точно совпавший
-     * с зарегистрированной командой (`addCommand`/`addAction`), если это не вариант ответа
-     * поля, завершает форму без `onComplete`, и запрос уходит обычному конвейеру (команды,
-     * интенты). Без опции такой ввод считается ответом на вопрос.
-     * @defaultValue false
-     */
-    escape?: boolean;
-}
 
 /**
  * Мультиплатформенный фреймворк для разработки голосовых навыков и чат-ботов. Он даёт единую бизнес-логику для всех платформ и одинаково эффективен, даже если вы работаете только с одной.
@@ -861,25 +318,28 @@ export class Bot<
     TPlatformState extends IPlatformData = IPlatformData,
 > {
     /**
-     * Экземпляр HTTP-сервера
+     * Встроенный HTTP-сервер вебхуков; `null` — `start()` ни разу не вызывался.
+     * Создаётся лениво: serverless-бот не платит аллокацией за сервер.
      */
-    #serverInst: Server | undefined;
+    #webhookServer: WebhookServer | null = null;
+
+    #_shutdownSignals?: ShutdownSignals;
 
     /**
-     * Обработчики сигналов для удаления при повторном start()
+     * Подписки на SIGTERM/SIGINT для graceful shutdown (общие для сервера и polling).
      */
-    #sigtermHandler: (() => void) | null = null;
-    #sigintHandler: (() => void) | null = null;
+    get #shutdownSignals(): ShutdownSignals {
+        if (!this.#_shutdownSignals) {
+            this.#_shutdownSignals = new ShutdownSignals(() => void this.#gracefulShutdown());
+        }
+        return this.#_shutdownSignals;
+    }
 
     /**
-     * Остановка запущенного long polling; `null` — polling не запущен.
+     * Циклы long polling; `null` — polling ни разу не запускался.
+     * Создаётся лениво: бот на вебхуках не платит аллокацией за polling.
      */
-    #pollingAbort: AbortController | null = null;
-
-    /**
-     * Завершение всех циклов long polling (см. {@link startPolling}).
-     */
-    #pollingDone: Promise<void> | null = null;
+    #pollingRunner: PollingRunner | null = null;
 
     /**
      * Полученный запрос от пользователя.
@@ -924,10 +384,59 @@ export class Bot<
     #dbRetryAt = 0;
     #dbRetryDelay = 0;
 
+    #_formWizard?: FormWizard;
     /**
-     * Зарегистрированные формы (addForm): нужны startForm, чтобы задать первый вопрос.
+     * Движок многошаговых форм (addForm/startForm/removeForm).
      */
-    #forms = new Map<string, IAddFormOptions<BotController, Record<string, unknown>>>();
+    get #formWizard(): FormWizard {
+        if (!this.#_formWizard) {
+            this.#_formWizard = new FormWizard(this.#appContext, {
+                addStep: (name, cb): void => void this.addStep(name, cb),
+                removeStep: (name): void => void this.removeStep(name),
+            });
+        }
+        return this.#_formWizard;
+    }
+
+    #_actionFactory?: ActionFactory;
+    /**
+     * Фабрика действий кнопок с данными (defineAction).
+     */
+    get #actionFactory(): ActionFactory {
+        if (!this.#_actionFactory) {
+            this.#_actionFactory = new ActionFactory(this.#appContext, {
+                addAction: (name, cb): void => void this.addAction(name, cb),
+            });
+        }
+        return this.#_actionFactory;
+    }
+    #_menuFactory?: MenuFactory;
+    /**
+     * Фабрика меню из экранов (defineMenu).
+     */
+    get #menuFactory(): MenuFactory {
+        if (!this.#_menuFactory) {
+            this.#_menuFactory = new MenuFactory(this.#appContext, {
+                addAction: (name, cb): void => void this.addAction(name, cb),
+                addStep: (name, cb): void => void this.addStep(name, cb),
+            });
+        }
+        return this.#_menuFactory;
+    }
+
+    #_outboundSender?: OutboundSender;
+    /**
+     * Проактивные исходящие сообщения: отправка и рассылка (send/broadcast).
+     */
+    get #outboundSender(): OutboundSender {
+        if (!this.#_outboundSender) {
+            this.#_outboundSender = new OutboundSender(this.#appContext, {
+                createController: (): BotController =>
+                    new (this.#getBotController())(this.#appContext) as BotController,
+            });
+        }
+        return this.#_outboundSender;
+    }
 
     #globalMiddlewares: MiddlewareFn[] = [];
     #platformMiddlewares: Partial<Record<TAppType, MiddlewareFn[]>> = {};
@@ -941,33 +450,23 @@ export class Bot<
     readonly #warnedNoLocalStoragePlatforms = new Set<TAppType>();
 
     /**
-     * Сессия userData в памяти процесса: `isLocalStorage: true`, платформа
-     * без локального хранилища, DB-адаптер не подключён. Создаётся лениво —
-     * конфигурации с БД или localStorage платформы за неё не платят.
+     * Сессии userData в памяти процесса — по одному хранилищу на платформу:
+     * `isLocalStorage: true`, платформа без локального хранилища, DB-адаптер
+     * не подключён. Создаются лениво — конфигурации с БД или localStorage
+     * платформы за них не платят. Вложенность (платформа → userId), а не
+     * склеенный ключ `platform:userId`: склейка на каждом запросе строила бы
+     * ConsString, и V8 считал бы её хэш через runtime.
      */
-    #memorySession: MemorySessionStorage<IUserData> | null = null;
+    readonly #memorySessions = new Map<TAppType, MemorySessionStorage<IUserData>>();
 
     #plugins: (IPlugin | ((bot: Bot) => void))[] = [];
 
     /**
-     * Очереди запросов пользователей: платформа → userId → состояние очереди.
-     * Запросы одного пользователя выполняются по очереди: иначе параллельные
-     * апдейты читают один и тот же userData, и сохраняется только последний.
-     *
-     * Две карты вместо ключа `платформа:userId`: поиск по свежесклеенной строке
-     * длиннее 12 символов в V8 в разы дороже (строка сначала «сплющивается»).
+     * Очереди запросов пользователей: запросы одного пользователя выполняются
+     * по очереди — иначе параллельные апдейты читают один и тот же userData,
+     * и сохраняется только последний.
      */
-    readonly #userQueues = new Map<string, Map<string, IUserQueueEntry>>();
-
-    /** Число записей во всех очередях (для чистки свободных записей). */
-    #userQueueSize = 0;
-
-    /**
-     * Размер, при котором запустится следующая чистка. После чистки — не меньше
-     * удвоенного числа оставшихся записей: при тысячах одновременных запросов
-     * освобождать нечего, и чистка на каждого нового пользователя дала бы O(n²).
-     */
-    #userQueueSweepAt = USER_QUEUE_SWEEP_SIZE;
+    readonly #userQueues: UserQueues;
 
     /**
      * Фабрики API-фасада по адаптеру: одна на адаптер, а не новое замыкание
@@ -979,19 +478,10 @@ export class Bot<
     >();
 
     /**
-     * Принятые доставки вебхуков: платформа → ключ доставки. Повтор той же доставки
-     * (платформа не дождалась ответа) подтверждается без повторного выполнения логики.
+     * Дедупликация доставок вебхуков: повтор той же доставки (платформа не
+     * дождалась ответа) подтверждается без повторного выполнения логики.
      */
-    readonly #deliveries = new Map<string, Map<string, IDelivery>>();
-
-    /**
-     * Доставки в порядке поступления (кольцевой буфер на DELIVERY_CACHE_SIZE):
-     * старейшая вытесняется за O(1). Обход Map с начала после удалений проходит
-     * «дыры» хэш-таблицы V8 и стоил O(ёмкости) на каждый запрос.
-     */
-    readonly #deliveryRing: (IDelivery | undefined)[] = [];
-    #deliveryHead = 0;
-    #deliveryCount = 0;
+    readonly #deliveryDedup: DeliveryDedup;
 
     /**
      * Получение корректного контроллера
@@ -1064,6 +554,18 @@ export class Bot<
     constructor(type?: TAppType, botController?: TBotControllerClass<TUserData, TPlatformState>) {
         this.#botControllerClass = this.#getBotController(botController);
         this.#appContext = new AppContext();
+        this.#deliveryDedup = new DeliveryDedup(this.#appContext);
+        // Контроллер приводим обратно к дженерикам Bot: TQueueRunner типизирован
+        // базовым BotController, чтобы не ломать совместимость Bot<T> с plugin(bot)
+        // (см. TQueueRunner). UserQueues контроллер только пробрасывает.
+        this.#userQueues = new UserQueues((controller, platformClass, appType, entry) =>
+            this.#runApp(
+                controller as BotController<TUserData, TPlatformState>,
+                platformClass,
+                appType,
+                entry,
+            ),
+        );
         this.#defaultAppType = type || T_AUTO;
     }
 
@@ -1546,60 +1048,7 @@ export class Bot<
         TData extends TActionData = TActionData,
         TBotController extends BotController = BotController,
     >(actionName: string): IButtonAction<TData, TBotController> {
-        const appContext = this.#appContext;
-        // Ключи action/command маршрутизируют нажатие: данные кнопки не могут
-        // их перезаписать, иначе кнопка уводила бы запрос в другое действие.
-        const reservedWarned = new Set<string>();
-        const action: IButtonAction<TData, TBotController> = {
-            name: actionName,
-            payload: (data) => {
-                const payload: Record<string, unknown> = { action: actionName };
-                if (data) {
-                    for (const key of Object.keys(data)) {
-                        if (key === 'action' || key === 'command') {
-                            const warnKey = `${actionName}:${key}`;
-                            if (!reservedWarned.has(warnKey)) {
-                                reservedWarned.add(warnKey);
-                                appContext.logWarn(
-                                    `Bot.defineAction(): ключ "${key}" в данных действия "${actionName}" зарезервирован для маршрутизации и игнорируется — кнопка всегда ведёт на само действие.`,
-                                );
-                            }
-                            continue;
-                        }
-                        payload[key] = data[key];
-                    }
-                }
-                return payload;
-            },
-            addBtn: (buttons, title, data, options = {}) => {
-                const payload = action.payload(data);
-                if (appContext.platforms?.telegram) {
-                    const size = Buffer.byteLength(JSON.stringify(payload));
-                    if (size > 64) {
-                        appContext.logWarn(
-                            `Bot.defineAction(): payload кнопки "${title}" действия "${actionName}" занимает ${size} байт — Telegram принимает не больше 64, кнопка будет пропущена. Сократите данные кнопки.`,
-                        );
-                    }
-                }
-                return buttons.addBtn(title, '', payload, options);
-            },
-            handle: (cb) => {
-                this.addAction<TBotController>(actionName, (_text, ctx) => {
-                    const raw = ctx.payload;
-                    const data: Record<string, unknown> = {};
-                    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-                        for (const key of Object.keys(raw)) {
-                            if (key !== 'action' && key !== 'command') {
-                                data[key] = raw[key];
-                            }
-                        }
-                    }
-                    return cb(data as TData, ctx);
-                });
-                return action;
-            },
-        };
-        return action;
+        return this.#actionFactory.define<TData, TBotController>(actionName);
     }
 
     /**
@@ -1644,116 +1093,7 @@ export class Bot<
         menuName: string,
         options: IMenuOptions<TBotController>,
     ): IMenu<TBotController> {
-        const { screens } = options;
-        const names = Object.keys(screens);
-        const backText = options.backText ?? 'Назад';
-        const actionName = `__menu_${menuName}`;
-        let start = options.start ?? names[0] ?? '';
-        if (!Object.hasOwn(screens, start)) {
-            this.#appContext.logWarn(
-                `Bot.defineMenu(): в меню "${menuName}" нет экрана "${start}" — экраном по умолчанию будет первый.`,
-            );
-            start = names[0] ?? '';
-        }
-        const payload = (screen: string): Record<string, unknown> => ({
-            action: actionName,
-            s: screen,
-        });
-        this.#checkMenuLinks(menuName, screens, payload);
-
-        const show = (ctx: TBotController, screen?: string): void | Promise<void> => {
-            // hasOwn: имя экрана приходит из payload, его может прислать кто угодно
-            const name = screen !== undefined && Object.hasOwn(screens, screen) ? screen : start;
-            const current = screens[name];
-            if (!current) {
-                return;
-            }
-            ctx.text = typeof current.text === 'function' ? current.text(ctx) : current.text;
-            for (const button of current.buttons ?? []) {
-                if (button.to !== undefined) {
-                    ctx.buttons.addBtn(button.title, '', payload(button.to));
-                } else if (button.url !== undefined) {
-                    ctx.buttons.addLink(button.title, button.url);
-                } else {
-                    ctx.buttons.addBtn(button.title, '', button.payload);
-                }
-            }
-            if (current.parent !== undefined) {
-                ctx.buttons.addBtn(backText, '', payload(current.parent));
-            }
-            // До onShow: экран может сам перевести диалог дальше (например, запустить форму).
-            ctx.thisIntentName = `${actionName}_${name}`;
-            return current.onShow?.(ctx);
-        };
-
-        this.addAction<TBotController>(actionName, (_text, ctx) => {
-            const raw = ctx.payload;
-            const target =
-                raw && typeof raw === 'object' && !Array.isArray(raw) ? raw.s : undefined;
-            return show(ctx, typeof target === 'string' ? target : undefined);
-        });
-        for (const name of names) {
-            const screen = screens[name] as IMenuScreen<TBotController>;
-            // Ключ — текст кнопки в нижнем регистре: userCommand уже приведён к нему.
-            const targets = new Map<string, string>();
-            for (const button of screen.buttons ?? []) {
-                const title = button.title.trim().toLowerCase();
-                if (button.to !== undefined && !targets.has(title)) {
-                    targets.set(title, button.to);
-                }
-            }
-            const back = backText.trim().toLowerCase();
-            if (screen.parent !== undefined && !targets.has(back)) {
-                targets.set(back, screen.parent);
-            }
-            this.addStep<TBotController>(`${actionName}_${name}`, (ctx) => {
-                const target = targets.get((ctx.userCommand ?? '').trim());
-                return target === undefined ? false : show(ctx, target);
-            });
-        }
-        return { name: menuName, show, payload };
-    }
-
-    /**
-     * Предупреждает о переходах на несуществующие экраны и о payload длиннее лимита Telegram
-     * (проверяется, только когда подключён Telegram-адаптер).
-     * @param menuName Имя меню
-     * @param screens Экраны меню
-     * @param payload Сборка payload перехода
-     */
-    #checkMenuLinks<TBotController extends BotController>(
-        menuName: string,
-        screens: Record<string, IMenuScreen<TBotController>>,
-        payload: (screen: string) => Record<string, unknown>,
-    ): void {
-        const missing = new Set<string>();
-        const oversized = new Set<string>();
-        for (const name of Object.keys(screens)) {
-            const screen = screens[name] as IMenuScreen<TBotController>;
-            const targets = (screen.buttons ?? []).map((button) => button.to);
-            targets.push(screen.parent);
-            for (const target of targets) {
-                if (target === undefined) {
-                    continue;
-                }
-                if (!Object.hasOwn(screens, target)) {
-                    missing.add(target);
-                } else if (Buffer.byteLength(JSON.stringify(payload(target))) > 64) {
-                    oversized.add(target);
-                }
-            }
-        }
-        if (missing.size) {
-            this.#appContext.logWarn(
-                `Bot.defineMenu(): в меню "${menuName}" есть переходы на несуществующие экраны: ${[...missing].join(', ')}. Такие кнопки ведут на экран по умолчанию.`,
-            );
-        }
-        // Лимит 64 байта есть только у Telegram, без его адаптера предупреждение — шум
-        if (oversized.size && this.#appContext.platforms?.telegram) {
-            this.#appContext.logWarn(
-                `Bot.defineMenu(): payload перехода на экраны ${[...oversized].join(', ')} меню "${menuName}" длиннее 64 байт — Telegram такие кнопки не примет. Сократите имена меню и экранов.`,
-            );
-        }
+        return this.#menuFactory.define(menuName, options);
     }
 
     /**
@@ -1878,175 +1218,13 @@ export class Bot<
         TBotController extends BotController = BotController,
         TAnswers extends Record<string, unknown> = Record<string, string>,
     >(formName: string, options: IAddFormOptions<TBotController, TAnswers>): this {
-        const form = options as unknown as IAddFormOptions<BotController, Record<string, unknown>>;
-        this.#forms.set(formName, form);
-        const runtime: IFormRuntime = {
-            name: formName,
-            form,
-            cancelCommands: (form.cancelCommands ?? ['отмена', 'cancel']).map((s) =>
-                s.toLowerCase(),
-            ),
-            cancelText: form.cancelText ?? 'Форма отменена.',
-            skipText: (form.skipText ?? 'Пропустить').toLowerCase(),
-        };
-        form.fields.forEach((_field, index) => {
-            this.addStep(`__form_${formName}_${index}`, (ctx: BotController) =>
-                this.#runFormStep(ctx, runtime, index),
-            );
-        });
+        // Пользовательские дженерики приводим к базовым: FormWizard только хранит
+        // настройки и вызывает колбеки, типами ответов управляет вызывающий код.
+        this.#formWizard.add(
+            formName,
+            options as unknown as IAddFormOptions<BotController, Record<string, unknown>>,
+        );
         return this;
-    }
-
-    /**
-     * Обрабатывает ответ на поле формы: отмена, выход по чужой кнопке (`escape`), пропуск,
-     * проверка ответа и переход к следующему полю.
-     * @param ctx Контроллер
-     * @param runtime Форма
-     * @param index Номер поля
-     * @returns `false` — запрос уходит обычному конвейеру (выход по `escape`)
-     */
-    #runFormStep(
-        ctx: BotController,
-        runtime: IFormRuntime,
-        index: number,
-    ): void | false | Promise<void | false> {
-        const field = runtime.form.fields[index] as IAddFormField;
-        const userText = (ctx.userCommand ?? '').trim().toLowerCase();
-        if (runtime.cancelCommands.includes(userText)) {
-            this.#finishForm(ctx, runtime.name);
-            ctx.text = runtime.cancelText;
-            return;
-        }
-        // Исходная реплика нужна для вариантов со знаками препинания: Алиса убирает их из command.
-        const originalText = (ctx.originalUserCommand ?? '').trim().toLowerCase();
-        const isAnswer = (variant: string): boolean => {
-            const lower = variant.toLowerCase();
-            return lower === userText || lower === originalText;
-        };
-        const isSkip = field.optional === true && isAnswer(runtime.skipText);
-        const optionIndex = field.options ? field.options.findIndex(isAnswer) : -1;
-        if (
-            runtime.form.escape &&
-            !isSkip &&
-            optionIndex === -1 &&
-            (ctx.eventType === 'callback' ||
-                this.#appContext.command.getExactMatchCommand(userText) !== undefined)
-        ) {
-            // Чужая кнопка или команда: выходим из формы, запрос обработают команды.
-            this.#finishForm(ctx, runtime.name);
-            return false;
-        }
-        if (isSkip) {
-            return this.#nextFormField(ctx, runtime, index, null);
-        }
-        return this.#readFormAnswer(ctx, runtime, field, optionIndex).then((result) => {
-            if ('error' in result) {
-                this.#askFormField(
-                    ctx,
-                    runtime.form,
-                    field,
-                    this.#formContext(ctx, runtime.name),
-                    result.error,
-                );
-                // Остаёмся на этом же шаге: на следующий запрос пользователь попадёт сюда.
-                ctx.thisIntentName = `__form_${runtime.name}_${index}`;
-                return;
-            }
-            return this.#nextFormField(ctx, runtime, index, result);
-        });
-    }
-
-    /**
-     * Проверяет ответ на поле: вариант из `options`, `validate`, затем `parse`.
-     * @param ctx Контроллер
-     * @param runtime Форма
-     * @param field Поле
-     * @param optionIndex Номер выбранного варианта (-1 — не вариант)
-     * @returns Значение для ответов или ошибка (null — повторить вопрос без текста ошибки)
-     */
-    async #readFormAnswer(
-        ctx: BotController,
-        runtime: IFormRuntime,
-        field: IAddFormField,
-        optionIndex: number,
-    ): Promise<{ value: unknown } | { error: string | null }> {
-        // Ответ сохраняем в исходном регистре: userCommand адаптеры приводят
-        // к нижнему регистру, что исказило бы имена, email и адреса.
-        let answerText = (ctx.originalUserCommand ?? ctx.userCommand ?? '').trim();
-        if (field.options) {
-            if (optionIndex === -1) {
-                return { error: runtime.form.invalidOptionText ?? 'Выберите один из вариантов.' };
-            }
-            answerText = field.options[optionIndex] as string;
-        }
-        if (field.validate) {
-            const isValid = await field.validate(answerText);
-            if (isValid !== true) {
-                return { error: typeof isValid === 'string' ? isValid : null };
-            }
-        }
-        return field.parse ? field.parse(answerText, ctx) : { value: answerText };
-    }
-
-    /**
-     * Сохраняет ответ и задаёт следующий вопрос; после последнего поля завершает форму
-     * и вызывает `onComplete`.
-     * @param ctx Контроллер
-     * @param runtime Форма
-     * @param index Номер текущего поля
-     * @param answer Ответ (`null` — поле пропущено)
-     * @returns Промис `onComplete`, если форма завершена
-     */
-    #nextFormField(
-        ctx: BotController,
-        runtime: IFormRuntime,
-        index: number,
-        answer: { value: unknown } | null,
-    ): void | Promise<void> {
-        const { form, name } = runtime;
-        const dataRec = ctx.userData as unknown as Record<string, unknown>;
-        const answers = (dataRec[`__formdata_${name}`] ?? {}) as Record<string, unknown>;
-        if (answer) {
-            answers[(form.fields[index] as IAddFormField).name] = answer.value;
-        }
-        dataRec[`__formdata_${name}`] = answers;
-        const context = this.#formContext(ctx, name);
-        const nextField = form.fields[index + 1];
-        if (!nextField) {
-            this.#finishForm(ctx, name);
-            // Возвращаем промис onComplete: шаг дождётся его, иначе async-колбек не успеет
-            // выставить ctx.text до формирования ответа.
-            return form.onComplete(ctx, answers, context);
-        }
-        ctx.thisIntentName = `__form_${name}_${index + 1}`;
-        this.#askFormField(ctx, form, nextField, context, null);
-    }
-
-    /**
-     * Контекст формы из `userData` (`{}`, если форма запущена без контекста).
-     * @param ctx Контроллер
-     * @param formName Имя формы
-     * @returns Контекст
-     */
-    #formContext(ctx: BotController, formName: string): TFormContext {
-        const dataRec = ctx.userData as unknown as Record<string, unknown>;
-        return (dataRec[`__formctx_${formName}`] ?? {}) as TFormContext;
-    }
-
-    /**
-     * Завершает форму: очищает ответы и контекст, снимает шаг.
-     * @param ctx Контроллер
-     * @param formName Имя формы
-     */
-    #finishForm(ctx: BotController, formName: string): void {
-        const dataRec = ctx.userData as unknown as Record<string, unknown>;
-        // null, а не delete: Алиса (user_state_update) удаляет поле
-        // из состояния пользователя только при значении null.
-        dataRec[`__formdata_${formName}`] = null;
-        if (dataRec[`__formctx_${formName}`] !== undefined) {
-            dataRec[`__formctx_${formName}`] = null;
-        }
-        ctx.thisIntentName = null;
     }
 
     /**
@@ -2073,52 +1251,7 @@ export class Bot<
         formName: string,
         context: TFormContext = {},
     ): boolean {
-        const form = this.#forms.get(formName);
-        const firstField = form?.fields[0];
-        if (!form || !firstField) {
-            this.#appContext.logWarn(
-                `Bot.startForm(): форма "${formName}" не зарегистрирована или не содержит полей.`,
-            );
-            return false;
-        }
-        const dataRec = ctx.userData as unknown as Record<string, unknown>;
-        dataRec[`__formdata_${formName}`] = {};
-        const contextKey = `__formctx_${formName}`;
-        if (Object.keys(context).length) {
-            dataRec[contextKey] = context;
-        } else if (dataRec[contextKey] !== undefined) {
-            dataRec[contextKey] = null;
-        }
-        ctx.thisIntentName = `__form_${formName}_0`;
-        this.#askFormField(ctx, form, firstField, context, null);
-        return true;
-    }
-
-    /**
-     * Задаёт вопрос поля формы: текст (с ошибкой прошлого ответа, если есть), кнопки
-     * вариантов и кнопка пропуска необязательного поля.
-     * @param ctx Контроллер
-     * @param form Настройки формы
-     * @param field Поле
-     * @param context Контекст формы
-     * @param error Текст ошибки прошлого ответа или null
-     */
-    #askFormField(
-        ctx: BotController,
-        form: IAddFormOptions<BotController, Record<string, unknown>>,
-        field: IAddFormField,
-        context: TFormContext,
-        error: string | null,
-    ): void {
-        const promptText =
-            typeof field.prompt === 'function' ? field.prompt(ctx, context) : field.prompt;
-        ctx.text = (error ? `${error}\n` : '') + promptText;
-        for (const option of field.options ?? []) {
-            ctx.buttons.addBtn(option);
-        }
-        if (field.optional) {
-            ctx.buttons.addBtn(form.skipText ?? 'Пропустить');
-        }
+        return this.#formWizard.start(ctx, formName, context);
     }
 
     /**
@@ -2143,13 +1276,7 @@ export class Bot<
      * ```
      */
     public removeForm(formName: string): this {
-        this.#forms.delete(formName);
-        const stepPrefix = `__form_${formName}_`;
-        this.#appContext.steps.forEach((step) => {
-            if (step.stepName.startsWith(stepPrefix)) {
-                this.removeStep(step.stepName);
-            }
-        });
+        this.#formWizard.remove(formName);
         return this;
     }
 
@@ -2189,7 +1316,7 @@ export class Bot<
      */
     public clearSteps(): this {
         this.#appContext.command.clearSteps();
-        this.#forms.clear();
+        this.#formWizard.clear();
         return this;
     }
 
@@ -2743,6 +1870,7 @@ export class Bot<
             this.#appContext.appConfig.isLocalStorage &&
             botController.platformOptions.usedLocalStorage;
 
+        let memoryStore: MemorySessionStorage<IUserData> | null = null;
         let memoryKey: string | null = null;
         if (
             this.#appContext.appConfig.isLocalStorage &&
@@ -2752,8 +1880,17 @@ export class Bot<
             const userId = botController.userId;
             const memorySession = this.#getMemorySession(appType, userId);
             if (memorySession && userId !== null && userId !== undefined && userId !== '') {
-                memoryKey = `${platformClass.platformName}:${userId}`;
-                botController.userData = (memorySession.get(memoryKey) ?? {}) as TUserData;
+                memoryStore = memorySession;
+                // String() над строкой вернёт её же без копирования — аллокация
+                // только для числового id.
+                memoryKey = typeof userId === 'string' ? userId : String(userId);
+                // Копия, а не ссылка: после переполнения лимита ожидания UserQueues
+                // параллельные запросы одного пользователя получали один и тот же
+                // объект и мутировали его одновременно. Сохранение в конце запроса
+                // перезаписывает ссылку целиком (#saveMemorySession), поэтому снимок
+                // семантику сохранения не меняет.
+                const stored = memorySession.get(memoryKey);
+                botController.userData = (stored ? cloneSessionData(stored) : {}) as TUserData;
             }
         }
 
@@ -2762,18 +1899,23 @@ export class Bot<
             if (isPromise(localStateData)) {
                 return localStateData.then((data) => {
                     botController.userData = data as TUserData;
-                    return { isLocalStorage, isNewUser: true, memoryKey };
+                    return { isLocalStorage, isNewUser: true, memoryStore, memoryKey };
                 });
             }
             botController.userData = localStateData as TUserData;
         } else if (!memoryKey) {
             const isNewUser = this.#initUserData(botController, userData, botController.state);
             if (isPromise(isNewUser)) {
-                return isNewUser.then((res) => ({ isLocalStorage, isNewUser: res, memoryKey }));
+                return isNewUser.then((res) => ({
+                    isLocalStorage,
+                    isNewUser: res,
+                    memoryStore,
+                    memoryKey,
+                }));
             }
-            return { isLocalStorage, isNewUser, memoryKey };
+            return { isLocalStorage, isNewUser, memoryStore, memoryKey };
         }
-        return { isLocalStorage, isNewUser: true, memoryKey };
+        return { isLocalStorage, isNewUser: true, memoryStore, memoryKey };
     }
 
     /**
@@ -2789,10 +1931,14 @@ export class Bot<
         userId: string | number | null | undefined,
     ): MemorySessionStorage<IUserData> | null {
         const config = this.#appContext.appConfig.memorySession;
-        const storage =
-            config === false
-                ? null
-                : (this.#memorySession ??= new MemorySessionStorage<IUserData>(config));
+        let storage: MemorySessionStorage<IUserData> | null | undefined = null;
+        if (config !== false) {
+            storage = this.#memorySessions.get(appType);
+            if (storage === undefined) {
+                storage = new MemorySessionStorage<IUserData>(config);
+                this.#memorySessions.set(appType, storage);
+            }
+        }
         // Предупреждение зависит только от конфигурации, а не от запроса —
         // достаточно вывести его один раз на платформу.
         if (!this.#warnedNoLocalStoragePlatforms.has(appType)) {
@@ -2874,7 +2020,7 @@ export class Bot<
                 userData,
                 appType,
             );
-            const { isLocalStorage, isNewUser, memoryKey } = isPromise(stateRes)
+            const { isLocalStorage, isNewUser, memoryStore, memoryKey } = isPromise(stateRes)
                 ? await stateRes
                 : stateRes;
 
@@ -2908,8 +2054,8 @@ export class Bot<
                     ? await (contentRes as Promise<string | object>)
                     : contentRes;
             } finally {
-                if (memoryKey) {
-                    this.#saveMemorySession(memoryKey, botController.userData);
+                if (memoryStore && memoryKey !== null) {
+                    this.#saveMemorySession(memoryStore, memoryKey, botController.userData);
                 } else {
                     const saved = this.#saveUserData(
                         botController,
@@ -2942,19 +2088,21 @@ export class Bot<
      * Сохраняет userData в сессию в памяти процесса. Пустые данные не храним:
      * бот, не использующий userData, не занимает память под каждого пользователя.
      *
-     * @param memoryKey Ключ сессии (платформа + id пользователя)
+     * @param storage Хранилище сессий платформы текущего запроса
+     * @param key Ключ сессии — id пользователя
      * @param data Данные пользователя после обработки запроса
      */
-    #saveMemorySession(memoryKey: string, data: TUserData): void {
-        if (!this.#memorySession) {
-            return;
-        }
+    #saveMemorySession(
+        storage: MemorySessionStorage<IUserData>,
+        key: string,
+        data: TUserData,
+    ): void {
         if (data && keysCount(data)) {
             // Сохраняется ссылка: clearStoreData() переприсваивает userData
             // новым объектом, поэтому сохранённые данные не обнуляются.
-            this.#memorySession.set(memoryKey, data);
+            storage.set(key, data);
         } else {
-            this.#memorySession.delete(memoryKey);
+            storage.delete(key);
         }
     }
 
@@ -3421,7 +2569,10 @@ export class Bot<
             this.#appContext.logError(errMsg);
             throw new Error(errMsg);
         }
-        const correctContent = this.#parseContent(this._content || content);
+        // Приоритет у переданного содержимого: setContent() задан один раз (для
+        // тестов), и значение _content, переживая запросы, не должно подменять
+        // собой реальные вебхуки всех последующих запросов.
+        const correctContent = this.#parseContent(content || this._content);
         if (!correctContent) {
             const msg = `${appType ? `Для платформы "${appType}"` : 'Пришел не корректный запрос в котором'} передано пустое содержимое, дальнейшая обработка невозможна.`;
             this.#appContext.logError(msg);
@@ -3483,113 +2634,7 @@ export class Bot<
         if (botController.platformOptions.sendInInit) {
             return Promise.resolve(botController.platformOptions.sendInInit as TRunResult);
         }
-        return this.#runInUserQueue(botController, platformClass, botController.appType as string);
-    }
-
-    /**
-     * Выполняет запрос после завершения предыдущего запроса того же пользователя.
-     *
-     * Без очереди два параллельных апдейта одного пользователя (двойное нажатие
-     * кнопки, повторная доставка, несколько соединений вебхука) читают один и тот же
-     * userData, и изменения первого теряются. Очередь живёт в памяти процесса:
-     * при нескольких репликах нужна маршрутизация пользователя на одну реплику.
-     *
-     * Запись очереди освобождает сам {@link #runApp} в своём finally (без `.finally`
-     * у промиса и без удаления из Map на каждый запрос); свободные записи
-     * удаляются пакетно — {@link #sweepUserQueues}.
-     *
-     * @param botController Контроллер запроса
-     * @param platformClass Адаптер платформы
-     * @param appType Тип платформы
-     * @returns Промис ответа платформы
-     */
-    #runInUserQueue(
-        botController: BotController<TUserData, TPlatformState>,
-        platformClass: IPlatformAdapter,
-        appType: string,
-    ): Promise<TRunResult> {
-        const userId = botController.userId;
-        if (userId === null || userId === undefined || userId === '') {
-            return this.#runApp(botController, platformClass, appType, null);
-        }
-        let queues = this.#userQueues.get(appType);
-        if (queues === undefined) {
-            queues = new Map();
-            this.#userQueues.set(appType, queues);
-        }
-        const key = String(userId);
-        let entry = queues.get(key);
-        let previous: Promise<unknown> | null = null;
-        if (entry === undefined) {
-            if (this.#userQueueSize >= this.#userQueueSweepAt) {
-                this.#sweepUserQueues();
-            }
-            entry = { run: RESOLVED_QUEUE, owner: botController };
-            queues.set(key, entry);
-            this.#userQueueSize++;
-        } else if (entry.owner === null) {
-            entry.owner = botController;
-        } else {
-            // Предыдущий запрос ещё выполняется: ждём его через его же запись,
-            // а для себя заводим новую — её освободит уже наш #runApp.
-            previous = entry.run;
-            entry = { run: RESOLVED_QUEUE, owner: botController };
-            queues.set(key, entry);
-        }
-        const ownEntry = entry;
-        let run: Promise<TRunResult>;
-        const maxWait =
-            previous === null ? 0 : this.#getUserQueueWait(platformClass, botController);
-        if (previous !== null && maxWait > 0) {
-            // Ожидающий получает отказ предыдущего запроса как обычное завершение
-            // (waitWithLimit): ошибка одного запроса не роняет следующие.
-            run = waitWithLimit(previous, maxWait).then(() =>
-                this.#runApp(botController, platformClass, appType, ownEntry),
-            );
-        } else {
-            run = this.#runApp(botController, platformClass, appType, ownEntry);
-        }
-        ownEntry.run = run;
-        return run;
-    }
-
-    /**
-     * Удаляет свободные записи очередей пользователей. Вызывается, когда записей
-     * накопилось {@link #userQueueSweepAt}: память ограничена, а удаление идёт
-     * пакетом, а не на каждом запросе.
-     */
-    #sweepUserQueues(): void {
-        let size = 0;
-        for (const queues of this.#userQueues.values()) {
-            for (const [key, entry] of queues) {
-                if (entry.owner === null) {
-                    queues.delete(key);
-                }
-            }
-            size += queues.size;
-        }
-        this.#userQueueSize = size;
-        this.#userQueueSweepAt = Math.max(USER_QUEUE_SWEEP_SIZE, size * 2);
-    }
-
-    /**
-     * Сколько запрос ждёт предыдущий запрос того же пользователя.
-     *
-     * Без срока ответа у платформы — {@link USER_QUEUE_MAX_WAIT}. Если платформа ждёт ответ
-     * ограниченное время (`getResponseTimeout`, голосовые платформы), на ожидание уходит
-     * не больше половины оставшегося времени: вторая половина остаётся на сам запрос.
-     *
-     * @param adapter Адаптер платформы запроса
-     * @param controller Контроллер запроса (время начала обработки)
-     * @returns Предел ожидания, мс; `0` — не ждать
-     */
-    #getUserQueueWait(adapter: IPlatformAdapter, controller: BotController): number {
-        const timeout = adapter.getResponseTimeout?.() ?? null;
-        if (timeout === null) {
-            return USER_QUEUE_MAX_WAIT;
-        }
-        const remaining = timeout - adapter.getProcessingTime(controller);
-        return Math.max(0, Math.min(USER_QUEUE_MAX_WAIT, remaining / 2));
+        return this.#userQueues.run(botController, platformClass, botController.appType as string);
     }
 
     #parseContent(content: TBotContent): TBotContent {
@@ -3614,152 +2659,62 @@ export class Bot<
     }
 
     /**
-     * Регистрирует доставку вебхука для дедупликации.
-     *
-     * Мессенджеры повторяют доставку, если не получили 2xx вовремя, — а ответ
-     * уходит только после исходящих вызовов API (загрузка медиа, очередь MAX).
-     * Без дедупликации повтор снова запускает логику, и пользователь получает
-     * ответ дважды. Работает для адаптеров, реализующих `getDeliveryId`.
-     *
-     * Повтор, пришедший, пока исходный запрос ещё обрабатывается, ждёт его исхода
-     * (не дольше {@link DELIVERY_WAIT_LIMIT}): после успеха подтверждается `200 ok`,
-     * после сбоя сервера обрабатывается заново — иначе апдейт потерялся бы, ведь
-     * платформа уже получила бы 2xx на повтор.
-     *
-     * Ключ доставки — ID от адаптера, если подпись вебхука проверена
-     * (`isSignatureCheckEnabled()`): подделать запрос нельзя, и хэш тела не нужен.
-     * Без подписи ключ — хэш тела (см. {@link hashBody}). Первая доставка
-     * регистрируется синхронно; промис — только когда нужно ждать исходный запрос.
-     *
-     * @param adapter Адаптер платформы запроса
-     * @param query Разобранное тело запроса
-     * @param body Тело запроса в исходном виде (для хэша)
-     * @returns Доставка, исход которой нужно сообщить через {@link #finishDelivery};
-     *   `null` — адаптер не даёт ID; `false` — повтор, отвечать `200 ok` без обработки
+     * Отправляет HTTP-ответ платформе с защитой от исключений пользовательского
+     * `responseCb`: колбэк может бросить синхронно или вернуть отклонённый промис
+     * (async-функция). Без защиты исключение выходит из `webhookHandle` как
+     * unhandled rejection и валит процесс бота. При сбое колбэка ответ отправляется
+     * по умолчанию.
      */
-    #acceptDelivery(
-        adapter: IPlatformAdapter,
-        query: unknown,
-        body: string | object,
-    ): IDelivery | null | false | Promise<IDelivery | null | false> {
-        let key: string;
+    #sendWebhookResponse(
+        req: IncomingMessage,
+        res: ServerResponse,
+        state: IBotResponseState,
+        responseCb?: TBotResponseCb,
+    ): void {
+        let result: unknown;
         try {
-            const id = adapter.getDeliveryId?.(query);
-            if (id === null || id === undefined || id === '') {
-                return null;
-            }
-            key = adapter.isSignatureCheckEnabled?.() === true ? String(id) : hashBody(body);
-        } catch {
-            // Ошибка в адаптере не должна мешать обработке запроса.
-            return null;
-        }
-        const platform = adapter.platformName;
-        const existing = this.#deliveries.get(platform)?.get(key);
-        if (existing && existing.expiresAt > Date.now()) {
-            return this.#waitDelivery(adapter, platform, key, existing);
-        }
-        return this.#registerDelivery(platform, key);
-    }
-
-    /**
-     * Повтор доставки, исходный запрос которой уже принят: ждёт его исхода.
-     * @param adapter Адаптер платформы
-     * @param platform Платформа
-     * @param key Ключ доставки
-     * @param existing Принятая ранее доставка
-     * @returns Доставка для обработки заново или `false` — подтвердить без обработки
-     */
-    async #waitDelivery(
-        adapter: IPlatformAdapter,
-        platform: string,
-        key: string,
-        existing: IDelivery,
-    ): Promise<IDelivery | false> {
-        let current: IDelivery | undefined = existing;
-        while (current && current.expiresAt > Date.now()) {
-            const processed = await waitWithLimit(getDeliveryResult(current), DELIVERY_WAIT_LIMIT);
-            if (processed !== false) {
-                this.#appContext.logWarn(
-                    `Bot: повторная доставка "${adapter.platformName}" подтверждена без обработки` +
-                        (processed === undefined ? ', не дождавшись исходного запроса. ' : '. ') +
-                        'Платформа повторяет запрос, если ответ не пришёл вовремя: проверьте время обработки.',
-                );
-                return false;
-            }
-            // Исходный запрос упал. Повторов могло прийти несколько: обработку берёт
-            // первый, остальные снова ждут — уже его.
-            current = this.#deliveries.get(platform)?.get(key);
-        }
-        return this.#registerDelivery(platform, key);
-    }
-
-    /**
-     * Запоминает новую доставку и вытесняет истёкшие и лишние (сверх
-     * DELIVERY_CACHE_SIZE) — старейшие по кольцевому буферу, за O(1).
-     * @param platform Платформа
-     * @param key Ключ доставки
-     * @returns Новая доставка
-     */
-    #registerDelivery(platform: string, key: string): IDelivery {
-        const now = Date.now();
-        let byPlatform = this.#deliveries.get(platform);
-        if (byPlatform === undefined) {
-            byPlatform = new Map();
-            this.#deliveries.set(platform, byPlatform);
-        } else {
-            byPlatform.delete(key);
-        }
-        // TTL одинаков для всех записей, поэтому порядок вставки совпадает с порядком истечения.
-        const ring = this.#deliveryRing;
-        while (this.#deliveryCount > 0) {
-            const old = ring[this.#deliveryHead] as IDelivery;
-            if (old.expiresAt > now && this.#deliveryCount < DELIVERY_CACHE_SIZE) {
-                break;
-            }
-            const oldMap = this.#deliveries.get(old.platform);
-            if (oldMap?.get(old.key) === old) {
-                oldMap.delete(old.key);
-            }
-            ring[this.#deliveryHead] = undefined;
-            this.#deliveryHead = (this.#deliveryHead + 1) % DELIVERY_CACHE_SIZE;
-            this.#deliveryCount--;
-        }
-        const delivery: IDelivery = {
-            platform,
-            key,
-            expiresAt: now + DELIVERY_CACHE_TTL,
-            outcome: undefined,
-            waiters: null,
-        };
-        byPlatform.set(key, delivery);
-        ring[(this.#deliveryHead + this.#deliveryCount) % DELIVERY_CACHE_SIZE] = delivery;
-        this.#deliveryCount++;
-        return delivery;
-    }
-
-    /**
-     * Сообщает исход обработки доставки повторам, которые его ждут. После сбоя сервера
-     * доставка забывается, чтобы её повтор обработался заново.
-     * @param delivery Доставка из {@link #acceptDelivery}
-     * @param processed `false` — сбой сервера (ответ 500)
-     */
-    #finishDelivery(delivery: IDelivery | null, processed: boolean): void {
-        if (!delivery) {
+            result = send(req, res, state, responseCb);
+        } catch (error) {
+            this.#appContext.logError(
+                'Bot:webhookHandle(): Пользовательский responseCb выбросил исключение при отправке ответа. Ответ отправлен по умолчанию.',
+                { error },
+            );
+            this.#fallbackSend(res, state);
             return;
         }
-        if (!processed) {
-            const byPlatform = this.#deliveries.get(delivery.platform);
-            if (byPlatform?.get(delivery.key) === delivery) {
-                byPlatform.delete(delivery.key);
-            }
+        if (
+            result &&
+            typeof result === 'object' &&
+            typeof (result as PromiseLike<unknown>).then === 'function'
+        ) {
+            (result as Promise<void>).catch((error: unknown) => {
+                this.#appContext.logError(
+                    'Bot:webhookHandle(): Пользовательский responseCb завершился ошибкой.',
+                    { error },
+                );
+                // Асинхронный колбэк, упавший ДО отправки, оставлял платформу без
+                // ответа: Telegram реплеит апдейт бесконечно. Отправляем ответ сами,
+                // если колбэк его так и не отправил (sync-бросок делает #fallbackSend).
+                if (!res.writableEnded) {
+                    this.#fallbackSend(res, state);
+                }
+            });
         }
-        delivery.outcome = processed;
-        const waiters = delivery.waiters;
-        if (waiters !== null) {
-            delivery.waiters = null;
-            for (const resolve of waiters) {
-                resolve(processed);
-            }
+    }
+
+    /**
+     * Резервная отправка ответа, когда колбэк пользователя упал до отправки.
+     * Заголовки уже могут быть отправлены частично сработавшим колбэком —
+     * тогда Node бросит ERR_HTTP_HEADERS_SENT, что здесь же и гасится.
+     */
+    #fallbackSend(res: ServerResponse, state: IBotResponseState): void {
+        try {
+            defaultSend(res, state);
+        } catch (error) {
+            this.#appContext.logWarn(
+                'Bot:webhookHandle(): Не удалось отправить ответ по умолчанию (заголовки уже отправлены).',
+                { error },
+            );
         }
     }
 
@@ -3810,7 +2765,7 @@ export class Bot<
                 body = 'Internal Server Error';
                 break;
         }
-        return send(
+        return this.#sendWebhookResponse(
             req,
             res,
             {
@@ -3900,7 +2855,7 @@ export class Bot<
                 this.#appContext.logMetric(EMetric.START_WEBHOOK, Date.now(), {});
             }
             const startTimer = this.#appContext.usedMetric ? performance.now() : 0;
-            const data = await this.#readRequestData(req);
+            const data = await readRequestData(req);
             const query = JSON.parse(data) as string | null;
             if (!query) {
                 return this.#webhookHandleError(req, res, 400, responseCb);
@@ -3925,9 +2880,14 @@ export class Bot<
                     );
                     return this.#webhookHandleError(req, res, 401, responseCb);
                 }
-                const accepted = await this.#acceptDelivery(platformAdapter, query, data);
+                const accepted = await this.#deliveryDedup.accept(platformAdapter, query, data);
                 if (accepted === false) {
-                    return send(req, res, { statusCode: 200, body: 'ok', defaultSend }, responseCb);
+                    return this.#sendWebhookResponse(
+                        req,
+                        res,
+                        { statusCode: 200, body: 'ok', defaultSend },
+                        responseCb,
+                    );
                 }
                 delivery = accepted;
             }
@@ -3939,7 +2899,7 @@ export class Bot<
                     success: statusCode === 200,
                 });
             }
-            return send(
+            return this.#sendWebhookResponse(
                 req,
                 res,
                 {
@@ -3966,7 +2926,7 @@ export class Bot<
                 return this.#webhookHandleError(req, res, 400, responseCb, 'Bad Request');
             }
             this.#appContext.logError(
-                `Bot:webhookHandle(): Произошла ошибка при работе приложения для платформы "${appType}": ${error instanceof Error ? error.message : JSON.stringify(error)}`,
+                `Bot:webhookHandle(): Произошла ошибка при работе приложения для платформы "${appType}": ${error instanceof Error ? error.message : String(error)}`,
                 {
                     error,
                 },
@@ -3974,7 +2934,7 @@ export class Bot<
             serverError = true;
             return this.#webhookHandleError(req, res, 500, responseCb);
         } finally {
-            this.#finishDelivery(delivery, !serverError);
+            this.#deliveryDedup.finish(delivery, !serverError);
         }
     }
 
@@ -4051,7 +3011,18 @@ export class Bot<
         // в нижнем регистре, поэтому приводим имена к нему.
         const normalizedHeaders: Record<string, unknown> = {};
         for (const name in headers) {
-            normalizedHeaders[name.toLowerCase()] = headers[name];
+            const lowerName = name.toLowerCase();
+            // Прототипные ключи не копируем: заголовки serverless-события приходят
+            // от отправителя запроса, а присваивание по ключу __proto__ подменяло
+            // прототип объекта и подсовывало проверким адаптеров чужие значения.
+            if (
+                lowerName === '__proto__' ||
+                lowerName === 'constructor' ||
+                lowerName === 'prototype'
+            ) {
+                continue;
+            }
+            normalizedHeaders[lowerName] = headers[name];
         }
 
         const auth = getBearerToken(normalizedHeaders.authorization);
@@ -4068,7 +3039,11 @@ export class Bot<
                 );
                 return { statusCode: 401, body: 'Unauthorized' };
             }
-            const accepted = await this.#acceptDelivery(platformAdapter, query, data ?? query);
+            const accepted = await this.#deliveryDedup.accept(
+                platformAdapter,
+                query,
+                data ?? query,
+            );
             if (accepted === false) {
                 return { statusCode: 200, body: 'ok' };
             }
@@ -4093,7 +3068,7 @@ export class Bot<
             serverError = true;
             return { statusCode: 500, body: 'Internal Server Error' };
         } finally {
-            this.#finishDelivery(delivery, !serverError);
+            this.#deliveryDedup.finish(delivery, !serverError);
         }
     }
 
@@ -4151,59 +3126,12 @@ export class Bot<
         port: number = 3000,
         responseCb?: TBotResponseCb,
     ): Server {
-        if (this.#serverInst) {
-            this.#serverInst.close();
-            this.#serverInst = undefined;
-        }
-
-        this.#warnOnInsecureStart(hostname);
-
-        this.#serverInst = createServer(
-            async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-                if (req.method === 'GET' && req.url === '/health') {
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ status: 'ok', timestamp: Date.now() }));
-                    return;
-                }
-                return this.webhookHandle(req, res, responseCb);
-            },
+        this.#webhookServer ??= new WebhookServer(
+            this.#appContext,
+            (req, res, cb) => this.webhookHandle(req, res, cb),
+            this.#shutdownSignals,
         );
-
-        this.#serverInst.on('error', (err: NodeJS.ErrnoException) => {
-            this.#appContext.logError(
-                `Bot:start(): Ошибка HTTP-сервера на ${hostname}:${port}: ${err.message}`,
-                { error: err, code: err.code },
-            );
-        });
-
-        this.#serverInst.listen(port, hostname, () => {
-            this.#appContext.log(`Server running at http://${hostname}:${port}/`);
-        });
-        this.#setShutdownHandlers();
-
-        return this.#serverInst;
-    }
-
-    /**
-     * Подписывает graceful shutdown на SIGTERM/SIGINT: при завершении процесса
-     * закрываются подключения и освобождаются ресурсы. Прежние обработчики
-     * снимаются — повторный start() или startPolling() не копит подписки.
-     */
-    #setShutdownHandlers(): void {
-        if (this.#sigtermHandler) {
-            process.removeListener('SIGTERM', this.#sigtermHandler);
-        }
-        if (this.#sigintHandler) {
-            process.removeListener('SIGINT', this.#sigintHandler);
-        }
-        this.#sigtermHandler = (): void => {
-            void this.#gracefulShutdown();
-        };
-        this.#sigintHandler = (): void => {
-            void this.#gracefulShutdown();
-        };
-        process.once('SIGTERM', this.#sigtermHandler);
-        process.once('SIGINT', this.#sigintHandler);
+        return this.#webhookServer.start(hostname, port, responseCb);
     }
 
     /**
@@ -4251,40 +3179,12 @@ export class Bot<
      * ```
      */
     public startPolling(options: IPollingOptions = {}): Promise<void> {
-        const platforms = options.platforms;
-        if (this.#pollingDone) {
-            this.#appContext.logWarn('Bot:startPolling(): long polling уже запущен.');
-            return this.#pollingDone;
-        }
-        const adapters = Object.values(this.#appContext.platforms).filter(
-            (adapter) =>
-                typeof adapter.getUpdates === 'function' &&
-                (!platforms || platforms.includes(adapter.platformName)),
+        this.#pollingRunner ??= new PollingRunner(
+            this.#appContext,
+            (appType, update) => this.run(appType, update),
+            () => this.#shutdownSignals.ensure(),
         );
-        if (adapters.length === 0) {
-            const msg =
-                'Bot:startPolling(): нет подключённых адаптеров с поддержкой long polling' +
-                (platforms ? ` среди платформ: ${platforms.join(', ')}` : '') +
-                '. Polling поддерживают Telegram, VK и MAX; остальные платформы работают через вебхук (bot.start()).';
-            this.#appContext.logError(msg);
-            return Promise.reject(new Error(msg));
-        }
-        const abort = new AbortController();
-        this.#pollingAbort = abort;
-        this.#setShutdownHandlers();
-        this.#appContext.log(
-            `Bot: long polling запущен (${adapters.map((a) => a.platformName).join(', ')}).`,
-        );
-        const done = Promise.all(
-            adapters.map((adapter) => this.#pollLoop(adapter, abort.signal)),
-        ).then(() => {
-            if (this.#pollingAbort === abort) {
-                this.#pollingAbort = null;
-                this.#pollingDone = null;
-            }
-        });
-        this.#pollingDone = done;
-        return done;
+        return this.#pollingRunner.start(options);
     }
 
     /**
@@ -4302,186 +3202,7 @@ export class Bot<
      * ```
      */
     public async stopPolling(): Promise<void> {
-        const abort = this.#pollingAbort;
-        const done = this.#pollingDone;
-        if (!abort || !done) {
-            return;
-        }
-        // Состояние сбрасывается сразу: startPolling() во время остановки запускает
-        // новый polling, а не возвращает промис останавливаемого.
-        this.#pollingAbort = null;
-        this.#pollingDone = null;
-        abort.abort();
-        await done;
-        this.#appContext.log('Bot: long polling остановлен.');
-    }
-
-    /**
-     * Цикл long polling одной платформы: запрос обновлений, обработка пачки, повтор.
-     * Ошибка запроса — повтор с растущей паузой; `null` от адаптера — остановка цикла.
-     * Не бросает исключений: промис всех циклов в {@link startPolling} не отклоняется.
-     * @param adapter Адаптер платформы с `getUpdates`
-     * @param signal Сигнал остановки
-     */
-    async #pollLoop(adapter: IPlatformAdapter, signal: AbortSignal): Promise<void> {
-        let failures = 0;
-        while (!signal.aborted) {
-            const startedAt = Date.now();
-            let updates: unknown[] | null;
-            try {
-                updates = (await adapter.getUpdates?.(signal)) ?? null;
-            } catch (error) {
-                if (signal.aborted) {
-                    break;
-                }
-                failures++;
-                const delay = Math.min(
-                    POLLING_RETRY_MIN_DELAY * 2 ** (failures - 1),
-                    POLLING_RETRY_MAX_DELAY,
-                );
-                this.#appContext.logError(
-                    `Bot: не удалось получить обновления "${adapter.platformName}" (long polling): ${
-                        error instanceof Error ? error.message : String(error)
-                    }. Повтор через ${delay} мс.`,
-                    { error },
-                );
-                await delayUnlessAborted(delay, signal);
-                continue;
-            }
-            if (updates === null) {
-                if (!signal.aborted) {
-                    this.#appContext.logError(
-                        `Bot: long polling "${adapter.platformName}" остановлен: адаптер не может получать обновления (причина — выше в логе).`,
-                    );
-                }
-                break;
-            }
-            failures = 0;
-            if (updates.length > 0) {
-                // Полученную пачку обрабатываем и при остановке: иначе обновления потерялись бы.
-                await this.#runPolledBatch(adapter, updates);
-            } else if (Date.now() - startedAt < POLLING_MIN_EMPTY_INTERVAL) {
-                await delayUnlessAborted(POLLING_MIN_EMPTY_INTERVAL, signal);
-            }
-        }
-    }
-
-    /**
-     * Обрабатывает пачку обновлений не более чем {@link POLLING_CONCURRENCY} одновременно.
-     * Обработка начинается в порядке пачки, поэтому очередь пользователя сохраняет
-     * порядок его обновлений.
-     * @param adapter Адаптер платформы
-     * @param updates Обновления пачки
-     */
-    async #runPolledBatch(adapter: IPlatformAdapter, updates: unknown[]): Promise<void> {
-        let next = 0;
-        const worker = async (): Promise<void> => {
-            while (next < updates.length) {
-                const update = updates[next++];
-                await this.#runPolledUpdate(adapter, update);
-            }
-        };
-        const workers = Math.min(POLLING_CONCURRENCY, updates.length);
-        await Promise.all(Array.from({ length: workers }, worker));
-    }
-
-    /**
-     * Обрабатывает одно обновление, полученное long polling. Ошибка обработки
-     * не останавливает polling: она пишется в лог, как 500 у вебхука.
-     * Дедупликации доставок здесь нет: платформа не повторяет обновление, пока адаптер
-     * не отступит назад позицией чтения, а позиция только растёт.
-     * @param adapter Адаптер платформы
-     * @param update Обновление в формате тела вебхука
-     */
-    async #runPolledUpdate(adapter: IPlatformAdapter, update: unknown): Promise<void> {
-        try {
-            await this.run(adapter.platformName, update as object);
-        } catch (error) {
-            // Некорректное обновление run() уже записал в лог.
-            if (!(error instanceof BotBadRequestError)) {
-                this.#appContext.logError(
-                    `Bot: ошибка обработки обновления "${adapter.platformName}" (long polling): ${
-                        error instanceof Error ? error.message : String(error)
-                    }`,
-                    { error },
-                );
-            }
-        }
-    }
-
-    /**
-     * Предупреждает о небезопасных настройках вебхука при старте сервера.
-     *
-     * Проверяет и сообщает (logWarn, не блокируя запуск):
-     * 1. Режим `dev` — проверка регулярных выражений на ReDoS выполняется всегда;
-     *    в dev/prod опасные выражения только логируются (error без re2 / warn с re2),
-     *    но не отклоняются, а входной текст контролирует пользователь бота.
-     *    В продакшене используйте `setAppMode('strict_prod')`, где опасные
-     *    выражения отклоняются.
-     * 2. Платформы с возможностью подписи, у которых секрет вебхука не задан
-     *    (Telegram/VK/MAX): любой, кто знает URL вебхука, может слать
-     *    произвольные запросы от имени платформы.
-     * 3. Прослушивание всех интерфейсов (`0.0.0.0`) — вебхук доступен из
-     *    всей сети; убедитесь, что перед ним стоит reverse proxy.
-     *
-     * Вызывается один раз из {@link start} до `listen` — предупреждения видны
-     * в логе до приёма первого запроса.
-     * @param hostname Хост, на котором слушает сервер
-     */
-    #warnOnInsecureStart(hostname: string): void {
-        if (this.#appContext.appMode === 'dev') {
-            this.#appContext.logWarn(
-                'Bot:start(): Приложение запущено в режиме dev. Проверка регулярных выражений ' +
-                    'на ReDoS выполняется, но опасные выражения только логируются (без отклонения), ' +
-                    'а подробные логи и отладочная информация доступны всем, кто знает URL вебхука. ' +
-                    'Для продакшена вызовите setAppMode("strict_prod") или запустите процесс с NODE_ENV=production — ' +
-                    'там опасные выражения отклоняются.',
-            );
-        }
-        const insecurePlatforms: string[] = [];
-        for (const platformName in this.#appContext.platforms) {
-            const adapter = this.#appContext.platforms[platformName];
-            if (!adapter) {
-                continue;
-            }
-            // Предупреждаем только о платформах с механизмом подписи: у Алисы, Маруси
-            // и SmartApp его нет, и совет «задайте секрет» был бы невыполним.
-            const hasSignature = adapter.isSignatureSupported
-                ? adapter.isSignatureSupported()
-                : Boolean(adapter.signatureName) ||
-                  typeof adapter.isSignatureCheckEnabled === 'function';
-            if (!hasSignature) {
-                continue;
-            }
-            const enabled = adapter.isSignatureCheckEnabled
-                ? adapter.isSignatureCheckEnabled()
-                : Boolean(this.#appContext.appConfig.tokens[platformName]?.token);
-            if (!enabled) {
-                insecurePlatforms.push(platformName);
-            }
-        }
-        if (insecurePlatforms.length) {
-            this.#appContext.logWarn(
-                `Bot:start(): Вебхук принимает запросы платформ [${insecurePlatforms.join(
-                    ', ',
-                )}] БЕЗ проверки подписи: секрет вебхука не задан в конфигурации. ` +
-                    'Любой, кто знает URL вебхука, может отправлять поддельные запросы. ' +
-                    'Для Telegram/MAX выполните `npx umbot webhook <telegram|max> <https-url>` ' +
-                    '(секрет попадёт в .env как TELEGRAM_WEBHOOK_SECRET/MAX_WEBHOOK_SECRET) ' +
-                    'или задайте tokens.<platform>.webhookSecret; для VK — VK_SECRET_KEY, ' +
-                    'для Viber — токен в ViberAdapter(token).',
-                undefined,
-                { stderr: true },
-            );
-        }
-        if (hostname === '0.0.0.0' || hostname === '::') {
-            this.#appContext.logWarn(
-                'Bot:start(): Сервер слушает все сетевые интерфейсы (0.0.0.0). ' +
-                    'Убедитесь, что вебхук закрыт reverse proxy с ограничением доступа.',
-                undefined,
-                { stderr: true },
-            );
-        }
+        await this.#pollingRunner?.stop();
     }
 
     async #gracefulShutdown(): Promise<void> {
@@ -4507,69 +3228,10 @@ export class Bot<
         }
 
         this.#appContext.log('Graceful shutdown завершён.');
-        // Даём event loop завершить отложенные I/O-операции (запись в файл, закрытие сокетов)
-        await new Promise<void>((resolve) => setTimeout(resolve, 500));
-        process.exit(0);
-    }
-
-    /**
-     * Обработка запросов webhook сервера
-     * @param req — Входящий HTTP-запрос
-     */
-    #readRequestData(req: IncomingMessage): Promise<string> {
-        return new Promise((resolve, reject) => {
-            const chunks: Buffer[] = [];
-            let totalLength = 0;
-            let finished = false;
-
-            const cleanup = (): void => {
-                if (!finished) {
-                    finished = true;
-                    clearTimeout(timeoutId);
-                    req.removeListener('data', onData);
-                    req.removeListener('end', onEnd);
-                    req.removeListener('error', onError);
-                }
-            };
-
-            const onData = (chunk: Buffer): void => {
-                chunks.push(chunk);
-                totalLength += chunk.length;
-                if (totalLength > MAX_REQUEST_SIZE) {
-                    cleanup();
-                    req.destroy(new Error('Request too large'));
-                    reject(new Error('Request too large'));
-                }
-            };
-
-            const onEnd = (): void => {
-                cleanup();
-                // Тело из одного чанка (типичный вебхук) — без копирования в Buffer.concat.
-                resolve(
-                    chunks.length === 1
-                        ? (chunks[0] as Buffer).toString()
-                        : Buffer.concat(chunks).toString(),
-                );
-            };
-
-            const onError = (err: Error): void => {
-                cleanup();
-                reject(err);
-            };
-
-            // Timeout 30 сек — защита от зависших запросов (клиент отключился без end/error)
-            const timeoutId = setTimeout(() => {
-                if (!finished) {
-                    cleanup();
-                    req.destroy(new Error('Request timeout'));
-                    reject(new Error('Request timeout'));
-                }
-            }, 30000).unref();
-
-            req.on('data', onData);
-            req.on('end', onEnd);
-            req.on('error', onError);
-        });
+        // Принудительный выход — только страховка на случай, если event loop продолжают
+        // держать чужие дескрипторы (плагины, БД-драйверы): при чистом цикле процесс
+        // завершится сам, не дожидаясь таймаута (таймер unref'нут).
+        this.#shutdownSignals.armForceExit(GRACEFUL_FORCE_EXIT_TIMEOUT);
     }
 
     /**
@@ -4617,33 +3279,21 @@ export class Bot<
      * ```
      */
     public async close(): Promise<void> {
-        let serverClosed: Promise<void> | undefined;
-        if (this.#serverInst) {
-            const server = this.#serverInst;
-            this.#serverInst = undefined;
-            // server.close() вызывается синхронно, до первого await: сервер перестаёт
-            // принимать соединения сразу, даже если вызывающий не ждёт close().
-            serverClosed = new Promise<void>((resolve) => {
-                server.close(() => resolve());
-            });
-        }
+        // close() сервера внутри вызывает server.close() синхронно, до первого await:
+        // сервер перестаёт принимать соединения сразу, даже если вызывающий не ждёт close().
+        const serverClosed = this.#webhookServer?.close();
         await this.stopPolling();
         // Дожидаемся завершения активных запросов — иначе процесс может
         // завершиться до того, как сервер отпустит сокеты.
         await serverClosed;
         // Удаляем обработчики сигналов
-        if (this.#sigtermHandler) {
-            process.removeListener('SIGTERM', this.#sigtermHandler);
-            this.#sigtermHandler = null;
-        }
-        if (this.#sigintHandler) {
-            process.removeListener('SIGINT', this.#sigintHandler);
-            this.#sigintHandler = null;
-        }
+        this.#shutdownSignals.remove();
         // Также необходимо почистить все подключенные плагины.
         this.clearUse();
-        this.#memorySession?.clear();
-        this.#memorySession = null;
+        for (const session of this.#memorySessions.values()) {
+            session.clear();
+        }
+        this.#memorySessions.clear();
         await this.#appContext.close();
     }
 
@@ -4675,48 +3325,12 @@ export class Bot<
      * await bot.send('123456789', { text: 'Комната готова', buttons: ['Открыть'] }, T_TELEGRAM);
      * ```
      */
-    public async send(
+    public send(
         userId: string | number,
         controllerOrText: BotController | string | ISendMessage,
         platform: TAppType,
     ): Promise<unknown | boolean> {
-        const adapter = this.#appContext.platforms?.[platform];
-        if (!adapter) {
-            return false;
-        }
-        return adapter.send(
-            userId,
-            typeof controllerOrText === 'object' && !('platformOptions' in controllerOrText)
-                ? this.#buildMessage(controllerOrText)
-                : controllerOrText,
-        );
-    }
-
-    /**
-     * Собирает контроллер из сообщения {@link ISendMessage}.
-     * @param message Сообщение
-     * @returns Контроллер с текстом и кнопками
-     */
-    #buildMessage(message: ISendMessage): BotController {
-        const ControllerClass = this.#getBotController();
-        const controller = new ControllerClass(this.#appContext) as BotController;
-        controller.text = message.text;
-        if (message.tts) {
-            controller.tts = message.tts;
-        }
-        for (const button of message.buttons ?? []) {
-            if (typeof button === 'string') {
-                controller.buttons.addBtn(button);
-            } else {
-                controller.buttons.addBtn(
-                    button.title,
-                    button.url ?? '',
-                    button.payload ?? '',
-                    button.options ?? {},
-                );
-            }
-        }
-        return controller;
+        return this.#outboundSender.send(userId, controllerOrText, platform);
     }
 
     /**
@@ -4747,7 +3361,7 @@ export class Bot<
      * console.log(`Доставлено ${sent.length} из ${subscriberIds.length}`);
      * ```
      */
-    public async broadcast(
+    public broadcast(
         userIds: readonly (string | number)[],
         message:
             | string
@@ -4756,34 +3370,6 @@ export class Bot<
         platform: TAppType,
         options: IBroadcastOptions = {},
     ): Promise<IBroadcastResult> {
-        const result: IBroadcastResult = { sent: [], failed: [] };
-        let next = 0;
-        const worker = async (): Promise<void> => {
-            while (next < userIds.length) {
-                const userId = userIds[next++] as string | number;
-                let ok = false;
-                try {
-                    const content = typeof message === 'function' ? message(userId) : message;
-                    ok = (await this.send(userId, content, platform)) !== false;
-                } catch (e) {
-                    this.#appContext.logError(
-                        `Bot.broadcast(): не удалось отправить сообщение пользователю "${userId}": ${(e as Error).message}`,
-                        { error: e },
-                    );
-                }
-                (ok ? result.sent : result.failed).push(userId);
-                try {
-                    await options.onResult?.(userId, ok);
-                } catch (e) {
-                    this.#appContext.logError(
-                        `Bot.broadcast(): ошибка в onResult для пользователя "${userId}": ${(e as Error).message}`,
-                        { error: e },
-                    );
-                }
-            }
-        };
-        const workers = Math.min(BROADCAST_CONCURRENCY, userIds.length);
-        await Promise.all(Array.from({ length: workers }, worker));
-        return result;
+        return this.#outboundSender.broadcast(userIds, message, platform, options);
     }
 }

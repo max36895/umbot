@@ -132,6 +132,30 @@ describe('bot.defineAction', () => {
         await bot.close();
     });
 
+    it('ключи __proto__/constructor/prototype из payload не попадают в данные действия', async () => {
+        const bot = makeBot();
+        const vote = bot.defineAction<{ isWinner?: boolean; isAdmin?: boolean }>('vote');
+        let received: unknown = null;
+        vote.handle((data) => {
+            received = data;
+            return 'voted';
+        });
+        // JSON.parse создаёт __proto__ собственным свойством: присваивание
+        // data.__proto__ подменяло прототип объекта данных обработчика
+        expect(
+            await answer(
+                bot,
+                press({ action: 'vote', __proto__: { isWinner: true }, isAdmin: true }),
+            ),
+        ).toBe('voted');
+        const data = received as { isWinner?: boolean; isAdmin?: boolean };
+        expect(data.isWinner).toBeUndefined();
+        // Легитимное собственное свойство по-прежнему доходит
+        expect(data.isAdmin).toBe(true);
+        expect(Object.getOwnPropertyNames(data).includes('__proto__')).toBe(false);
+        await bot.close();
+    });
+
     it('payload длиннее 64 байт при подключённом Telegram — предупреждение', () => {
         const bot = new Bot();
         const warns: string[] = [];

@@ -27,6 +27,9 @@
  * const user = new UserModel(appContext);
  * ```
  */
-export * from './Model';
-export * from './QueryData';
-export * from './schema';
+export { Model } from './Model';
+export type { IModelState, ISelectOneModelRes } from './Model';
+export { getQueryData } from './QueryData';
+export type { IQuery, IQueryData, TKey } from './QueryData';
+export { DB_TABLES_SCHEMA } from './schema';
+export type { IDbFieldSchema, IDbTableSchema, TDbFieldType } from './schema';

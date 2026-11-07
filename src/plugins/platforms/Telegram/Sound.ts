@@ -32,6 +32,15 @@ function getChatId(controller: BotController): TTelegramChatId {
 }
 
 /**
+ * Отмечает недоставку: send()/broadcast() обязаны видеть сбой отправки аудио,
+ * иначе ответ из одного звука при ошибке API считался бы доставленным
+ * (симметрично sendPhotoChecked в Card.ts).
+ */
+function markSoundSendFailed(controller: BotController): void {
+    controller.platformOptions.sendFailed = true;
+}
+
+/**
  * Получение токена, необходимого для воспроизведения звуков в Telegram
  * @param controller Контроллер приложения
  * @param path Путь до аудиофайла
@@ -46,6 +55,9 @@ export async function getSoundInDB(
         const api = new TelegramRequest(controller.appContext);
         const sound = await api.sendAudio(getChatId(controller), path);
         isCbCalled = true;
+        if (!sound) {
+            markSoundSendFailed(controller);
+        }
 
         if (sound?.ok && sound.result?.audio?.file_id !== undefined) {
             model.soundToken = sound.result.audio.file_id;
@@ -56,7 +68,13 @@ export async function getSoundInDB(
     });
 
     if (!isCbCalled && result) {
-        await new TelegramRequest(controller.appContext).sendAudio(getChatId(controller), result);
+        const sent = await new TelegramRequest(controller.appContext).sendAudio(
+            getChatId(controller),
+            result,
+        );
+        if (!sent) {
+            markSoundSendFailed(controller);
+        }
     }
 
     return result;
@@ -85,13 +103,21 @@ export async function soundProcessing(
         // Разметку звуков голосовых платформ SpeechKit зачитал бы вслух.
         const speechText = getSpeechText(text);
         const content = speechText ? await speechKit.getTts(speechText) : null;
+        if (!content && speechText) {
+            // Синтез не удался: при ответе из одного tts пользователю не уйдёт
+            // ничего — недоставка, а не «ok»
+            markSoundSendFailed(controller);
+        }
         if (content) {
             // SpeechKit синтезирует OGG/Opus — это формат голосового сообщения
             // (sendVoice). sendAudio по Bot API принимает только MP3/M4A.
-            await new TelegramRequest(controller.appContext).sendVoice(
+            const sent = await new TelegramRequest(controller.appContext).sendVoice(
                 getChatId(controller),
                 content.fileName,
             );
+            if (!sent) {
+                markSoundSendFailed(controller);
+            }
             try {
                 await unlink(content.fileName);
             } catch {

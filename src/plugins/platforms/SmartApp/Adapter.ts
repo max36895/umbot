@@ -73,6 +73,19 @@ export class SmartAppAdapter extends BasePlatform<string | ISberSmartAppWebhookR
      * Универсальные события SmartApp (для валидации addEvent).
      */
     supportedEvents: readonly TEventType[] = ['message', 'start', 'rating'];
+    /**
+     * Известные опции адаптера. `smartapp_application_id` — ожидаемый
+     * `payload.app_info.applicationId` вебхука: при заданной опции запросы с другим
+     * идентификатором приложения отклоняются (см. `isCorrectQuery`). Остальные
+     * ключи дают предупреждение (см. BasePlatform).
+     */
+    protected _knownPlatformOptions: readonly string[] = ['smartapp_application_id'];
+
+    /**
+     * Предупреждение о хранилище по умолчанию выводится один раз на адаптер:
+     * условие зависит только от конфигурации, а не от запроса.
+     */
+    #warnedDefaultStorage = false;
 
     /**
      * Проверяет, что входящий webhook-запрос принадлежит SmartApp.
@@ -99,6 +112,35 @@ export class SmartAppAdapter extends BasePlatform<string | ISberSmartAppWebhookR
             query.uuid &&
             query.payload?.character &&
             query.payload?.app_info
+        );
+    }
+
+    /**
+     * Проверяет запрос при заданной опции `smartapp_application_id`:
+     * `payload.app_info.applicationId` должен совпадать с ожидаемым. Отсекает
+     * чужой трафик на ваш URL (другой смартап, чужой сценарий). Это НЕ подпись:
+     * SmartApp не подписывает вебхуки, весь payload контролирует отправитель,
+     * поэтому от целевой подделки (атакующий знает и адрес, и applicationId)
+     * опция не защищает — для этого нужна сетевая изоляция.
+     * @param query Входящий webhook-запрос (сырое тело строкой или объект)
+     * @param _headers Заголовки HTTP-запроса (не используются)
+     * @param parsedQuery Тело, разобранное из JSON фреймворком
+     * @returns `true`, если проверка не включена или applicationId совпал
+     */
+    isCorrectQuery(
+        query: string | ISberSmartAppWebhookRequest,
+        _headers?: Record<string, unknown>,
+        parsedQuery?: unknown,
+    ): boolean {
+        const expected = this._platformOptions?.smartapp_application_id;
+        if (typeof expected !== 'string' || expected === '') {
+            return true;
+        }
+        const body = (parsedQuery ?? query) as ISberSmartAppWebhookRequest;
+        return (
+            typeof body === 'object' &&
+            body !== null &&
+            body.payload?.app_info?.applicationId === expected
         );
     }
 
@@ -419,10 +461,18 @@ export class SmartAppAdapter extends BasePlatform<string | ISberSmartAppWebhookR
      * @param controller Контроллер текущего запроса
      * @returns Готовый URL хранилища
      */
-    static #getStorageUrl(controller: BotController): string {
-        const storageUrl =
-            controller.appContext.appConfig.tokens[T_SMART_APP]?.storage_url ||
-            SMART_APP_STORAGE_URL;
+    #getStorageUrl(controller: BotController): string {
+        const configuredUrl = controller.appContext.appConfig.tokens[T_SMART_APP]?.storage_url;
+        if (!configuredUrl && !this.#warnedDefaultStorage) {
+            this.#warnedDefaultStorage = true;
+            controller.appContext.logWarn(
+                'SmartAppAdapter: состояние пользователей сохраняется в хранилище по умолчанию ' +
+                    '(smartapp-code.sberdevices.ru) — оно без авторизации и с жёстким лимитом запросов: ' +
+                    'данные могут теряться и читаться посторонними. Задайте ' +
+                    'tokens.smart_app.storage_url или подключите DB-адаптер (bot.use(new MongoAdapter(...))).',
+            );
+        }
+        const storageUrl = configuredUrl || SMART_APP_STORAGE_URL;
         return `${storageUrl}/${encodeURIComponent(String(controller.userId ?? ''))}`;
     }
 
@@ -433,7 +483,7 @@ export class SmartAppAdapter extends BasePlatform<string | ISberSmartAppWebhookR
      */
     protected async _getUserData(controller: BotController): Promise<unknown> {
         const request = new Request(controller.appContext);
-        request.url = SmartAppAdapter.#getStorageUrl(controller);
+        request.url = this.#getStorageUrl(controller);
         const result = await request.send();
         if (result.status && result.data) {
             return result.data;
@@ -459,7 +509,7 @@ export class SmartAppAdapter extends BasePlatform<string | ISberSmartAppWebhookR
     ): Promise<IRequestSend<unknown>> {
         const request = new Request(controller.appContext);
         request.header = Request.HEADER_JSON;
-        request.url = SmartAppAdapter.#getStorageUrl(controller);
+        request.url = this.#getStorageUrl(controller);
         request.post = data as Record<string, unknown>;
         // Хранилище отвечает на сохранение 200 с пустым телом (без JSON),
         // поэтому ответ читаем текстом — иначе успешная запись считалась бы ошибкой.

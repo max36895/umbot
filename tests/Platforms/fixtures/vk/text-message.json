@@ -1,0 +1,38 @@
+{
+    "type": "message_new",
+    "group_id": 22822305,
+    "event_id": "f0e1d2c3b4a5968778",
+    "v": "5.199",
+    "object": {
+        "message": {
+            "date": 1761724800,
+            "from_id": 424242,
+            "id": 101,
+            "out": 0,
+            "peer_id": 424242,
+            "text": "привет",
+            "conversation_message_id": 58,
+            "fwd_messages": [],
+            "important": false,
+            "random_id": 0,
+            "attachments": [],
+            "is_hidden": false
+        },
+        "client_info": {
+            "button_actions": [
+                "text",
+                "vkpay",
+                "open_app",
+                "location",
+                "open_link",
+                "callback",
+                "intent_subscribe",
+                "intent_unsubscribe"
+            ],
+            "keyboard": true,
+            "inline_keyboard": true,
+            "carousel": true,
+            "lang_id": 0
+        }
+    }
+}

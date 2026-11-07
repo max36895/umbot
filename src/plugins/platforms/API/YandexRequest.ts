@@ -87,7 +87,7 @@ export class YandexRequest {
         this._appContext = appContext;
         this.setOAuth(oauth || appContext.appConfig.tokens[T_ALISA]?.token || null);
         // Загрузка ресурсов и синтез речи на медленном соединении не укладываются
-        // в 1,5 секунды, поэтому оставляем ограниченный, но реалистичный таймаут.
+        // в 1,5 секунды, поэтому оставляем ограниченный, но реалистичный тайм-аут.
         this._request.maxTimeQuery = 15_000;
         this.#error = null;
     }

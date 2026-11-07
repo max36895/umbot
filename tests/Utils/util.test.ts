@@ -303,6 +303,11 @@ describe('saveDataSync', () => {
         const result = saveDataSync(dir, 'not json', undefined, errorLogger);
         expect(result).toBe(false);
         expect(errorLogger).toHaveBeenCalled();
+        // Данные целиком в лог не идут: дамп таблицы пользователей в error.log
+        // при каждой неуспешной записи — утечка чужих userData
+        const meta = errorLogger.mock.calls[0][1] as Record<string, unknown>;
+        expect(meta).not.toHaveProperty('data');
+        expect(meta.dataSize).toBe('not json'.length);
     });
 
     it('создаёт директорию, если её нет (один уровень)', () => {
