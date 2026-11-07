@@ -7,9 +7,9 @@
  *   (константы S_AUDIO_*, S_EFFECT_* и функция SoundConstants.getPause(ms) для пауз в TTS)
  */
 
-export * from './interfaces';
+export type { IEffect, ISound } from './interfaces';
 
-export * from './Sound';
+export { Sound } from './Sound';
 
 /**
  * Стандартные звуки и эффекты голосовых платформ: константы `S_AUDIO_*`/`S_EFFECT_*`, паузы `getPause`.

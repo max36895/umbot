@@ -1041,18 +1041,19 @@ class RatingController extends BotController {
 
 #### Основные свойства
 
-| Свойство         | Тип                                                                               | Описание                                                 |
-| ---------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `appConfig`      | `Required<IAppConfig>`                                                            | Текущая конфигурация (со всеми дефолтами)                |
-| `platformParams` | `IAppParam`                                                                       | Параметры платформы                                      |
-| `platforms`      | `Record<TAppType, IPlatformAdapter>`                                              | Реестр подключенных платформ                             |
-| `database`       | `{ adapter?: IDatabaseAdapter, databaseInfo?: unknown, isSendConnect?: boolean }` | Подключенный DB-адаптер и информация о подключении       |
-| `command`        | `CommandReg`                                                                      | Реестр команд (основной доступ; ниже — удобные геттеры)  |
-| `commands`       | `Map<string, ICommandParam>`                                                      | Все зарегистрированные команды (геттер поверх `command`) |
-| `steps`          | `Map<string, IStepParam>`                                                         | Все зарегистрированные шаги (геттер поверх `command`)    |
-| `regexpGroup`    | `Map<string, IGroupData>`                                                         | Группы regex-команд (геттер поверх `command`)            |
-| `httpClient`     | `THttpClient`                                                                     | HTTP-клиент (публичное поле, можно переопределить)       |
-| `plugins`        | `TAppPlugin`                                                                      | Реестр плагинов (слоты `i18n`, `nlu`, `regExp` + ваши)   |
+| Свойство         | Тип                                                                               | Описание                                                                                                                                                                                            |
+| ---------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appConfig`      | `Required<IAppConfig>`                                                            | Текущая конфигурация (со всеми дефолтами)                                                                                                                                                           |
+| `platformParams` | `IAppParam`                                                                       | Параметры платформы                                                                                                                                                                                 |
+| `platforms`      | `Record<TAppType, IPlatformAdapter>`                                              | Реестр подключенных платформ                                                                                                                                                                        |
+| `database`       | `{ adapter?: IDatabaseAdapter, databaseInfo?: unknown, isSendConnect?: boolean }` | Подключенный DB-адаптер и информация о подключении                                                                                                                                                  |
+| `command`        | `CommandReg`                                                                      | Реестр команд (основной доступ; ниже — удобные геттеры)                                                                                                                                             |
+| `commands`       | `Map<string, ICommandParam>`                                                      | Все зарегистрированные команды (геттер поверх `command`)                                                                                                                                            |
+| `steps`          | `Map<string, IStepParam>`                                                         | Все зарегистрированные шаги (геттер поверх `command`)                                                                                                                                               |
+| `regexpGroup`    | `Map<string, IGroupData>`                                                         | Группы regex-команд (геттер поверх `command`)                                                                                                                                                       |
+| `httpClient`     | `THttpClient`                                                                     | HTTP-клиент (публичное поле, можно переопределить)                                                                                                                                                  |
+| `lastRequestId`  | `string \| undefined`                                                             | Идентификатор последнего запроса от middleware `requestId()` — для связывания логов, записанных вне обработки запроса (см. [middleware](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/middleware)) |
+| `plugins`        | `TAppPlugin`                                                                      | Реестр плагинов (слоты `i18n`, `nlu`, `regExp` + ваши)                                                                                                                                              |
 
 #### Методы
 
@@ -1066,7 +1067,7 @@ class RatingController extends BotController {
 ### Request
 
 HTTP-клиент, которым фреймворк ходит в API платформ. Им же удобно ходить во внешние API из обработчиков: у него
-таймаут по умолчанию, он не бросает исключений и идёт через `appContext.httpClient` — запросы подменяются в тестах
+тайм-аут по умолчанию, он не бросает исключений и идёт через `appContext.httpClient` — запросы подменяются в тестах
 одним моком (см. [Кастомизация HTTP-слоя](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/http-client)).
 
 ```ts
@@ -1110,9 +1111,9 @@ bot.addCommand('weather', ['погода'], async (_, ctx) => {
 | `getAttachFile(filePath, name?)` | `Promise<FormData \| null>` | `FormData` с файлом — для `post`                                                                                         |
 
 `httpStatus` и `errorBody` (до 1000 символов) есть, только если сервер ответил не 2xx: по ним отличают 429 от 400.
-При таймауте и сетевой ошибке их нет. Подробнее — [Кастомизация HTTP-слоя](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/http-client#результат-запроса-при-ошибке).
+При тайм-ауте и сетевой ошибке их нет. Подробнее — [Кастомизация HTTP-слоя](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/http-client#результат-запроса-при-ошибке).
 
-> Таймаут 2 с по умолчанию выбран под голосовые платформы, где на весь ответ около 3 с. Для чат-ботов и фоновых
+> Тайм-аут 2 секунды по умолчанию выбран под голосовые платформы, где на весь ответ около 3 с. Для чат-ботов и фоновых
 > задач увеличьте `maxTimeQuery`, но не снимайте его совсем: зависший внешний API не должен держать обработчик.
 
 ### Navigation

@@ -88,8 +88,36 @@
  * Text.getEnding(10, titles, 0); // -> 'Яблоко'
  * ```
  */
-export * from './standard/util';
-export * from './standard/Text';
-export * from './standard/RegExp';
-export * from './isPromise';
-export * from './EnvConfig';
+export {
+    fread,
+    freadSync,
+    fwrite,
+    fwriteSync,
+    getFileInfo,
+    getFileInfoSync,
+    httpBuildQuery,
+    isDir,
+    isDirSync,
+    isFile,
+    isFileSync,
+    keysCount,
+    mkdir,
+    mkdirSync,
+    rand,
+    safeStringify,
+    saveData,
+    saveDataSync,
+    similarText,
+    stdin,
+    stripTags,
+    unlink,
+    unlinkSync,
+} from './standard/util';
+export type { FileOperationResult, IGetParams } from './standard/util';
+export { Text } from './standard/Text';
+export type { ITextSimilarity, TPattern, TPatternReg } from './standard/Text';
+export { __$usedRe2, getRegExp, getRegExpOrSelf, isRegex } from './standard/RegExp';
+export type { TPatternRegExp } from './standard/RegExp';
+export { isPromise } from './isPromise';
+export { loadEnvFile } from './EnvConfig';
+export type { IEnvConfig, IEnvConfigStatus } from './EnvConfig';

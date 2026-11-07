@@ -1,0 +1,71 @@
+{
+    "messageId": 3,
+    "sessionId": "sber-session-424242",
+    "messageName": "MESSAGE_TO_SKILL",
+    "uuid": {
+        "userId": "sber-user-424242",
+        "userChannel": "B2C",
+        "sub": "sber-sub-424242"
+    },
+    "payload": {
+        "device": {
+            "platformType": "android",
+            "platformVersion": "12",
+            "surface": "SBERBOX",
+            "surfaceVersion": "3.75",
+            "features": { "appTypes": ["APK", "DIALOG", "WEB_APP", "CHAT_APP"] },
+            "capabilities": {
+                "screen": { "available": true, "width": 1920, "height": 1080 },
+                "mic": { "available": true },
+                "speak": { "available": true }
+            },
+            "deviceId": "sberbox-device-1",
+            "deviceManufacturer": "SberDevices",
+            "deviceModel": "SberBox",
+            "additionalInfo": {}
+        },
+        "app_info": {
+            "projectId": "project-1",
+            "applicationId": "app-1",
+            "appversionId": "ver-1",
+            "systemName": "TestApp",
+            "frontendEndpoint": "https://example.com",
+            "frontendType": "DIALOG",
+            "ageLimit": 0,
+            "sdkVersion": "1.0.0"
+        },
+        "character": {
+            "id": "sber",
+            "name": "Сбер",
+            "gender": "male",
+            "appeal": "official"
+        },
+        "intent": "run_app",
+        "original_intent": null,
+        "intent_meta": {},
+        "meta": {
+            "time": {
+                "timezone_id": "Europe/Moscow",
+                "timezone_offset_sec": 10800,
+                "timestamp": 1761724800000
+            }
+        },
+        "projectName": "test-project",
+        "annotations": { "censor_data": { "classes": [], "probas": [] } },
+        "strategies": { "happy_birthday": false, "last_call": 1761724700000 },
+        "message": {
+            "original_text": "привет",
+            "normalized_text": "привет",
+            "asr_normalized_message": "привет",
+            "human_normalized_text": "привет",
+            "human_normalized_text_with_anaphora": "привет",
+            "original_message_name": "VOICE_FROM_USER",
+            "voice": false
+        },
+        "selected_item": {},
+        "asr_hints": {},
+        "entities": {},
+        "tokenization_elements": [],
+        "new_session": false
+    }
+}

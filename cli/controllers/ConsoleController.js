@@ -252,7 +252,9 @@ async function main(
                         if (value !== undefined && value !== null && typeof value === 'object') {
                             console.warn(
                                 `ВНИМАНИЕ: токен для «${platform}» — объект, а не строка; переменная ${
-                                    TOKEN_ENV_NAMES[platform] ?? sanitizeEnvName(platform)
+                                    Object.hasOwn(TOKEN_ENV_NAMES, platform)
+                                        ? TOKEN_ENV_NAMES[platform]
+                                        : sanitizeEnvName(platform)
                                 } не записана.`,
                             );
                             continue;
@@ -260,7 +262,9 @@ async function main(
                         if (value === undefined || value === null || value === '') {
                             continue;
                         }
-                        const envName = TOKEN_ENV_NAMES[platform] ?? sanitizeEnvName(platform);
+                        const envName = Object.hasOwn(TOKEN_ENV_NAMES, platform)
+                            ? TOKEN_ENV_NAMES[platform]
+                            : sanitizeEnvName(platform);
                         if (param.params?.isEnv) {
                             // Переносим в .env: не затираем значение, уже переданное
                             // плоским полем params.telegram_token (приоритет — у явного).

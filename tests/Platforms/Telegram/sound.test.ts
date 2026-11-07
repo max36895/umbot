@@ -148,4 +148,81 @@ describe('Telegram Sound', () => {
             expect(sendAudioMock).toHaveBeenLastCalledWith(-100500, '/sound2.mp3');
         });
     });
+
+    describe('недоставка звука', () => {
+        it('сбой sendAudio отмечает sendFailed: ответ из одного звука не считается доставленным', async () => {
+            jest.spyOn(TelegramRequest.prototype, 'sendAudio').mockResolvedValue(null as never);
+
+            const soundInfo: ISoundInfo = {
+                usedStandardSound: false,
+                text: '',
+                sounds: [
+                    {
+                        key: '#sound1#',
+                        path: '',
+                        sounds: ['/path/to/sound.mp3'],
+                    },
+                ],
+            };
+
+            await TelegramSound.soundProcessing(soundInfo, controller);
+
+            expect(controller.platformOptions.sendFailed).toBe(true);
+        });
+
+        it('успешный sendAudio не отмечает sendFailed', async () => {
+            jest.spyOn(TelegramRequest.prototype, 'sendAudio').mockResolvedValue({
+                ok: true,
+                result: { message_id: 200, audio: { file_id: 'a1', duration: 1 } },
+            } as never);
+
+            const soundInfo: ISoundInfo = {
+                usedStandardSound: false,
+                text: '',
+                sounds: [
+                    {
+                        key: '#sound1#',
+                        path: '',
+                        sounds: ['/path/to/sound.mp3'],
+                    },
+                ],
+            };
+
+            await TelegramSound.soundProcessing(soundInfo, controller);
+
+            expect(controller.platformOptions.sendFailed).toBeFalsy();
+        });
+
+        it('сбой синтеза TTS (getTts → null) отмечает sendFailed', async () => {
+            jest.spyOn(YandexSpeechKit.prototype, 'getTts').mockResolvedValue(null);
+
+            const soundInfo: ISoundInfo = {
+                usedStandardSound: false,
+                text: 'Озвучь этот текст',
+                sounds: [],
+            };
+
+            await TelegramSound.soundProcessing(soundInfo, controller);
+
+            expect(controller.platformOptions.sendFailed).toBe(true);
+        });
+
+        it('сбой sendVoice после успешного синтеза отмечает sendFailed', async () => {
+            jest.spyOn(YandexSpeechKit.prototype, 'getTts').mockResolvedValue({
+                fileName: '/tmp/tts.ogg',
+                audioData: new ArrayBuffer(8),
+            });
+            jest.spyOn(TelegramRequest.prototype, 'sendVoice').mockResolvedValue(null as never);
+
+            const soundInfo: ISoundInfo = {
+                usedStandardSound: false,
+                text: 'Озвучь этот текст',
+                sounds: [],
+            };
+
+            await TelegramSound.soundProcessing(soundInfo, controller);
+
+            expect(controller.platformOptions.sendFailed).toBe(true);
+        });
+    });
 });

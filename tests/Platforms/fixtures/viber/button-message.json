@@ -1,0 +1,18 @@
+{
+    "event": "message",
+    "timestamp": 1761724810000,
+    "chat_hostname": "SN-CHAT-01",
+    "message_token": 59876543210002,
+    "sender": {
+        "id": "uViber42424200000000000000000000==",
+        "name": "Иван Петров",
+        "language": "ru",
+        "country": "RU",
+        "api_version": 10
+    },
+    "message": {
+        "type": "text",
+        "text": "{\"action\":\"buy\",\"item\":42}"
+    },
+    "silent": false
+}

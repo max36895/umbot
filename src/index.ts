@@ -55,7 +55,92 @@
  * - Управление состоянием
  * - Обработку ошибок
  */
-export * from './core';
+export {
+    ALL_EVENT_TYPES,
+    AppContext,
+    Bot,
+    CommandReg,
+    createPlugin,
+    EMetric,
+    FALLBACK_COMMAND,
+    HELP_INTENT_NAME,
+    HELP_INTENT_SLOTS,
+    isEventType,
+    MEMORY_SESSION_MAX_SIZE,
+    MEMORY_SESSION_TTL,
+    MemorySessionStorage,
+    T_AUTO,
+    WELCOME_INTENT_NAME,
+    WELCOME_INTENT_SLOTS,
+} from './core';
+export type {
+    AnyPluginData,
+    IAddFormField,
+    IAddFormOptions,
+    IAppConfig,
+    IAppDB,
+    IAppIntent,
+    IAppParam,
+    IAppPlugin,
+    IAppPluginFn,
+    IBotResponse,
+    IBotResponseState,
+    IBroadcastOptions,
+    IBroadcastResult,
+    IButtonAction,
+    ICardInfo,
+    ICommandParam,
+    IDangerRegex,
+    IDatabaseAdapter,
+    IDatabaseInfo,
+    IDbResult,
+    IDir,
+    IEventParam,
+    IGroupData,
+    ILogger,
+    IMemorySessionConfig,
+    IMenu,
+    IMenuButton,
+    IMenuOptions,
+    IMenuScreen,
+    IPlatform,
+    IPlatformAdapter,
+    IPlugin,
+    IPluginFn,
+    IPollingOptions,
+    ISendButton,
+    ISendMessage,
+    ISoundInfo,
+    IStepParam,
+    ITokenPlatform,
+    IWebhookEventResult,
+    MiddlewareFn,
+    MiddlewareNext,
+    TActionData,
+    TAppMode,
+    TAppPlugin,
+    TAppPluginData,
+    TAppType,
+    TBotAuth,
+    TBotContent,
+    TBotControllerClass,
+    TBotResponseCb,
+    TButtonProcessing,
+    TCardProcessing,
+    TCommandGroupMode,
+    TCommandResolver,
+    TEventType,
+    TFormContext,
+    TFormParseResult,
+    THttpClient,
+    TLoggerCb,
+    TPlatformResolver,
+    TPlugin,
+    TPluginFnResult,
+    TRunResult,
+    TSlots,
+    TSoundProcessing,
+} from './core';
 
 // ===== Взаимодействие с web api =====
 /**
@@ -65,7 +150,8 @@ export * from './core';
  * - Базовый HTTP-клиент Request
  * - Интерфейсы для API
  */
-export * from './api';
+export { Request } from './api';
+export type { IRequestSend } from './api';
 
 // ===== Второстепенные компоненты =====
 /**
@@ -79,7 +165,43 @@ export * from './api';
  * - Стандартные хелперы (Navigation и др.)
  * - UI элементы
  */
-export * from './components';
+export {
+    Buttons,
+    Card,
+    getButton,
+    getImage,
+    getLinkButton,
+    initButton,
+    Navigation,
+    Nlu,
+    Sound,
+    SoundConstants,
+} from './components';
+export type {
+    IBaseEntities,
+    IBaseNlu,
+    IButton,
+    IButtonOptions,
+    IButtonType,
+    IEffect,
+    IImageParams,
+    IImageType,
+    INlu,
+    INluDateTime,
+    INluFIO,
+    INluGeo,
+    INluIntent,
+    INluIntents,
+    INluResult,
+    INluSlot,
+    INluThisUser,
+    ISound,
+    TBtnPayload,
+    TButton,
+    TButtonPayload,
+    TElementType,
+    TKeys,
+} from './components';
 
 // ===== Базовый контроллер для написания логики приложения =====
 /**
@@ -91,7 +213,17 @@ export * from './components';
  * - Управление состоянием
  * - Шаблоны ответов
  */
-export * from './controller';
+export { BaseBotController, BotController } from './controller';
+export type {
+    IApiMediaParams,
+    IControllerApi,
+    IPlatformData,
+    IPlatformOptions,
+    IUserData,
+    IUserEvent,
+    TApiMethod,
+    TStatus,
+} from './controller';
 
 // ===== Модели для взаимодействия с бд =====
 /**
@@ -102,7 +234,34 @@ export * from './controller';
  * - Интерфейсы моделей
  * - Запросы
  */
-export * from './models';
+export {
+    DB_TABLES_SCHEMA,
+    getQueryData,
+    ImageTokens,
+    Model,
+    SoundTokens,
+    UsersData,
+} from './models';
+export type {
+    IDataValue,
+    IDbFieldSchema,
+    IDbTableSchema,
+    IImageModelState,
+    IModelRes,
+    IModelRules,
+    IModelState,
+    IQuery,
+    IQueryData,
+    ISelectOneModelRes,
+    ISoundModelState,
+    IUserDataModelState,
+    TDataType,
+    TDbFieldType,
+    TKey,
+    TMetaType,
+    TModelRulesType,
+    TQueryCb,
+} from './models';
 
 // ===== Дополнительные утилиты =====
 /**
@@ -114,4 +273,45 @@ export * from './models';
  * - Валидация
  * - Хелперы
  */
-export * from './utils';
+export {
+    __$usedRe2,
+    fread,
+    freadSync,
+    fwrite,
+    fwriteSync,
+    getFileInfo,
+    getFileInfoSync,
+    getRegExp,
+    getRegExpOrSelf,
+    httpBuildQuery,
+    isDir,
+    isDirSync,
+    isFile,
+    isFileSync,
+    isPromise,
+    isRegex,
+    keysCount,
+    loadEnvFile,
+    mkdir,
+    mkdirSync,
+    rand,
+    safeStringify,
+    saveData,
+    saveDataSync,
+    similarText,
+    stdin,
+    stripTags,
+    Text,
+    unlink,
+    unlinkSync,
+} from './utils';
+export type {
+    FileOperationResult,
+    IEnvConfig,
+    IEnvConfigStatus,
+    IGetParams,
+    ITextSimilarity,
+    TPattern,
+    TPatternReg,
+    TPatternRegExp,
+} from './utils';

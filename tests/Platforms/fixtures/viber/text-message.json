@@ -1,0 +1,20 @@
+{
+    "event": "message",
+    "timestamp": 1761724800000,
+    "chat_hostname": "SN-CHAT-01",
+    "message_token": 59876543210001,
+    "sender": {
+        "id": "uViber42424200000000000000000000==",
+        "name": "Иван Петров",
+        "avatar": "https://media-direct.cdn.viber.com/download_photo?dlid=abc",
+        "language": "ru",
+        "country": "RU",
+        "api_version": 10
+    },
+    "message": {
+        "type": "text",
+        "text": "привет",
+        "tracking_data": "{\"session\":1}"
+    },
+    "silent": false
+}

@@ -5,6 +5,7 @@ import {
     IQuery,
     IModelRes,
     IDatabaseInfo,
+    Text,
     getFileInfoSync,
     freadSync,
     keysCount,
@@ -404,7 +405,10 @@ export class FileAdapter extends Base<IFileDbInfo> {
     #mergeRow(row: IQueryData, update: IQueryData | null | undefined): IQueryData {
         const result = { ...row };
         for (const [field, value] of Object.entries(update ?? {})) {
-            if (value !== undefined) {
+            // Прототипные ключи не мержим: update.data может нести значения из
+            // payload, а подмена прототипа строки в кэше читается всеми select-ами
+            // (симметрично защите Mongo-адаптера в #isSafeMongoQuery).
+            if (value !== undefined && !this.#isForbiddenKey(field)) {
                 result[field] = value;
             }
         }
@@ -412,15 +416,104 @@ export class FileAdapter extends Base<IFileDbInfo> {
     }
 
     /**
+     * Поля, входящие в ключ строки: первичный и составной уникальный.
+     * @param query Запрос: источник схемы ключа
+     * @param field Имя поля
+     */
+    #isKeyField(query: IQuery, field: string): boolean {
+        return field === query.primaryKeyName || (query.uniqueKeys ?? []).includes(field);
+    }
+
+    /**
+     * Ограничивает строковые значения по правилам модели (query.rules): без этого
+     * значение любого размера записывается в таблицу целиком и переписывается
+     * на диске при каждом сохранении (Mongo-адаптер те же правила применяет в validate).
+     * Ключевые поля не мутируются: обрезка меняла бы идентичность записи (см. #findOversizedKeyField).
+     * Экранирование escapeString здесь не применяется: файл хранит JSON как есть.
+     * @param query Запрос: источник правил валидации
+     * @param element Валидируемый элемент (мутируется)
+     */
+    #applyRules(query: IQuery, element: IQueryData | null): void {
+        if (!element) {
+            return;
+        }
+        for (const rule of query.rules ?? []) {
+            if (rule.max === undefined) {
+                continue;
+            }
+            const isString = rule.type === 'string' || rule.type === 'text';
+            if (!isString) {
+                continue;
+            }
+            for (const field of rule.name) {
+                if (this.#isKeyField(query, field)) {
+                    continue;
+                }
+                const value = element[field];
+                if (typeof value === 'string') {
+                    // Без эллипсиса: хранимое значение — чистый префикс.
+                    element[field] = Text.resize(value, rule.max, false);
+                }
+            }
+        }
+    }
+
+    /**
+     * Ищет ключевое поле, значение которого превышает rule.max. Запись с таким
+     * ключом отклоняется целиком: обрезка сделала бы запись недоступной для
+     * select/remove по исходному ключу, а два разных длинных ключа с общим
+     * префиксом столкнулись бы в одной строке.
+     * @param query Запрос: источник правил валидации
+     * @param element Проверяемый элемент
+     * @returns Имя превышающего лимит ключевого поля или null
+     */
+    #findOversizedKeyField(query: IQuery, element: IQueryData | null): string | null {
+        if (!element) {
+            return null;
+        }
+        for (const rule of query.rules ?? []) {
+            if (rule.max === undefined) {
+                continue;
+            }
+            const isString = rule.type === 'string' || rule.type === 'text';
+            if (!isString) {
+                continue;
+            }
+            for (const field of rule.name) {
+                if (!this.#isKeyField(query, field)) {
+                    continue;
+                }
+                const value = element[field];
+                if (typeof value === 'string' && value.length > rule.max) {
+                    return field;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Выполняет UPDATE-запрос.
      * @param updateData Дополнительная информация для запроса. Содержит сам запрос, а также название таблицы и прочие данные.
-     * @returns true, если запись найдена по первичному ключу и обновлена (или отсутствует — операция безошибочна), иначе false
+     * @returns true, если запись найдена по первичному ключу и обновлена (или отсутствует — операция
+     *   безошибочна), иначе false (в update.data есть ключевое поле длиннее max правил модели)
      */
     public _update(updateData: IQuery): boolean {
         const update = updateData.data;
         const select = updateData.query;
         const data = this.getFileData(updateData.tableName);
         if (select) {
+            this.#applyRules(updateData, update);
+            // Условие не валидируем: ключ ищется по исходному значению, как в
+            // _select и _remove, — иначе запись с ключом длиннее max стала бы
+            // недоступной для обновления.
+            const oversized = this.#findOversizedKeyField(updateData, update);
+            if (oversized) {
+                this._appContext?.logWarn(
+                    `FileAdapter: значение ключевого поля "${oversized}" превышает max правил модели — обновление отклонено.`,
+                );
+                return false;
+            }
             const idVal = select[updateData.primaryKeyName as string] as string;
             if (idVal !== undefined) {
                 if (this.#isForbiddenKey(idVal)) {
@@ -441,13 +534,23 @@ export class FileAdapter extends Base<IFileDbInfo> {
     /**
      * Выполняет INSERT-запрос.
      * @param insertData Дополнительная информация для запроса. Содержит сам запрос, а также название таблицы и прочие данные.
-     * @returns true при успешной вставке записи, иначе false (нет первичного ключа, ключ запрещён
-     *   или запись с таким ключом уже есть)
+     * @returns true при успешной вставке записи, иначе false (нет первичного ключа, ключ запрещён,
+     *   ключевое поле длиннее max правил модели или запись с таким ключом уже есть)
      */
     public _insert(insertData: IQuery): boolean {
         const insert = insertData.data;
         const data = this.getFileData(insertData.tableName);
         if (insert) {
+            this.#applyRules(insertData, insert);
+            // Ключ длиннее max не обрезается, а отклоняет вставку: обрезанный
+            // ключ select по исходному значению не находит (см. #findOversizedKeyField).
+            const oversized = this.#findOversizedKeyField(insertData, insert);
+            if (oversized) {
+                this._appContext?.logWarn(
+                    `FileAdapter: значение ключевого поля "${oversized}" превышает max правил модели — вставка отклонена.`,
+                );
+                return false;
+            }
             const idVal = insert[insertData.primaryKeyName as string] as string;
             if (idVal) {
                 if (this.#isForbiddenKey(idVal)) {
@@ -619,10 +722,7 @@ export class FileAdapter extends Base<IFileDbInfo> {
                 data: result,
             };
         }
-        return {
-            status: false,
-            error: 'Не удалось получить данные',
-        };
+        return { status: false };
     }
 
     /**

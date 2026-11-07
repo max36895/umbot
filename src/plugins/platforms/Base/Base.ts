@@ -9,7 +9,15 @@ import {
 } from '../../../index';
 import type { TEventType } from '../../../core/events';
 import { isPromise } from '../../../utils/isPromise';
+import { similarText } from '../../../utils/standard/util';
 import { createHmac, timingSafeEqual } from 'crypto';
+
+/**
+ * Опции, общие для всех адаптеров платформ: `send_rate_limit` — переопределение
+ * лимита исходящих сообщений в секунду (см. `sendLimit`). Платформенные ключи
+ * адаптер перечисляет в `_knownPlatformOptions`.
+ */
+const BASE_PLATFORM_OPTIONS: readonly string[] = ['send_rate_limit'];
 
 /**
  * Тип ответа, который может вернуть адаптер после обработки запроса.
@@ -184,6 +192,27 @@ export abstract class BasePlatform<TQuery = unknown>
     supportedEvents: readonly TEventType[] = ['message'];
 
     /**
+     * Известные ключи опций адаптера (второй аргумент конструктора,
+     * `new TelegramAdapter(token, { telegram_parse_mode: 'HTML' })`).
+     *
+     * Опции адаптера — строковые ключи: опечатка молча игнорируется, и пользователь
+     * думает, что опция работает. Поэтому при `init()` (подключении через `bot.use()`)
+     * неизвестный ключ даёт предупреждение с подсказкой. Общая для всех адаптеров
+     * опция `send_rate_limit` учитывается базовым классом, здесь перечисляются только
+     * ключи платформы.
+     *
+     * **Для кастомных платформ:** перечислите ключи, которые читает ваш адаптер:
+     * ```ts
+     * class MyPlatformAdapter extends BasePlatform {
+     *     protected _knownPlatformOptions: readonly string[] = ['my_option'];
+     * }
+     * ```
+     * Без поля любая переданная опция считается неизвестной — так и задумано:
+     * адаптер без опций не должен молча принимать ключи.
+     */
+    protected _knownPlatformOptions?: readonly string[];
+
+    /**
      * Инициализация адаптера.
      * Определять не обязательно. Стоит указывать в случаях, когда нужно выполнить доп логику, например указать токены или писать какую-то статистику по использованию.
      * @param appContext - Контекст приложения
@@ -192,6 +221,36 @@ export abstract class BasePlatform<TQuery = unknown>
         appContext.platforms[this.platformName] = this;
         this.appContext = appContext;
         appContext.appConfig.tokens[this.platformName] ??= {};
+        this.#warnUnknownPlatformOptions();
+    }
+
+    /**
+     * Предупреждает об опциях адаптера, которых нет в `_knownPlatformOptions`:
+     * неизвестный ключ — почти всегда опечатка, и опция молча игнорируется.
+     */
+    #warnUnknownPlatformOptions(): void {
+        if (!this._platformOptions) {
+            return;
+        }
+        const known = [...BASE_PLATFORM_OPTIONS, ...(this._knownPlatformOptions ?? [])];
+        for (const key of Object.keys(this._platformOptions)) {
+            if (known.includes(key)) {
+                continue;
+            }
+            let suggestion = '';
+            let bestPercent = 0;
+            for (const knownKey of known) {
+                const percent = similarText(key, knownKey);
+                if (percent > bestPercent) {
+                    bestPercent = percent;
+                    suggestion = knownKey;
+                }
+            }
+            this.appContext?.logWarn(
+                `${this.constructor.name}: неизвестная опция "${key}" — она будет проигнорирована.` +
+                    (bestPercent >= 60 ? ` Возможно, вы имели в виду "${suggestion}".` : ''),
+            );
+        }
     }
 
     /**

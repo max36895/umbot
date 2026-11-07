@@ -1,0 +1,13 @@
+{
+    "type": "message_event",
+    "group_id": 22822305,
+    "event_id": "a1b2c3d4e5f6071829",
+    "v": "5.199",
+    "object": {
+        "user_id": 424242,
+        "peer_id": 424242,
+        "event_id": "ev778899",
+        "payload": { "command": "buy" },
+        "conversation_message_id": 60
+    }
+}

@@ -136,6 +136,15 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
         'start',
     ];
     /**
+     * Известные опции адаптера (для предупреждения о неизвестных ключах — см. BasePlatform).
+     */
+    protected _knownPlatformOptions: readonly string[] = [
+        'telegram_webhook_reply',
+        'telegram_delete_webhook',
+        'telegram_bot_username',
+        'telegram_parse_mode',
+    ];
+    /**
      * Telegram — чат-платформа (не голосовая).
      */
     isVoice = false;
@@ -825,7 +834,9 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
      * Отправляет звуки. Не создаём экземпляр Sound через геттер, если звуки не
      * использовались. Сбой слоя звука (исключение БД при getSoundInDB, API
      * SpeechKit) не должен ронять весь ответ — текст и карточки уже отправлены;
-     * деградируем с warn.
+     * деградируем с warn. Недоставка отмечается: ответ из одного звука при сбое
+     * не должен считаться доставленным (результаты API-отправок проверяет
+     * soundProcessing).
      */
     async #sendSounds(controller: BotController, hasSounds: boolean): Promise<void> {
         if (!hasSounds) {
@@ -838,6 +849,8 @@ export class TelegramAdapter extends BasePlatform<string | ITelegramContent> {
                 `TelegramAdapter.getContent(): ошибка обработки звука, звук не отправлен. Текст ошибки: "${e instanceof Error ? e.message : String(e)}"`,
                 { error: e },
             );
+            // eslint-disable-next-line require-atomic-updates -- флаг монотонный: выставляется только в true
+            controller.platformOptions.sendFailed = true;
         }
     }
 

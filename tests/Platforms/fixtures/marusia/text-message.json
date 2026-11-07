@@ -1,0 +1,39 @@
+{
+    "meta": {
+        "locale": "ru-RU",
+        "timezone": "Europe/Moscow",
+        "client_id": "MailRu-VC/1.20.1",
+        "interfaces": {
+            "screen": {}
+        },
+        "_city_ru": "Москва"
+    },
+    "request": {
+        "command": "привет",
+        "original_utterance": "привет",
+        "nlu": {
+            "tokens": ["привет"],
+            "entities": [],
+            "intents": {}
+        },
+        "type": "SimpleUtterance"
+    },
+    "session": {
+        "message_id": 5,
+        "session_id": "f1d2c3b4-a596-8778-f0e1-d2c3b4a59687",
+        "skill_id": "a1b2c3d4-e5f6-0718-293a-b4c5d6e7f809",
+        "application": {
+            "application_id": "marusia-app-id-424242",
+            "application_type": "mobile"
+        },
+        "auth_token": "636bce5b8f22d13e1153aefe0172ea4d91f0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
+        "new": false,
+        "user_id": "marusia-user-id-424242"
+    },
+    "state": {
+        "session": {},
+        "user": {},
+        "application": {}
+    },
+    "version": "1.0"
+}

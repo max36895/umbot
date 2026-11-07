@@ -110,6 +110,12 @@ export class AlisaAdapter extends BasePlatform<string | IAlisaWebhookRequest> {
      * Универсальные события Алисы (для валидации addEvent): текст и account_linking.
      */
     supportedEvents: readonly TEventType[] = ['message', 'auth'];
+    /**
+     * Известные опции адаптера. `alisa_skill_id` — ожидаемый `session.skill_id`
+     * вебхука: при заданной опции запросы с другим skill_id отклоняются (см.
+     * `isCorrectQuery`). Остальные ключи дают предупреждение (см. BasePlatform).
+     */
+    protected _knownPlatformOptions: readonly string[] = ['alisa_skill_id'];
 
     /**
      * Предупреждение о нескольких хранилищах state уже выведено. Алиса при
@@ -168,6 +174,31 @@ export class AlisaAdapter extends BasePlatform<string | IAlisaWebhookRequest> {
     }
 
     /**
+     * Проверяет запрос при заданной опции `alisa_skill_id`: `session.skill_id`
+     * должен совпадать с ожидаемым. Отсекает чужой трафик на ваш URL (другой
+     * навык, чужой сценарий, опечатка роутинга). Это НЕ подпись: Алиса не
+     * подписывает вебхуки, весь payload контролирует отправитель, поэтому
+     * от целевой подделки (атакующий знает и адрес, и skill_id) опция не
+     * защищает — для этого нужна сетевая изоляция.
+     * @param query Входящий webhook-запрос (сырое тело строкой или объект)
+     * @param _headers Заголовки HTTP-запроса (не используются)
+     * @param parsedQuery Тело, разобранное из JSON фреймворком
+     * @returns `true`, если проверка не включена или skill_id совпал
+     */
+    isCorrectQuery(
+        query: string | IAlisaWebhookRequest,
+        _headers?: Record<string, unknown>,
+        parsedQuery?: unknown,
+    ): boolean {
+        const expected = this._platformOptions?.alisa_skill_id;
+        if (typeof expected !== 'string' || expected === '') {
+            return true;
+        }
+        const body = (parsedQuery ?? query) as IAlisaWebhookRequest;
+        return typeof body === 'object' && body !== null && body.session?.skill_id === expected;
+    }
+
+    /**
      * Инициализирует команду пользователя от Алисы.
      * Обрабатывает различные типы запросов и сохраняет команду в контроллере
      * @param request Объект запроса от пользователя
@@ -192,7 +223,9 @@ export class AlisaAdapter extends BasePlatform<string | IAlisaWebhookRequest> {
                 controller.userToken = session.user.access_token || null;
             } else {
                 if (session.application?.application_id === undefined) {
-                    controller.userId = session.user_id as string;
+                    // '' вместо undefined: запрос без обоих id не попадает в один
+                    // бакет хранилища по литеральному ключу (как в Marusia)
+                    controller.userId = (session.user_id as string) ?? '';
                 } else {
                     controller.userId = session.application.application_id;
                 }

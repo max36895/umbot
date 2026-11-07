@@ -1,0 +1,32 @@
+{
+    "type": "message_new",
+    "group_id": 22822305,
+    "event_id": "b2c3d4e5f60718293a",
+    "v": "5.199",
+    "object": {
+        "message": {
+            "date": 1761724800,
+            "from_id": 424242,
+            "id": 1,
+            "out": 0,
+            "peer_id": 424242,
+            "text": "Начать",
+            "conversation_message_id": 1,
+            "fwd_messages": [],
+            "important": false,
+            "random_id": 0,
+            "attachments": [],
+            "is_hidden": false,
+            "payload": "{\"command\":\"start\"}",
+            "ref": "K7M2QX",
+            "ref_source": "ads"
+        },
+        "client_info": {
+            "button_actions": ["text", "callback"],
+            "keyboard": true,
+            "inline_keyboard": true,
+            "carousel": true,
+            "lang_id": 0
+        }
+    }
+}

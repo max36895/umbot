@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { readEnv } = require(path.join(__dirname, 'WebhookController.js'));
+const { utils } = require(path.join(__dirname, '..', 'utils.js'));
 
 /** Таймаут одного запроса к API платформы, мс. */
 const REQUEST_TIMEOUT = 10_000;
@@ -264,22 +265,8 @@ function satisfiesMinVersion(version, requirement) {
     return true;
 }
 
-/**
- * Проверяет, что .env указан в .gitignore проекта.
- * @param {string} cwd Каталог проекта
- * @returns {boolean} true, если правило для .env найдено
- */
-function isEnvIgnored(cwd) {
-    const gitignore = path.join(cwd, '.gitignore');
-    if (!fs.existsSync(gitignore)) {
-        return false;
-    }
-    return fs
-        .readFileSync(gitignore, 'utf8')
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .some((line) => ['.env', '/.env', '.env*', '*.env', '.env.*'].includes(line));
-}
+/** Проверка .env в .gitignore — общий хелпер cli/utils.js. */
+const isEnvIgnored = utils.isEnvIgnored;
 
 /**
  * Диагностика проекта umbot: версия Node.js, установленный umbot, .env и его место

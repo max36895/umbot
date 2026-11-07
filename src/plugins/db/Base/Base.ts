@@ -355,14 +355,27 @@ export abstract class Base<TDbInfo extends IDatabaseInfo = IDatabaseInfo>
     public async save(saveData: IQuery, isNew: boolean): Promise<boolean> {
         if (isNew) {
             saveData.data = { ...saveData.data, ...saveData.query };
-            return await this.insert(saveData);
+            const inserted = await this.insert(saveData);
+            if (inserted) {
+                return true;
+            }
+            // Гонка двух первых запросов одного пользователя: оба увидели отсутствие
+            // записи и оба вызвали insert, вставка одного отклонена по занятому ключу.
+            // Повторяем update — иначе правки второго запроса теряются молча.
+            return await this.update(saveData);
         }
         const select = await this.selectOne(saveData, saveData.query);
         if (select?.status) {
             return await this.update(saveData);
         } else {
             saveData.data = { ...saveData.data, ...saveData.query };
-            return await this.insert(saveData);
+            const inserted = await this.insert(saveData);
+            if (inserted) {
+                return true;
+            }
+            // Гонка select→insert: запись создал параллельный запрос между selectOne
+            // и insert. Повторяем update (upsert-семантика) вместо тихой потери правок.
+            return await this.update(saveData);
         }
     }
 

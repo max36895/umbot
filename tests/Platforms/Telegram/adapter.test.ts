@@ -722,6 +722,30 @@ describe('TelegramAdapter', () => {
 
             expect(getSoundsMock).toHaveBeenCalled();
         });
+
+        it('sound-only ответ: сбой слоя звука отмечает sendFailed', async () => {
+            // Ответ без текста и карточек — только звук: без отметки sendFailed
+            // send()/broadcast() считали бы недоставленный звук доставленным
+            controller.text = '';
+            controller.sound.sounds = [{ key: '#test#', path: '', sounds: [] }];
+            jest.spyOn(controller.sound, 'getSounds').mockRejectedValue(new Error('db down'));
+
+            const result = await adapter.getContent(controller);
+
+            // Вебхук-ответ не меняется, но sendFailed для send()/broadcast() выставлен
+            expect(result).toBe('ok');
+            expect(controller.platformOptions.sendFailed).toBe(true);
+        });
+
+        it('sound-only ответ при успешной отправке не отмечает sendFailed', async () => {
+            controller.text = '';
+            controller.sound.sounds = [{ key: '#test#', path: '', sounds: [] }];
+            jest.spyOn(controller.sound, 'getSounds').mockResolvedValue('');
+
+            await adapter.getContent(controller);
+
+            expect(controller.platformOptions.sendFailed).toBeFalsy();
+        });
     });
 
     describe('getQueryExample', () => {

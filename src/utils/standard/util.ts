@@ -528,7 +528,7 @@ export function saveDataSync(
             `Ошибка при сохранении данных в файл: "${dir.path}/${dir.fileName}", так как данные не в json формате. Ошибка: ${(e as Error).message}`,
             {
                 error: e,
-                data,
+                dataSize: data.length,
                 mode,
             },
         );
@@ -536,11 +536,13 @@ export function saveDataSync(
     }
     const res = fwriteSync(join(dir.path, dir.fileName), data, mode);
     if (!res.success) {
+        // Данные целиком в лог не идут: см. saveData — дамп всей таблицы
+        // пользователей в error.log при каждой неуспешной записи.
         errorLogger?.(
             `Ошибка при сохранении данных в файл: "${dir.path}/${dir.fileName}". Ошибка: ${res.error}`,
             {
                 error: res.error,
-                data,
+                dataSize: data.length,
                 mode,
             },
         );
@@ -740,11 +742,14 @@ export async function saveData(
     // errorLogger запускал бесконечный цикл самовоспроизводящихся ошибок.
     const res = await fwrite(join(dir.path, dir.fileName), data, mode);
     if (!res.success) {
+        // Данные целиком в лог не идут: типичный вызывающий — сохранение таблицы
+        // FileAdapter с данными всех пользователей, дамп ушёл бы в error.log
+        // при каждой неуспешной записи (read-only ФС, переполненный диск).
         errorLogger?.(
             `Ошибка при сохранении данных в файл: "${dir.path}/${dir.fileName}". Ошибка: ${res.error}`,
             {
                 error: res.error,
-                data,
+                dataSize: data.length,
                 mode,
             },
         );

@@ -100,6 +100,12 @@ describe('middleware', () => {
                 (ctx2.platformOptions as Record<string, unknown>).requestId,
             );
         });
+
+        it('сохраняет последний id в appContext.lastRequestId', async () => {
+            const ctx = makeCtx();
+            await requestId()(ctx, () => Promise.resolve());
+            expect(ctx.appContext.lastRequestId).toBe(ctx.platformOptions.requestId);
+        });
     });
 
     describe('maintenance', () => {
@@ -174,6 +180,17 @@ describe('middleware', () => {
             const ctx = makeCtxWithIp('10.0.0.5');
             const next = makeNext();
             await ipFilter({ whitelist: ['192.168.1.0/24'], deniedText: 'No' })(
+                ctx as never,
+                next.fn,
+            );
+            expect(next.called).toBe(false);
+            expect(ctx.text).toBe('No');
+        });
+
+        it('whitelist из одних невалидных CIDR блокирует всех (fail-closed)', async () => {
+            const ctx = makeCtxWithIp('8.8.8.8');
+            const next = makeNext();
+            await ipFilter({ whitelist: ['192.0.2.0/33'], deniedText: 'No' })(
                 ctx as never,
                 next.fn,
             );

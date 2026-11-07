@@ -391,6 +391,22 @@ export class AppContext<TDbInfo = IDatabaseInfo, TQuery = unknown> {
     public appMode: TAppMode = getDefaultAppMode();
 
     /**
+     * Идентификатор последнего входящего запроса. Заполняется middleware `requestId()`
+     * и нужен для сквозного трейсинга: связать логи, записанные вне обработки запроса
+     * (где нет доступа к `BotController`), с последним обработанным запросом.
+     *
+     * @example
+     * ```ts
+     * import { requestId } from 'umbot/middleware';
+     *
+     * bot.use(requestId());
+     * // после обработки запроса:
+     * console.log(bot.getAppContext().lastRequestId); // '3f8c...-...'
+     * ```
+     */
+    public lastRequestId: string | undefined;
+
+    /**
      * Создаёт контекст приложения. При `NODE_ENV=production` сразу включает строгую
      * проверку регулярных выражений (режим `strict_prod`).
      *

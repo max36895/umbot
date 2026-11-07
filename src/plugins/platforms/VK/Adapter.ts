@@ -254,6 +254,15 @@ export class VkAdapter extends BasePlatform<string | IVkRequestContent> {
      */
     supportedEvents: readonly TEventType[] = ['message', 'callback', 'start'];
     /**
+     * Известные опции адаптера (для предупреждения о неизвестных ключах — см. BasePlatform).
+     */
+    protected _knownPlatformOptions: readonly string[] = [
+        'vk_api_version',
+        'vk_confirmation_token',
+        'vk_load_user_info',
+        'vk_secret_key',
+    ];
+    /**
      * VK — чат-платформа (не голосовая).
      */
     isVoice = false;

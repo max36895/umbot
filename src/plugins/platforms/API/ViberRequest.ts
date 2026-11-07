@@ -75,7 +75,7 @@ export class ViberRequest {
      */
     public constructor(appContext: AppContext) {
         this.#request = new Request(appContext);
-        // Viber — единственный клиент без явного таймаута: дефолт Request (2000 мс)
+        // Viber — единственный клиент без явного тайм-аута: дефолт Request (2000 мс)
         // обрывал send_message/rich_media при латентности chatapi.viber.com выше 2 с,
         // тогда как соседние адаптеры (VK/Telegram/MAX — 5500, их upload'ы — 30000)
         // на том же хостинге продолжали работать.

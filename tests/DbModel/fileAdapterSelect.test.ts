@@ -89,4 +89,59 @@ describe('FileAdapter: защита от зарезервированных кл
         });
         expect(inserted).toBe(false);
     });
+
+    it('пустая выборка сканом (where без уникальных ключей) — без error: «не найдено», а не сбой', () => {
+        // Контракт _select: error означает «данные не загрузились», по нему ядро
+        // прекращает сохранение userData. Обычный промах сканом раньше возвращал
+        // error и валил загрузку пользователя наравне с реальным сбоем БД
+        const res = adapter._select(
+            { tableName: 'UsersData', primaryKeyName: 'userId' },
+            { platform: 'telegram' },
+            true,
+        );
+        expect(res.status).toBe(false);
+        expect(res.error).toBeUndefined();
+    });
+
+    it('пустая таблица с where=null — без error (isOne: не найдено, select-all: пустой результат)', () => {
+        // Таблица, которой нет в файле: адаптер создаёт её пустой при первом обращении
+        const resOne = adapter._select(
+            { tableName: 'EmptyTable', primaryKeyName: 'id' },
+            null,
+            true,
+        );
+        expect(resOne.status).toBe(false);
+        expect(resOne.error).toBeUndefined();
+        // Выборка всего из пустой таблицы — успешный пустой результат (как у Mongo find().toArray())
+        const resAll = adapter._select(
+            { tableName: 'EmptyTable', primaryKeyName: 'id' },
+            null,
+            false,
+        );
+        expect(resAll.status).toBe(true);
+        expect(resAll.data).toEqual({});
+        expect(resAll.error).toBeUndefined();
+    });
+
+    it('partial update не затирает отсутствующие поля (паритет с Mongo-адаптером)', () => {
+        adapter._insert({
+            tableName: 'UsersData',
+            primaryKeyName: 'userId',
+            query: { userId: 'p1' },
+            data: { userId: 'p1', data: '{"a":1}', meta: '{}' },
+        });
+        adapter._update({
+            tableName: 'UsersData',
+            primaryKeyName: 'userId',
+            query: { userId: 'p1' },
+            data: { data: '{"a":2}' },
+        });
+        const res = adapter._select(
+            { tableName: 'UsersData', primaryKeyName: 'userId' },
+            { userId: 'p1' },
+            true,
+        );
+        expect(res.status).toBe(true);
+        expect(res.data).toEqual({ userId: 'p1', data: '{"a":2}', meta: '{}' });
+    });
 });

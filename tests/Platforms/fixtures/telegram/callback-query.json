@@ -1,0 +1,32 @@
+{
+    "update_id": 812345679,
+    "callback_query": {
+        "id": "778899001122334455",
+        "from": {
+            "id": 424242,
+            "is_bot": false,
+            "first_name": "Иван",
+            "username": "ivan_p",
+            "language_code": "ru"
+        },
+        "message": {
+            "message_id": 100,
+            "from": {
+                "id": 777000,
+                "is_bot": true,
+                "first_name": "Demo Bot",
+                "username": "demo_bot"
+            },
+            "chat": {
+                "id": 424242,
+                "first_name": "Иван",
+                "username": "ivan_p",
+                "type": "private"
+            },
+            "date": 1761724700,
+            "text": "Выберите товар"
+        },
+        "chat_instance": "-987654321098765432",
+        "data": "{\"command\":\"buy\"}"
+    }
+}

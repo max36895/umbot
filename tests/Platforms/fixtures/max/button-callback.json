@@ -1,0 +1,36 @@
+{
+    "update_type": "message_callback",
+    "timestamp": 1761724810000,
+    "callback": {
+        "timestamp": 1761724809000,
+        "callback_id": "cb-778899",
+        "payload": "{\"command\":\"buy\"}",
+        "user": {
+            "user_id": 424242,
+            "name": "Иван Петров",
+            "username": "ivan_p",
+            "is_bot": false,
+            "last_activity_time": 1761724809000
+        }
+    },
+    "message": {
+        "body": {
+            "mid": "mid.0000000001.c816a09d",
+            "seq": 11,
+            "text": "Выберите товар"
+        },
+        "sender": {
+            "user_id": 777000,
+            "name": "Demo Bot",
+            "username": "demo_bot",
+            "is_bot": true,
+            "last_activity_time": 1761724700000
+        },
+        "recipient": {
+            "chat_id": 424242,
+            "chat_type": "dialog",
+            "user_id": 424242
+        },
+        "timestamp": 1761724700000
+    }
+}

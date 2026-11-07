@@ -26,8 +26,21 @@
  * ```
  */
 
-export * from './db';
-export * from './interface';
-export * from './ImageTokens';
-export * from './SoundTokens';
-export * from './UsersData';
+export { DB_TABLES_SCHEMA, getQueryData, Model } from './db';
+export type {
+    IDbFieldSchema,
+    IDbTableSchema,
+    IModelState,
+    IQuery,
+    IQueryData,
+    ISelectOneModelRes,
+    TDbFieldType,
+    TKey,
+} from './db';
+export type { IDataValue, IModelRes, IModelRules, TModelRulesType, TQueryCb } from './interface';
+export { ImageTokens } from './ImageTokens';
+export type { IImageModelState } from './ImageTokens';
+export { SoundTokens } from './SoundTokens';
+export type { ISoundModelState } from './SoundTokens';
+export { UsersData } from './UsersData';
+export type { IUserDataModelState, TDataType, TMetaType } from './UsersData';

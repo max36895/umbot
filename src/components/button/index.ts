@@ -1,7 +1,9 @@
 /**
  * Компоненты, необходимые для работы с кнопками.
  */
-export * from './interfaces/IButton';
+export type { IButton, IButtonOptions, TButton } from './interfaces/IButton';
 
-export * from './Button';
-export * from './Buttons';
+export { getButton, getLinkButton } from './Button';
+export type { IButtonType, TBtnPayload } from './Button';
+export { Buttons } from './Buttons';
+export type { TButtonPayload } from './Buttons';

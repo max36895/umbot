@@ -1,0 +1,30 @@
+{
+    "meta": {
+        "locale": "ru-RU",
+        "timezone": "Europe/Moscow",
+        "client_id": "MailRu-VC/1.20.1",
+        "interfaces": {}
+    },
+    "request": {
+        "command": "",
+        "original_utterance": "ping",
+        "nlu": {
+            "tokens": ["ping"],
+            "entities": [],
+            "intents": {}
+        },
+        "type": "SimpleUtterance"
+    },
+    "session": {
+        "message_id": 1,
+        "session_id": "test-ping-session",
+        "skill_id": "a1b2c3d4-e5f6-0718-293a-b4c5d6e7f809",
+        "application": {
+            "application_id": "marusia-app-id-424242",
+            "application_type": "mobile"
+        },
+        "new": false,
+        "user_id": "marusia-user-id-424242"
+    },
+    "version": "1.0"
+}

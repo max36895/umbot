@@ -192,24 +192,22 @@ function parseCidr(cidr: string): { version: 4 | 6; value: bigint; prefix: numbe
     return { version: parsed.version, value: parsed.value & mask, prefix };
 }
 
-function ipInCidr(ip: string, cidr: string): boolean {
-    const cidrParsed = parseCidr(cidr);
-    const ipParsed = parseIp(ip);
-    if (!cidrParsed || !ipParsed) {
-        return false;
-    }
-    // Сравниваем адреса только одной версии: IPv6-клиент под правило IPv4
-    // не попадает (и наоборот). Для фильтрации IPv6-трафика добавляйте
-    // IPv6-правила в whitelist/blacklist.
-    if (cidrParsed.version !== ipParsed.version) {
-        return false;
-    }
-    const maxPrefix = cidrParsed.version === 4 ? 32 : 128;
-    const mask =
-        cidrParsed.prefix === 0
-            ? 0n
-            : ((1n << BigInt(cidrParsed.prefix)) - 1n) << BigInt(maxPrefix - cidrParsed.prefix);
-    return (ipParsed.value & mask) === cidrParsed.value;
+/**
+ * Правило фильтра, разобранное один раз при создании middleware: маска
+ * предвычислена, чтобы на каждый запрос не пересобирать CIDR-правила
+ * (парсинг BigInt-маски на запрос стоил больше самого запроса).
+ */
+interface IParsedRule {
+    version: 4 | 6;
+    value: bigint;
+    mask: bigint;
+}
+
+/** Проверяет разобранный IP по предпарсенным правилам: только совпадающая версия адреса. */
+function ipInRules(ip: IParsedIp, rules: IParsedRule[]): boolean {
+    return rules.some(
+        (rule) => rule.version === ip.version && (ip.value & rule.mask) === rule.value,
+    );
 }
 
 /**
@@ -255,6 +253,28 @@ export function ipFilter(
     // на инстанс middleware — иначе консольные приложения замусорят лог.
     let warnedNoIp = false;
 
+    // Правила разбираются один раз на фабрике, а не на каждый запрос
+    const toRules = (list: string[]): IParsedRule[] => {
+        const rules: IParsedRule[] = [];
+        for (const cidr of list) {
+            const parsed = parseCidr(cidr);
+            if (!parsed) {
+                continue;
+            }
+            const maxPrefix = parsed.version === 4 ? 32 : 128;
+            const mask =
+                parsed.prefix === 0
+                    ? 0n
+                    : ((1n << BigInt(parsed.prefix)) - 1n) << BigInt(maxPrefix - parsed.prefix);
+            rules.push({ version: parsed.version, value: parsed.value & mask, mask });
+        }
+        return rules;
+    };
+    // Признак «whitelist настроен» отделяём от «есть валидные правила»: если все
+    // записи не прошли парсинг, фильтр обязан блокировать всех (fail-closed).
+    const whitelistRules = whitelist && whitelist.length ? toRules(whitelist) : null;
+    const blacklistRules = blacklist ? toRules(blacklist) : null;
+
     return async (ctx: BotController, next: MiddlewareNext): Promise<void> => {
         // IP клиента заполняется фреймворком в webhookHandle из сокета HTTP-запроса.
         // requestObject здесь не подходит — это распарсенное JSON-тело платформы.
@@ -291,8 +311,18 @@ export function ipFilter(
                 : remoteIp;
 
         // Если задан whitelist — должен быть match
-        if (whitelist && whitelist.length) {
-            const matched = whitelist.some((cidr) => ipInCidr(ip, cidr));
+        if (whitelistRules) {
+            // Все записи whitelist невалидны: молча пропустить значило бы открыть
+            // доступ каждому IP из-за опечатки в конфиге — блокируем всех.
+            if (!whitelistRules.length) {
+                ctx.appContext.logWarn(
+                    'ipFilter: whitelist задан, но не содержит валидных CIDR — все запросы блокированы.',
+                );
+                ctx.text = deniedText;
+                return;
+            }
+            const ipParsed = parseIp(ip);
+            const matched = ipParsed !== null && ipInRules(ipParsed, whitelistRules);
             if (!matched) {
                 ctx.appContext.logWarn(`ipFilter: блокирован запрос с небелого IP=${ip}`);
                 ctx.text = deniedText;
@@ -303,9 +333,9 @@ export function ipFilter(
         }
 
         // Если задан blacklist — должен НЕ быть match
-        if (blacklist && blacklist.length) {
-            const matched = blacklist.some((cidr) => ipInCidr(ip, cidr));
-            if (matched) {
+        if (blacklistRules && blacklistRules.length) {
+            const ipParsed = parseIp(ip);
+            if (ipParsed !== null && ipInRules(ipParsed, blacklistRules)) {
                 ctx.appContext.logWarn(`ipFilter: блокирован запрос с чёрного IP=${ip}`);
                 ctx.text = deniedText;
                 return;

@@ -659,6 +659,76 @@ describe('flowGenerator', () => {
             expect(envFile).toContain('HTTP_TOKEN=b-888');
         });
 
+        it('секрет после # во фрагменте URL тоже переносится в .env', () => {
+            const code = generateHttp('secret_fragment', {
+                url: 'https://api.example.com/v1?units=metric#api_key=frag-555',
+            });
+            expect(code).not.toContain('frag-555');
+            expect(code).toContain("#api_key=${env('HTTP_API_KEY')}");
+            expect(readGenerated('secret_fragment', '.env')).toContain('HTTP_API_KEY=frag-555');
+        });
+
+        it('секрет во фрагменте URL без query тоже переносится (не только при наличии ?)', () => {
+            const code = generateHttp('secret_fragment_only', {
+                url: 'https://api.example.com/hooks#access_token=frag-777',
+            });
+            expect(code).not.toContain('frag-777');
+            // Полный URL сохраняется: схема, хост и путь не выбрасываются при отсутствии query
+            expect(code).toContain(
+                "fetchWithTimeout(`https://api.example.com/hooks#access_token=${env('HTTP_ACCESS_TOKEN')}`",
+            );
+            expect(readGenerated('secret_fragment_only', '.env')).toContain(
+                'HTTP_ACCESS_TOKEN=frag-777',
+            );
+        });
+
+        it('validate не печатает секрет из фрагмента URL без query', () => {
+            const jsonPath = path.join(JSON_DIR, 'ssrf_frag.json');
+            fs.writeFileSync(
+                jsonPath,
+                JSON.stringify(httpDoc([{ url: 'https://{{user.host}}/hooks#api_key=SEC-999' }])),
+            );
+            const message = validateFlowSchema(jsonPath).join('\n');
+            expect(message).toContain('адресе сервера');
+            expect(message).not.toContain('SEC-999');
+        });
+
+        it('чистая рантайм-подстановка с секретным именем не даёт ложного предупреждения', () => {
+            const code = generateHttp('secret_ref_only', {
+                headers: { 'X-Session-Token': '{{user.jwt}}' },
+            });
+            expect(code).toContain("${ctrl.userData['user.jwt'] ?? ''}");
+            expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('открытым текстом'))).toBe(
+                false,
+            );
+        });
+
+        it('секретное значение с {{var}} не выносится (сломало бы подстановку), но предупреждает', () => {
+            const code = generateHttp('secret_with_ref', {
+                headers: { 'X-Api-Key': 'prefix-{{city}}-suffix' },
+            });
+            // Значение остаётся в коде — иначе подстановка данных пользователя в .env фиксировалась бы литералом
+            expect(code).toContain("prefix-${ctrl.userData.city ?? ''}-suffix");
+            expect(readGenerated('secret_with_ref', '.env')).not.toContain('prefix-');
+            expect(
+                warnSpy.mock.calls.some(
+                    (c) =>
+                        String(c[0]).includes('X-Api-Key') &&
+                        String(c[0]).includes('открытым текстом'),
+                ),
+            ).toBe(true);
+        });
+
+        it('готовая env-ссылка в значении секрета не даёт ложного предупреждения', () => {
+            const code = generateHttp('secret_env_ref', {
+                headers: { 'X-Api-Key': '{{env.HTTP_MANUAL}}' },
+            });
+            expect(code).toContain("env('HTTP_MANUAL')");
+            expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('открытым текстом'))).toBe(
+                false,
+            );
+        });
+
         it('одинаковый секрет — одна переменная, разные — с суффиксом', () => {
             const code = writeJsonAndGenerate(
                 'secret_dedup',
@@ -2424,6 +2494,81 @@ describe('flowGenerator', () => {
             });
             const errors = validateFlowSchema(jsonPath);
             expect(errors.some((e) => e.includes('`id`'))).toBe(true);
+        });
+
+        it('флагует нетипизированные response.buttons и response.card.images (без краша генерации)', () => {
+            const jsonPath = writeFlowJson('bad_response_fields', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 't',
+                        slots: ['t'],
+                        response: { text: 'hi', buttons: 'abc', card: { images: [null] } },
+                    },
+                ],
+                edges: [],
+            });
+            const errors = validateFlowSchema(jsonPath).join('\n');
+            expect(errors).toContain('`response.buttons`');
+            expect(errors).toContain('`response.card.images`');
+        });
+
+        it('флагует подстановку {{__proto__}} вместо генерации сломанного кода', () => {
+            const jsonPath = writeFlowJson('proto_subst', {
+                name: 'test',
+                nodes: [
+                    {
+                        type: 'command',
+                        id: 'c1',
+                        name: 't',
+                        slots: ['t'],
+                        response: { text: 'value: {{__proto__}}' },
+                    },
+                ],
+                edges: [],
+            });
+            const errors = validateFlowSchema(jsonPath).join('\n');
+            expect(errors).toContain('{{__proto__}}');
+            // Генерация блокируется ошибкой валидации, а не создаёт сломанный код
+            expect(() => generateFromFlow(jsonPath, path.join(TEST_DIR, 'proto_subst'))).toThrow(
+                /__proto__/,
+            );
+        });
+
+        it('цепочка из 50 000 исполняемых блоков: сообщение валидации вместо RangeError', () => {
+            const nodes = [];
+            const edges = [];
+            for (let i = 0; i < 50000; i++) {
+                nodes.push({ type: 'action', id: `a${i}`, actions: [] });
+                if (i > 0) {
+                    edges.push({ from: `a${i - 1}`, to: `a${i}`, type: 'next' });
+                }
+            }
+            const jsonPath = writeFlowJson('deep_chain', { name: 'test', nodes, edges });
+            expect(() => validateFlowSchema(jsonPath)).not.toThrow();
+        });
+
+        it('цикл в компоненте, посещённой не первым корнем DFS, тоже находится', () => {
+            // Регресс: break вместо continue на посещённом корне пропускал
+            // оставшиеся компоненты связности — цикл C↔D оставался незамеченным
+            const jsonPath = writeFlowJson('late_component_cycle', {
+                name: 'test',
+                nodes: [
+                    { type: 'action', id: 'a', actions: [] },
+                    { type: 'action', id: 'b', actions: [] },
+                    { type: 'action', id: 'c', actions: [] },
+                    { type: 'action', id: 'd', actions: [] },
+                ],
+                edges: [
+                    { from: 'a', to: 'b', type: 'next' },
+                    { from: 'c', to: 'd', type: 'next' },
+                    { from: 'd', to: 'c', type: 'next' },
+                ],
+            });
+            const errors = validateFlowSchema(jsonPath).join('\n');
+            expect(errors).toContain('цикл');
         });
 
         it('находит дублирующиеся id', () => {

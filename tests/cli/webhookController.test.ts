@@ -195,4 +195,58 @@ describe('umbot webhook', () => {
         ).rejects.toThrow('VK_SECRET_KEY');
         expect(fetchImpl).not.toHaveBeenCalled();
     });
+
+    it('прототипный ключ платформы не проходит как известная (own-check)', async () => {
+        const fetchImpl = jest.fn();
+        await expect(
+            setupWebhook({
+                platform: '__proto__',
+                url: 'https://bot.example.com/',
+                envPath,
+                fetchImpl,
+            }),
+        ).rejects.toThrow('Укажите платформу');
+        expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it('токен маскируется в ошибке от отказа платформы, а не только в сетевой', async () => {
+        fs.writeFileSync(envPath, `TELEGRAM_TOKEN=${TG_TOKEN}\n`);
+        const fetchImpl = jest
+            .fn()
+            .mockResolvedValue(jsonResponse({ ok: false, description: `bad token ${TG_TOKEN}` }));
+
+        await expect(
+            setupWebhook({
+                platform: 'telegram',
+                url: 'https://bot.example.com/',
+                envPath,
+                fetchImpl,
+            }),
+        ).rejects.toThrow(
+            expect.objectContaining({ message: expect.not.stringContaining(TG_TOKEN) }),
+        );
+    });
+
+    it('запись секрета в .env идёт с правами 0600 и предупреждает, если .env вне .gitignore', async () => {
+        fs.writeFileSync(envPath, `TELEGRAM_TOKEN=${TG_TOKEN}\n`);
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ ok: true, result: true }));
+        try {
+            await setupWebhook({
+                platform: 'telegram',
+                url: 'https://bot.example.com/',
+                envPath,
+                fetchImpl,
+            });
+            // .gitignore в песочнице нет — предупреждение обязательно
+            expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('.gitignore'))).toBe(true);
+            // Права проверяем только на POSIX: на Windows chmod игнорируется
+            if (process.platform !== 'win32') {
+                const mode = fs.statSync(envPath).mode & 0o777;
+                expect(mode).toBe(0o600);
+            }
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
 });

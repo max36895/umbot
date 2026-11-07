@@ -1,0 +1,17 @@
+{
+    "event": "conversation_started",
+    "timestamp": 1761724820000,
+    "chat_hostname": "SN-CHAT-01",
+    "message_token": 59876543210003,
+    "type": "open",
+    "context": "K7M2QX",
+    "user": {
+        "id": "uViber42424200000000000000000000==",
+        "name": "Иван Петров",
+        "avatar": "https://media-direct.cdn.viber.com/download_photo?dlid=abc",
+        "language": "ru",
+        "country": "RU",
+        "api_version": 10
+    },
+    "subscribed": false
+}

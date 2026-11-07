@@ -45,6 +45,10 @@
   (echo) and a NON-empty `text` (unlike Alisa). Cards: `BigImage {type, image_id:int}`,
   `ItemsList {type, items:[{image_id:int}]}`, `MiniApp`, `Link` — no ImageGallery, no titles/buttons.
   Buttons: only `title`/`url`/`payload` (payload is a JSON object).
+  `x-marusia-signature` is used by `MarusiaAdapter.isPlatformOnQuery` ONLY to detect the platform —
+  the exact signature algorithm is NOT verifiable offline (docs removed), so it is not checked.
+  Do NOT enable `signatureName` for Marusia: `tokens.marusia.token` is the MEDIA upload token,
+  not the webhook secret — HMAC over it would reject every real request.
 - **Alisa ButtonPressed** — the request has NO `command`/`original_utterance`, only `payload` and
   `nlu.tokens`; button `payload` in the response must be a JSON object (strings are wrapped into
   `{command}`). Health-check `ping` must be answered with a full valid response (`end_session` required).

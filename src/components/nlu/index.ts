@@ -52,5 +52,17 @@
  * }
  * ```
  */
-export * from './interfaces/INlu';
-export * from './Nlu';
+export type {
+    IBaseEntities,
+    IBaseNlu,
+    INlu,
+    INluDateTime,
+    INluFIO,
+    INluGeo,
+    INluIntent,
+    INluIntents,
+    INluResult,
+    INluSlot,
+    INluThisUser,
+} from './interfaces/INlu';
+export { Nlu } from './Nlu';

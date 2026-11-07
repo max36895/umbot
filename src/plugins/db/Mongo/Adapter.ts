@@ -49,9 +49,12 @@ export class MongoAdapter extends Base<IMongoDbInfo> {
     /**
      * Кэш лениво загруженного модуля mongodb.
      * Загружается только при реальном подключении, чтобы пользователи,
-     * которым Mongo не нужен, не обязаны были его устанавливать.
+     * которым Mongo не нужен, не устанавливали его.
      */
     #mongoModule: TMongoModule | null = null;
+
+    /** Общий промис идущего connect(): дедуп конкурентных вызовов. */
+    #connectInFlight: Promise<boolean> | null = null;
 
     /**
      * Лениво загружает модуль mongodb (один раз) и кэширует его.
@@ -213,6 +216,7 @@ export class MongoAdapter extends Base<IMongoDbInfo> {
      * Подключается к MongoDB.
      *
      * Поведение:
+     * - Конкурентные вызовы дедуплицируются: все waiter'ы ждут один общий промис.
      * - При неудачном connect() или «мёртвом» соединении создаёт новый MongoClient
      *   и выполняет до двух попыток подключения.
      * - Живучесть соединения проверяется ping-командой (`isConnectedWith`).
@@ -221,6 +225,27 @@ export class MongoAdapter extends Base<IMongoDbInfo> {
      * @returns `true` — подключение активно, `false` — ошибка подключения.
      */
     public async connect(): Promise<boolean> {
+        if (this.#connectInFlight) {
+            // Дедуп конкурентных вызовов: каждый waiter ждёт общий промис и получает
+            // его результат, лишний MongoClient не создаётся (проигравший клиент
+            // без этого оставался открытым навсегда — утечка сокетов).
+            return this.#connectInFlight;
+        }
+        const inFlight = this.#doConnect();
+        this.#connectInFlight = inFlight;
+        try {
+            return await inFlight;
+        } finally {
+            if (this.#connectInFlight === inFlight) {
+                this.#connectInFlight = null;
+            }
+        }
+    }
+
+    /**
+     * Тело connect() без дедупликации: один общий промис на все конкурентные вызовы.
+     */
+    async #doConnect(): Promise<boolean> {
         if (!this._appContext.appConfig.db) {
             this._saveLog(
                 'При подключении в базе данных произошли следующие ошибки: ["Отсутствуют данные для подключения!"]',
