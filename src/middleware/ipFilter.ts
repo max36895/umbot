@@ -270,7 +270,9 @@ export function ipFilter(
         }
         return rules;
     };
-    const whitelistRules = whitelist ? toRules(whitelist) : null;
+    // Признак «whitelist настроен» отделяём от «есть валидные правила»: если все
+    // записи не прошли парсинг, фильтр обязан блокировать всех (fail-closed).
+    const whitelistRules = whitelist && whitelist.length ? toRules(whitelist) : null;
     const blacklistRules = blacklist ? toRules(blacklist) : null;
 
     return async (ctx: BotController, next: MiddlewareNext): Promise<void> => {
@@ -309,7 +311,16 @@ export function ipFilter(
                 : remoteIp;
 
         // Если задан whitelist — должен быть match
-        if (whitelistRules && whitelistRules.length) {
+        if (whitelistRules) {
+            // Все записи whitelist невалидны: молча пропустить значило бы открыть
+            // доступ каждому IP из-за опечатки в конфиге — блокируем всех.
+            if (!whitelistRules.length) {
+                ctx.appContext.logWarn(
+                    'ipFilter: whitelist задан, но не содержит валидных CIDR — все запросы блокированы.',
+                );
+                ctx.text = deniedText;
+                return;
+            }
             const ipParsed = parseIp(ip);
             const matched = ipParsed !== null && ipInRules(ipParsed, whitelistRules);
             if (!matched) {

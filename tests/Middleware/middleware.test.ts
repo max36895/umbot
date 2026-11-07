@@ -187,6 +187,17 @@ describe('middleware', () => {
             expect(ctx.text).toBe('No');
         });
 
+        it('whitelist из одних невалидных CIDR блокирует всех (fail-closed)', async () => {
+            const ctx = makeCtxWithIp('8.8.8.8');
+            const next = makeNext();
+            await ipFilter({ whitelist: ['192.0.2.0/33'], deniedText: 'No' })(
+                ctx as never,
+                next.fn,
+            );
+            expect(next.called).toBe(false);
+            expect(ctx.text).toBe('No');
+        });
+
         it('blacklist: блокирует IP из списка', async () => {
             const ctx = makeCtxWithIp('1.2.3.4');
             const next = makeNext();

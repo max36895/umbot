@@ -783,7 +783,9 @@ function extractHttpSecrets(doc) {
                             : pair;
                     })
                     .join('&');
-            let newUrl = action.url.slice(0, queryStart + 1);
+            // Префикс до query или до фрагмента: при отсутствии query брать
+            // slice(0, 0) значило бы выбросить схему, хост и путь из URL.
+            let newUrl = action.url.slice(0, queryStart !== -1 ? queryStart + 1 : hashIndex);
             if (queryStart !== -1) {
                 const query = scanUrlPairs(
                     action.url.slice(queryStart + 1, queryEnd),

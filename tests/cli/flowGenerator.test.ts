@@ -673,7 +673,10 @@ describe('flowGenerator', () => {
                 url: 'https://api.example.com/hooks#access_token=frag-777',
             });
             expect(code).not.toContain('frag-777');
-            expect(code).toContain("#access_token=${env('HTTP_ACCESS_TOKEN')}");
+            // Полный URL сохраняется: схема, хост и путь не выбрасываются при отсутствии query
+            expect(code).toContain(
+                "fetchWithTimeout(`https://api.example.com/hooks#access_token=${env('HTTP_ACCESS_TOKEN')}`",
+            );
             expect(readGenerated('secret_fragment_only', '.env')).toContain(
                 'HTTP_ACCESS_TOKEN=frag-777',
             );

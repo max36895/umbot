@@ -155,6 +155,10 @@ generateFromFlow(jsonPath, outputPath)
   `src/index.ts` (и URL с ключом — в комментарий действия). Теперь они уходят в `.env` (`extractHttpSecrets`).
 - **URL http_request без подстановок** — `{{var}}` в адресе вставлялся литералом. Теперь подставляется с
   `encodeURIComponent`, а переменная в адресе сервера отклоняется `validate`.
+- **URL с фрагментом без query** — для адреса вида `https://host/path#frag` (есть `#`, нет `?`) переписывание
+  секретов вычисляло префикс как `slice(0, queryStart + 1)` = `slice(0, 0)` и выбрасывало схему, хост и путь —
+  в генерат уходил относительный `#frag`, запрос падал. Префикс при отсутствии query берётся до `hashIndex`.
+  Тест «секрет во фрагменте URL без query» ассертит полный URL в `fetchWithTimeout`.
 - **serverless.yml** — хранит ссылки вида `${env:TOKEN_NAME}`, а не значения токенов.
 - **outputPath** — непустая папка защищена от случайной перезаписи без `force`.
 - **Dockerfile** — builder устанавливает devDependencies перед `npm run build`.
