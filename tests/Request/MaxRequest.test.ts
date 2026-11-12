@@ -28,6 +28,7 @@ describe('MaxRequest', () => {
         max = new MaxRequest(appContext);
         (global.fetch as jest.Mock).mockClear();
         appContext.logError = jest.fn();
+        appContext.logWarn = jest.fn();
     });
 
     // === Базовый вызов call ===
@@ -317,17 +318,40 @@ describe('MaxRequest', () => {
         expect(body).toContain('"payload":{"buttons"');
     });
 
-    it('should acknowledge callback without inventing a replacement message', async () => {
+    it.each([null, {}, { attachments: [] }])(
+        'не отправляет пустой callback-ответ (params: %j)',
+        async (params) => {
+            await expect(max.answerCallback('callback-id', '', params)).resolves.toBeNull();
+
+            expect(global.fetch).not.toHaveBeenCalled();
+            expect(appContext.logWarn).toHaveBeenCalledWith(
+                expect.stringContaining('answerCallback'),
+            );
+        },
+    );
+
+    it.each([
+        { text: 'Готово', params: null, message: { text: 'Готово' } },
+        {
+            text: '',
+            params: {
+                attachments: [{ type: 'image' as const, payload: { token: 'image-token' } }],
+            },
+            message: { attachments: [{ type: 'image', payload: { token: 'image-token' } }] },
+        },
+    ])('отправляет непустой callback-ответ: %j', async ({ text, params, message }) => {
         (global.fetch as jest.Mock).mockResolvedValueOnce({
             ok: true,
             json: async () => ({ success: true }),
         });
 
-        await expect(max.answerCallback('callback-id', '')).resolves.toEqual({ success: true });
+        await expect(max.answerCallback('callback-id', text, params)).resolves.toEqual({
+            success: true,
+        });
 
         expect(global.fetch).toHaveBeenCalledWith(
             'https://platform-api2.max.ru/answers?callback_id=callback-id',
-            expect.objectContaining({ body: '{}' }),
+            expect.objectContaining({ body: JSON.stringify({ message }) }),
         );
     });
 
@@ -339,8 +363,8 @@ describe('MaxRequest', () => {
                 json: async () => ({ success: true }),
             });
 
-            const first = max.answerCallback('callback-1', '', null, 909_002);
-            const second = max.answerCallback('callback-2', '', null, 909_002);
+            const first = max.answerCallback('callback-1', 'Первый', null, 909_002);
+            const second = max.answerCallback('callback-2', 'Второй', null, 909_002);
             await first;
 
             expect(global.fetch).toHaveBeenCalledTimes(1);

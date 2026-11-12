@@ -1697,7 +1697,9 @@ bot.addCommand('фото', ['фото'], async (_, ctx) => {
 | `sendVideo`      | ✅       | —   | ✅  | — (warn + null) |
 | `answerCallback` | ✅       | ✅  | ✅  | — (warn + null) |
 
-- `answerCallback(text, showAlert?)` — уведомление на нажатие callback-кнопки (вне callback-запроса — warn и `null`).
+- `answerCallback(text, showAlert?)` — ответ на нажатие callback-кнопки (вне callback-запроса — warn и `null`).
+  Особенности MAX и обработка пустого ответа описаны в разделе «Callback-кнопки»
+  [platform-integration.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration).
 - `can(method)` — проверка поддержки метода платформой (у Viber возвращает `false`).
 - Своя платформа подключает фасад переопределением метода адаптера `createApi(controller)` — как, см.
   [platform-integration.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration), раздел «API платформы».

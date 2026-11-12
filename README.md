@@ -1,152 +1,124 @@
 # umbot
 
-`umbot` — это TypeScript-фреймворк для разработки голосовых навыков и чат-ботов. Он даёт единую бизнес-логику для всех
-платформ — но одинаково эффективен, даже если вы работаете только с одной.
-Поддерживаются: `Яндекс.Алиса`, `Сбер Салют (SmartApp)`, а также `Telegram`, `VK`, `MAX` и `Viber` из коробки.
-Для существующих навыков Маруси есть отдельный адаптер.
+**English** | [Русский](./README.ru.md)
 
-В отличие от большинства решений, требующих отдельной реализации под каждую платформу, `umbot` абстрагирует различия в
-форматах запросов и ответов, предоставляя разработчику единый, предсказуемый интерфейс. Это позволяет писать логику один
-раз — и запускать её везде.
+A TypeScript framework for chatbots and voice skills. Write your conversation logic once and connect it to
+Telegram, VK, MAX, Viber, Yandex Alice, or Sber Salute through adapters. You can also use it with a single platform
+to keep conversation logic separate from its API.
 
-Фреймворк следует [SemVer](https://semver.org/). Breaking changes возможны только в MAJOR-версиях.
-
-[![npm version](https://badge.fury.io/js/umbot.svg)](https://badge.fury.io/js/umbot)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm version](https://badge.fury.io/js/umbot.svg)](https://www.npmjs.com/package/umbot)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue)](https://www.typescriptlang.org/)
-[![Supported Platforms](https://img.shields.io/badge/Platforms-7+-green)](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration)
 
-**English:** [documentation in English](https://www.maxim-m.ru/docs/umbot/en/) (machine-translated from Russian).
+[English documentation](https://www.maxim-m.ru/docs/umbot/en/) ·
+[Examples](https://github.com/max36895/umbot/tree/main/examples) ·
+[Issues](https://github.com/max36895/umbot/issues)
 
----
+## Quick start
 
-## Почему `umbot`?
+Use **Node.js 22 or later** for the generated project. The framework itself supports Node.js 20.20.2 or later.
 
-> Больше не нужно писать несколько версий одного приложения.  
-> Больше не нужно разбираться в JSON-форматах Алисы, Сбера, Маруси, Telegram, MAX и т. д.  
-> Бизнес-логика — одна. Платформа — любая.
+Generate a TypeScript project with the CLI:
 
-**Ключевые преимущества:**
+```bash
+npx umbot create echo
+cd echo
+npm install
+```
 
-- Одна кодовая база для любой платформы. Хотите только Алису? Легко. Решите добавить Сбер Салют или Telegram — просто
-  добавьте нужный адаптер, логика остаётся.
-- В типичных сценариях (до 1 000 команд) полная обработка запроса внутри фреймворка, включая поиск и выполнение
-  команд, занимает **менее 30 мс даже в самом сложном случае (fallback)**; в большинстве случаев — единицы–десятки
-  миллисекунд. На бизнес-логику остаётся практически весь бюджет голосовых платформ: фреймворк пишет предупреждение
-  при обработке дольше 2000 мс и ошибку — дольше 2900 мс, практический ориентир — ~3 секунды (подробнее — в
-  [«Производительность и гарантии»](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/performance-and-guarantees)).
-- При первичной загрузке медиафайлов время ответа может вырасти на 200–1000 мс на файл — поэтому `umbot` рекомендует
-  заранее загружать необходимые ресурсы через класс `Preload`.
-- Безопасная обработка регулярных выражений с защитой от ReDoS из коробки
-- Встроенное состояние, кэширование медиа, кнопки, карточки — «из коробки»
-- TypeScript, CLI, автодополнение, развитое тестовое покрытие
-- Дополнительные утилиты для навигации и поиска текста, ускоряющие разработку.
+For a local Telegram bot, put your bot token in the generated `.env` file as `TELEGRAM_TOKEN`.
+Keep this file out of version control. Replace the generated `src/index.ts` with:
 
-> **Ключевая мысль:**
-> `umbot` — это не «надстройка для мультиплатформенности», а базовый слой, который делает разработку под любую платформу
-> (даже одну) быстрее, чище и готовой к масштабированию.
+```ts
+import { Bot } from 'umbot';
+import { TelegramAdapter } from 'umbot/plugins';
 
-`umbot` предоставляет унифицированный интерфейс для работы с ответами, но при этом учитывает специфику каждой платформы:
+const bot = new Bot()
+    .setAppConfig({ env: './.env' })
+    .use(new TelegramAdapter(process.env.TELEGRAM_TOKEN));
 
-- Голосовые платформы (Алиса, Сбер Салют, Маруся) — всё, что нужно типичному навыку: текст и TTS, кнопки, карточки,
-  звуки, состояние сессии и пользователя, авторизация. Отдельные директивы Алисы (запрос геолокации, аудиоплеер,
-  события аналитики) фреймворк пока не абстрагирует — их можно добавить в своём наследнике `AlisaAdapter`.
-- Чат-боты (Telegram, VK, Viber, MAX и др.) — поддерживается только необходимый и востребованный набор функций (
-  карточки, кнопки, аудиосообщения). Специфические элементы вроде опросов или кастомных интерфейсов мессенджеров
-  исключены, так как они не имеют аналогов в голосовых платформах и редко нужны в кроссплатформенной логике.
+bot.addCommand('hello', ['/start', 'hello'], (_, ctx) => {
+    ctx.text = 'Hello! Send me a message and I will repeat it.';
+});
 
-Этот подход гарантирует, что ваш навык/бот будет вести себя предсказуемо и не потребует специальных обходных путей при
-переходе между платформами.
+bot.addCommand('*', [], (_, ctx) => {
+    ctx.text = `You said: ${ctx.userCommand}`;
+});
 
-### Чем `umbot` отличается от других решений?
+bot.startPolling().catch(() => {
+    console.error('Could not start polling. Check the bot configuration and logs.');
+    process.exitCode = 1;
+});
+```
 
-Большинство фреймворков (например, `telegraf`, `alice-sdk` и т.д.) ориентированы **только на одну платформу**. Чтобы
-запустить приложение и в Алисе, и в Telegram, приходится:
+Build and run:
 
-- писать **две (или больше) версии логики**,
-- поддерживать **разные форматы ответов**,
-- дублировать **обработку состояний, кнопок, медиа**
-- знать API каждой платформы.
+```bash
+npm run build
+npm start
+```
 
-`umbot` решает эту проблему:  
-**одна бизнес-логика** для всех платформ,  
-**единый API** для кнопок, карточек, голоса и текста,  
-**автоматическая адаптация** под формат каждой платформы "под капотом".
+Send `/start` to your bot in Telegram. Long polling lets you try it locally without HTTPS or a tunnel.
+If the bot already has a webhook, remove it before switching to polling.
 
-Это особенно ценно, если вы уже поддерживаете навык на Алисе и хотите быстро выйти в Сбер Салют, Telegram, MAX или
-VK — без переписывания или существенных доработок кода.
+To add umbot to an existing project:
 
-Даже если вы пока разрабатываете только под одну платформу, `umbot` избавляет от boilerplate, даёт единый API для работы
-с состоянием, кнопками и медиа, а главное — не мешает, когда придёт время добавлять новые каналы.
+```bash
+npm install umbot
+```
 
-## Для кого `umbot`?
+See the [getting started guide](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/getting-started)
+for controller-based applications and webhook setup.
 
-`umbot` — это не просто обёртка под несколько платформ. Это архитектурное решение для проектов, где диалог инициирует
-пользователь. Оно одинаково ценно как для одной платформы, так и для десятка.
+## Why umbot?
 
-Вы будете использовать `umbot`, если:
+The framework separates your conversation from platform request and response formats:
 
-- **Вы разрабатываете под одну платформу (Алиса, Сбер Салют, Telegram, VK и др.).**
-  Вы получите чистое разделение логики и транспорта, избавитесь от дублирования кода внутри проекта и заложите
-  архитектуру, которая безболезненно масштабируется, когда потребуется вторая платформа. Инструмент не усложнит — он
-  упорядочит.
-- **Вы поддерживаете несколько платформ одновременно.**
-  Вы перестанете синхронизировать изменения вручную. Новая функциональность появляется сразу везде, а поддержка разных
-  API сводится к единому интерфейсу.
-- **Вы проектируете систему с прицелом на будущее.**
-  Вы не хотите переписывать ядро, когда бизнес попросит добавить Telegram, корпоративный портал или голосового
-  ассистента. `umbot` делает расширение предсказуемым.
-- **Вы работаете в корпоративной среде с внутренними мессенджерами.**
-  Вы унифицируете разработку чат-ботов, упрощаете онбординг и переиспользование компонентов между командами.
-- **Вы цените чистоту кода и не терпите копипасту.**
-  Вы устали переносить обработчики из проекта в проект или мучительно адаптировать бизнес-логику под каждый новый API.
-  `umbot` позволяет писать ядро один раз и забыть о boilerplate.
+- **Shared conversation logic.** Reuse command handlers across connected platforms.
+- **Common response components.** Work with text, buttons, cards, images, audio, and TTS through one interface.
+- **State and storage.** Use session and user data, media token caching, and database adapters.
+- **TypeScript tooling.** Typed APIs, a project generator, adapter scaffolding, and console testing with `BotTest`.
+- **Extensible adapters and middleware.** Connect another platform or database without changing the core.
+- **Regular expression validation.** Built-in protection against unsafe command patterns.
 
----
+You can keep small bots in command callbacks or use a `BotController` class for larger conversations.
+Adding an adapter connects another platform; platform-specific features can still require separate handling.
 
-## Поддерживаемые платформы
+## Supported platforms
 
-| Платформа          | Идентификатор | Что поддерживается                                                                                                    |
-| :----------------- | :------------ | :-------------------------------------------------------------------------------------------------------------------- |
-| Яндекс.Алиса       | `alisa`       | Протокол навыков: текст, TTS, кнопки, карточки, звуки, состояние, авторизация                                         |
-| Сбер Салют         | `smart_app`   | Протокол SmartApp API: текст, озвучка, кнопки, карточки, состояние                                                    |
-| Telegram           | `telegram`    | Базовый набор: текст, кнопки (inline и reply), фото и медиагруппы, голос, callback, inline-запросы, события сообщений |
-| VK                 | `vk`          | Базовый набор: текст, клавиатура, карусель, голос, callback-кнопки                                                    |
-| MAX                | `max_app`     | Базовый набор: текст, inline-клавиатура, изображения, аудио, callback, deep-link `bot_started`                        |
-| Viber              | `viber`       | Базовый набор: текст, клавиатура, rich media. Боты Viber с 2024 года создаются только на коммерческих условиях        |
-| Маруся             | `marusia`     | Протокол навыков. **VK закрыла создание новых навыков (20.12.2024)** — только для существующих                        |
-| **Ваша платформа** | `...`         | За счет адаптеров                                                                                                     |
+| Platform      | Adapter ID  | Shared features                                                                                             |
+| :------------ | :---------- | :---------------------------------------------------------------------------------------------------------- |
+| Telegram      | `telegram`  | Text, inline and reply keyboards, photos and media groups, voice, callbacks, inline queries, message events |
+| VK            | `vk`        | Text, keyboards, carousels, voice, callback buttons                                                         |
+| MAX           | `max_app`   | Text, inline keyboards, images, audio, callbacks, `bot_started` deep links                                  |
+| Viber         | `viber`     | Text, keyboards, rich media; new bots require commercial terms                                              |
+| Yandex Alice  | `alisa`     | Skill protocol: text, TTS, buttons, cards, sounds, state, authorization                                     |
+| Sber Salute   | `smart_app` | SmartApp protocol: text, speech, buttons, cards, state                                                      |
+| Marusia       | `marusia`   | Skill protocol for existing skills; registration of new skills is closed                                    |
+| Your platform | Custom      | Implement a platform adapter                                                                                |
 
-Для мессенджеров «базовый набор» — это то, что имеет смысл в общей логике для всех платформ. Специфичные возможности
-(опросы, платежи, редактирование сообщений и т. п.) фреймворк не абстрагирует, но они доступны напрямую: через
-`controller.api` и API-клиенты платформ (`TelegramRequest`, `VkRequest`, `MaxRequest`, `ViberRequest` из
-`umbot/plugins`, у каждого есть универсальный метод `call(method)`).
+Telegram, VK, and MAX support both webhooks and long polling. The other built-in adapters use webhooks.
+For webhook applications, use `bot.start()` instead of `bot.startPolling()`.
+You can test conversation logic offline with `BotTest`.
 
-Платформы подключаются **через вебхук**, а Telegram, VK и MAX — ещё и через **long polling**:
-`bot.startPolling()` вместо `bot.start()`, и для проверки бота на локальной машине не нужны ни HTTPS, ни туннель.
-Алисе, Марусе, SmartApp и Viber нужен вебхук (для локальной проверки — туннель вроде ngrok). Без сети логику можно
-проверить в консоли через `BotTest`. Проверку подписи вебхука Telegram и MAX включает одна команда:
-`npx umbot webhook <telegram|max> <https-url>`, а `npx umbot doctor` проверяет токены, `.env` и состояние
-вебхуков.
+**The shared API covers common conversation features.** Polls, payments, message editing, and other platform-specific
+operations are available through `controller.api` and platform API clients such as `TelegramRequest`, `VkRequest`,
+`MaxRequest`, and `ViberRequest` from `umbot/plugins`. Each client also provides a generic `call(method)` method.
+Some voice-platform directives require extending the relevant adapter.
 
-> **Нужна своя платформа?**  
-> Создайте каркас адаптера командой `npx umbot add platform <Name>` — он сразу компилируется и проходит свой тест,
-> а места под API платформы отмечены `TODO`. Так же создаются адаптер БД (`add db`) и middleware (`add middleware`).  
-> Это позволяет интегрировать `umbot` в любую внутреннюю систему, корпоративный мессенджер или поддержать любую другую
-> платформу, например WhatsApp или WeChat.
+See [platform integration](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/platform-integration)
+for supported events, configuration, and limitations.
 
----
+## Ecosystem
 
-## 🧩 Экосистема
+Additional npm packages connect through `bot.use()`. Install database drivers and additional platform dependencies
+only when you need them.
 
-Отдельные npm-пакеты, которые подключаются одной строкой через `bot.use()`. Ядро остаётся лёгким: драйверы СУБД и
-API сторонних платформ ставятся только тем, кому они нужны.
-
-| Пакет                                                                    | Назначение                                                                                            |
-| :----------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
-| [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter)     | Реляционные БД через Knex.js: PostgreSQL, MySQL/MariaDB, SQLite, MSSQL                                |
-| [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter)       | YDB (Yandex Database): хранилище для навыков и ботов в Yandex Cloud Functions, таблицы создаются сами |
-| [umbot-wechat-adapter](https://github.com/max36895/umbot-wechat-adapter) | WeChat Official Account (Weixin)                                                                      |
+| Package                                                                  | Purpose                                                                        |
+| :----------------------------------------------------------------------- | :----------------------------------------------------------------------------- |
+| [umbot-knex-adapter](https://github.com/max36895/umbot-knex-adapter)     | Relational databases through Knex.js: PostgreSQL, MySQL/MariaDB, SQLite, MSSQL |
+| [umbot-ydb-adapter](https://github.com/max36895/umbot-ydb-adapter)       | Yandex Database storage for skills and bots, including Yandex Cloud Functions  |
+| [umbot-wechat-adapter](https://github.com/max36895/umbot-wechat-adapter) | WeChat Official Account (Weixin)                                               |
 
 ```bash
 npm install umbot umbot-knex-adapter knex pg
@@ -162,156 +134,68 @@ const bot = new Bot()
     .use(new KnexAdapter({ host: 'localhost', database: 'bot_db', options: { client: 'pg' } }));
 ```
 
-Хотите написать свой адаптер? Технические задания с контрактами и чек-листами готовности:
+To build your own extension, see the
+[platform adapter contract](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/adapter/platformAdapter)
+and [database adapter contract](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/adapter/external-db-adapter-spec).
 
-- [Адаптер платформы](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/platformAdapter)
-- [Адаптер базы данных](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/adapter/external-db-adapter-spec)
+## Developer tools
 
----
-
-## 🚀 Быстрый старт
-
-Установите фреймворк:
+The CLI generates projects and scaffolds extensions:
 
 ```bash
-npm install umbot
+npx umbot add platform MyPlatform
+npx umbot add db MyDatabase
+npx umbot add middleware myMiddleware
 ```
 
-Создайте и запустите проект за пять команд:
+Generated platform adapters compile and include a test; implementing the actual platform API is left to you.
+The CLI also provides `doctor` for token and webhook diagnostics and `webhook` for Telegram and MAX setup.
+See the [CLI reference](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/cli/README).
+
+### Visual editor
+
+[Umbot Flow](https://flow.maxim-m.ru) lets you design a conversation on a canvas, export `flow.json`, and generate
+a TypeScript project:
 
 ```bash
-npx umbot create echo
-cd echo
-npm i
-npm run build
-npm start
+npx umbot create from-flow flow.json --output ./my-bot
 ```
 
-Поправьте файлы нужным вам образом.
-Например:
+See the [flow format](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/json-format) for node types and generation rules.
 
-```ts
-// index.ts
-import { Bot } from 'umbot';
-import { fullPlatforms } from 'umbot/plugins';
-import { EchoController } from './controller/EchoController';
+## Performance
 
-const bot = new Bot()
-    .use(fullPlatforms)
-    .setAppConfig({ json: './data', isLocalStorage: true })
-    .initBotController(EchoController);
+Benchmarks and their methodology are documented in
+[BENCHMARKS](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/BENCHMARKS) and
+[performance and guarantees](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/performance-and-guarantees).
+The core benchmarks exclude network calls and database operations. Real application throughput depends on those
+services and your own handlers; benchmark results are not a throughput guarantee for a deployed bot.
 
-bot.start('localhost', 3000);
-```
+## Documentation
 
-```ts
-// EchoController.ts
-import { BotController, WELCOME_INTENT_NAME } from 'umbot';
+The English guides are machine-translated from Russian. Generated API pages still contain Russian JSDoc comments.
+The English README is maintained separately.
 
-export class EchoController extends BotController {
-    public action(intentName: string | null): void {
-        if (intentName === WELCOME_INTENT_NAME) {
-            this.text = 'Привет! Я повторяю за вами.';
-        } else {
-            this.text = `Вы сказали: ${this.userCommand}`;
-        }
-    }
-}
-```
+- [Getting started](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/getting-started)
+- [Guide](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/GUIDE)
+- [Recipes](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/recipes)
+- [API reference](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/api-reference)
+- [Configuration and security](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/configuration)
+- [HTTP client](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/http-client)
+- [Middleware](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/middleware)
+- [Testing](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/testing)
+- [Deployment](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/deployment)
+- [FAQ](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/FAQ)
+- [Migration from 2.x to 3.x](https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/migration-2x-to-3x)
+- [Changelog (Russian)](https://github.com/max36895/umbot/blob/main/CHANGELOG.md)
 
-Протестируйте приложение, и в случае необходимости опубликуйте его.
+The [Russian documentation](https://www.maxim-m.ru/docs/umbot/) is also available.
 
-👉 [Подробное руководство по запуску](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/getting-started)
+## License and support
 
-## Производительность
+[MIT](./LICENSE).
 
-В стресс-тестах на стандартном оборудовании (AMD Ryzen 5 5600G, Windows 10) фреймворк при 1003 командах показывает:
-
-- **Пропускная способность (реалистичный сценарий)** — **68 000 RPS**  
-  (эмуляция полного цикла: входящий запрос → нормализация → логика → ответ)
-- **Последовательная пропускная способность (ядро)** — **~80 000 RPS**  
-  (максимальная скорость одного потока)
-- **Под непрерывным потоком** (1000 команд, 200 запросов in-flight) — **580 000–760 000 RPS**, в 28–3 000 раз
-  больше, чем у grammy, telegraf, vk-io, viber-bot, max-bot-api и yandex-dialogs-sdk в том же стенде
-  ([BENCHMARKS](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/BENCHMARKS))
-
-**Важно:**
-
-- Тесты проводились без сетевых вызовов и операций с базами данных, поэтому цифры показывают потенциал ядра фреймворка.
-- В реальном проекте итоговый RPS будет определяться внешними факторами (сеть, БД, логика приложения).
-- На реальном сервере (2 ядра / 4 ГБ RAM) с фоновой нагрузкой фреймворк показывает **16 000+ RPS** — подробнее
-  в [Производительность и гарантии](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/performance-and-guarantees).
-
-Длительное тестирование (48 часов) не выявило утечек памяти или снижения производительности: средняя пропускная
-способность в последовательном сценарии осталась на уровне **~67 000 RPS**, а потребление памяти стабильно.
-
-## 📚 Документация
-
-Подробная документация доступна в следующих разделах:
-
-- [Быстрый старт](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/getting-started) - Подробное
-  описание, для быстрого старта проекта
-- [Подробная инструкция по созданию приложений](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/GUIDE)
-- [Рецепты](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/recipes) - Готовые решения типовых задач
-- [API Reference](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/api-reference) - Подробное
-  описание всех классов, методов и интерфейсов
-- [Поддерживаемые платформы](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-integration) -
-  Руководство по интеграции с различными платформами
-- [Конфигурация и безопасность](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/configuration)
-- [Кастомизация HTTP-клиента](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/http-client)
-- [Производительность и гарантии](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/performance-and-guarantees)
-- [Тестирование](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/testing)
-- [Развертывание](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/deployment)
-- [Middleware](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/middleware)
-- [FAQ](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/FAQ)
-
-### Полезные ссылки
-
-- 📚 [Официальная документация](https://www.maxim-m.ru/docs/umbot/)
-- 📢 [Telegram канал](https://t.me/joinchat/AAAAAFM8AcuniLTwBLuNsw)
-- 💬 [Telegram группа](https://t.me/mm_universal_bot)
-- 📦 [npm package](https://www.npmjs.com/package/umbot)
-- [Создание навыка "Я никогда не"](https://www.maxim-m.ru/article/sozdanie-navyika-ya-nikogda-ne)
-- [Примеры проектов](https://github.com/max36895/umbot/tree/main/examples)
-- [Список изменений](https://github.com/max36895/umbot/blob/main/CHANGELOG.md)
-- [Миграция с umbot 2.x на 3.0](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/migration-2x-to-3x)
-
-## 🛠 Инструменты разработчика
-
-- [CLI](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/cli/README) команды
-
-### Визуальный редактор (Umbot Flow)
-
-[Umbot Flow](https://flow.maxim-m.ru) — визуальный редактор для создания ботов на фреймворке umbot. Собирайте логику на
-холсте, экспортируйте JSON-конфигурацию и генерируйте TypeScript-проект через CLI.
-
-**Цепочка:**
-
-```
-Визуальный редактор → JSON-конфигурация → npx umbot create from-flow → TypeScript-проект → Ваш сервер
-```
-
-**Быстрый старт с редактором:**
-
-1. Откройте [редактор](https://flow.maxim-m.ru) в браузере
-2. Соберите логику бота на холсте
-3. Экспортируйте JSON-конфигурацию → скачайте `flow.json`
-4. Выполните:
-    ```bash
-    npx umbot create from-flow flow.json --output ./my-bot
-    ```
-5. Готовый проект в папке `my-bot`
-
-[Описание JSON-формата](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/json-format) — полная
-спецификация всех типов узлов, связей и правил генерации кода.
-
-## 📝 Лицензия
-
-MIT License. См. [LICENSE](./LICENSE) для деталей.
-
-## 🤝 Поддержка
-
-Если у вас есть вопросы или предложения:
-
-- 📧 Email: maximco36895@yandex.ru
-- 🐛 [Issues на GitHub](https://github.com/max36895/umbot/issues)
+Questions and suggestions: [GitHub Issues](https://github.com/max36895/umbot/issues) or
+[maximco36895@yandex.ru](mailto:maximco36895@yandex.ru).
+The [Telegram group](https://t.me/mm_universal_bot) and
+[channel](https://t.me/joinchat/AAAAAFM8AcuniLTwBLuNsw) are primarily in Russian.

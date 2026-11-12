@@ -356,15 +356,48 @@ describe('Контракты платформ', () => {
             return { adapter, controller, answerCallback, messagesSend };
         }
 
-        it('подтверждает нажатие пустым ответом и отправляет ответ новым сообщением', async () => {
-            // Регресс: ответ уходил в POST /answers с message, а MAX этим заменяет
-            // сообщение с кнопкой — меню затиралось (в Telegram/VK — новое сообщение).
+        it('отправляет ответ новым сообщением без вызова /answers', async () => {
             const { adapter, controller, answerCallback, messagesSend } = setup();
             await adapter.setQueryData(callbackQuery, controller);
             await adapter.getContent(controller);
 
-            expect(answerCallback).toHaveBeenCalledWith('callback-id', '', null, 42);
+            expect(answerCallback).not.toHaveBeenCalled();
             expect(messagesSend).toHaveBeenCalledWith(42, 'Подтверждено', {}, 'user');
+        });
+
+        it('не получает proto.payload при ответе на callback с заполненным текстом', async () => {
+            const context = createContext();
+            context.appConfig.tokens[T_MAX_APP] = { token: 'max-token' };
+            const errorLog = jest.spyOn(context, 'logError');
+            const fetch = jest.fn(async (input: string) => {
+                const isAnswer = String(input).includes('/answers');
+                return new Response(
+                    JSON.stringify(
+                        isAnswer
+                            ? {
+                                  code: 'proto.payload',
+                                  message: 'Invalid request. `message` or `notification` required',
+                              }
+                            : { message: { body: { mid: 'reply-id' } } },
+                    ),
+                    { status: isAnswer ? 400 : 200 },
+                );
+            });
+            context.httpClient = fetch;
+            const adapter = new MaxAdapter();
+            adapter.init(context);
+            const controller = new TestController(context);
+            controller.text = 'Подтверждено';
+            await adapter.setQueryData(callbackQuery, controller);
+
+            expect(await adapter.getContent(controller)).toBe('ok');
+
+            expect(errorLog).not.toHaveBeenCalled();
+            expect(fetch).toHaveBeenCalledTimes(1);
+            expect(fetch).toHaveBeenCalledWith(
+                'https://platform-api2.max.ru/messages?user_id=42',
+                expect.objectContaining({ body: JSON.stringify({ text: 'Подтверждено' }) }),
+            );
         });
 
         it('max_callback_edit_message: ответ заменяет сообщение с кнопкой', async () => {
@@ -390,14 +423,7 @@ describe('Контракты платформ', () => {
 
             const result = await adapter.send('other-user', controller);
 
-            // Нажатие может подтверждаться пустым телом, но текст сообщения
-            // не должен уйти в /answers вместо получателя
-            expect(answerCallback).not.toHaveBeenCalledWith(
-                'callback-id',
-                'Подтверждено',
-                {},
-                expect.anything(),
-            );
+            expect(answerCallback).not.toHaveBeenCalled();
             expect(messagesSend).toHaveBeenCalledWith('other-user', 'Подтверждено', {}, 'user');
             expect(result).not.toBe(false);
         });

@@ -1,7 +1,6 @@
 {
     "siteUrl": "https://www.maxim-m.ru/docs/umbot/en/v-3.1/guides/",
     "pages": [
-        "README.md",
         "src/docs/BENCHMARKS.md",
         "src/docs/FAQ.md",
         "src/docs/GUIDE.md",

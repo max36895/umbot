@@ -900,13 +900,15 @@ botMd.addCommand('whoami', ['кто я'], (_, ctx) => {
   фреймворком с предупреждением в лог.
 - **Групповые чаты и каналы.** Если в webhook есть `chat_id`, ответ уходит в чат, а не в
   личный диалог (ID чата — в `platformOptions.chatId`).
-- **Callback-кнопки.** На нажатие адаптер подтверждает callback (`POST /answers` с пустым телом), а ответ
-  обработчика отправляет новым сообщением — как в Telegram и VK. Если нужно, чтобы ответ **заменял** сообщение
+- **Callback-кнопки.** Ответ обработчика адаптер отправляет новым сообщением через `POST /messages`,
+  без отдельного пустого `POST /answers`: MAX отклоняет тело без `message` или `notification`.
+  Если нужно, чтобы ответ **заменял** сообщение
   с нажатой кнопкой (так устроен `message` в `POST /answers`), включите опцию
   `new MaxAdapter(token, { max_callback_edit_message: true })`. Режим действует только на ответ вебхука:
   протактивная отправка (`bot.send`/`bot.broadcast`) переиспользуемым контроллером всегда уходит через
-  `POST /messages` адресату — `/answers` редактировал бы сообщение в чате нажатия. Если обработчик сам вызвал
-  `controller.api.answerCallback(text)`, повторного подтверждения не будет.
+  `POST /messages` адресату — `/answers` редактировал бы сообщение в чате нажатия.
+  Явный `controller.api.answerCallback(text)` редактирует исходное сообщение; пустой текст без вложений
+  в `MaxRequest.answerCallback()` даёт `null` и предупреждение без обращения к API.
 - **API.** Базовый URL — `platform-api2.max.ru`; авторизация заголовком `Authorization: <token>`
   (query-параметры платформа больше не поддерживает). Детальное сравнение контракта —
   в [platform-contract-comparison.md](https://www.maxim-m.ru/docs/umbot/v-3.1/guides/platform-contract-comparison#4-max).

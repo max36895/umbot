@@ -85,8 +85,10 @@
   token comes from the `POST /uploads` step. Never cache the one-time upload `url` as a token.
   A message sent right after an upload may be rejected with `attachment.not.ready` — `MaxRequest`
   retries it (0.5/1/2 s). `POST /answers` with `message` REPLACES the message with the pressed
-  button; the adapter acknowledges with `{}` and replies via `POST /messages` unless
-  `max_callback_edit_message: true`. An image/audio cache miss is 1 extra Bot API call
+  button; an empty `{}` is rejected with `400 proto.payload` (`message` or `notification` required).
+  The adapter replies via `POST /messages` without a separate `/answers` call unless
+  `max_callback_edit_message: true`. Empty `MaxRequest.answerCallback` returns `null` with a warning
+  without an API call. An image/audio cache miss is 1 extra Bot API call
   (`POST /uploads`) — `Max/Card.ts` and `Max/Sound.ts` reserve it via
   `pUtils.consumeUploadRate(controller, T_MAX_APP, 1)`.
 - **SpeechKit TTS** — body `application/x-www-form-urlencoded`, auth `Api-Key <key>` or
