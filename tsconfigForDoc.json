@@ -1,6 +1,7 @@
 {
     "compilerOptions": {
         "module": "commonjs",
+        "ignoreDeprecations": "6.0",
         "target": "es2023",
         "lib": ["es2023", "dom"],
         "useDefineForClassFields": true,
