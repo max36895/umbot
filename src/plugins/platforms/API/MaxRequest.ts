@@ -408,6 +408,7 @@ export class MaxRequest {
 
     /**
      * Отправляет результат обработки нажатия callback-кнопки MAX.
+     * Пустой ответ не отправляется: MAX требует содержимое сообщения или уведомления.
      *
      * @param callbackId Идентификатор callback из входящего webhook
      * @param text Текст сообщения, отображаемого после нажатия
@@ -427,6 +428,12 @@ export class MaxRequest {
         dialogId?: number | string,
     ): Promise<IMaxAppApi | null> {
         const message = this.#buildMessage(text, params);
+        if (!message) {
+            this.#appContext.logWarn(
+                'MaxRequest.answerCallback(): не указан текст или вложения; ответ не будет отправлен.',
+            );
+            return null;
+        }
         if (dialogId !== undefined) {
             await waitForMaxMessageTurn(`${this.token ?? ''}:answer:${dialogId}`);
         }
@@ -434,8 +441,8 @@ export class MaxRequest {
             return await this.#callWithAttachmentRetry<IMaxAppApi>(
                 'answers',
                 { callback_id: callbackId },
-                message ? { message } : {},
-                Array.isArray(message?.attachments) && message.attachments.length > 0,
+                { message },
+                Array.isArray(message.attachments) && message.attachments.length > 0,
             );
         } finally {
             this.#request.get = null;
